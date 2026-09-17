@@ -15,6 +15,7 @@ import ImportDialog from './components/ImportDialog.vue'
 import NotePanel from './components/NotePanel.vue'
 import Reader from './components/Reader.vue'
 import ResultList from './components/ResultList.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import TopicPanel from './components/TopicPanel.vue'
 
 type ReaderState =
@@ -32,6 +33,7 @@ const documents = ref<DocumentRow[]>([])
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
 const showImport = ref(false)
+const showSettings = ref(false)
 const dropFiles = ref<File[]>([])
 const dragging = ref(false)
 const error = ref('')
@@ -281,6 +283,7 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
           {{ searching ? '检索中…' : '检 索' }}
         </button>
       </div>
+      <button class="import-btn" @click="showSettings = true">AI 设置</button>
       <button class="import-btn" @click="showImport = true">导入文档</button>
     </header>
 
@@ -358,6 +361,7 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
           @open-article="openArticle"
           @favorite="openFavorite"
           @save-content="saveContent"
+          @open-settings="showSettings = true"
         />
       </section>
 
@@ -373,6 +377,8 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
     </main>
 
     <ImportDialog v-model="showImport" :initial-files="dropFiles" @uploaded="refreshDocs" />
+
+    <SettingsDialog v-model="showSettings" />
 
     <FavoriteDialog
       v-model="showFav"

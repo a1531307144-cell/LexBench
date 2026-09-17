@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { ArticleDetail, DocumentDetail } from '../api'
+import AIPanel from './AIPanel.vue'
 
 type ReaderState =
   | { type: 'article'; data: ArticleDetail }
@@ -16,6 +17,7 @@ const emit = defineEmits<{
   'open-article': [id: number]
   favorite: [articleId: number]
   'save-content': [articleId: number, content: string]
+  'open-settings': []
 }>()
 
 const editing = ref(false)
@@ -85,6 +87,7 @@ const typeNames: Record<string, string> = {
           <p>· 输入 <b>离婚 冷静期</b> 全文搜索所有已导入文档</p>
           <p>· 把 docx / pdf 拖进窗口即可导入建库</p>
           <p>· 阅读、检索时点 ★ 收藏到专题，右栏同步记笔记</p>
+          <p>· 打开任意法条，用 AI 解读 / 找案例 / 追问（需先在「AI 设置」配置）</p>
         </div>
       </div>
     </div>
@@ -131,6 +134,14 @@ const typeNames: Record<string, string> = {
         <span v-if="state.data.category" class="foot-chip">{{ state.data.category }}</span>
         <span class="foot-chip">法规</span>
       </div>
+
+      <AIPanel
+        :article-id="state.data.id"
+        :article-label="state.data.label"
+        @open-article="emit('open-article', $event)"
+        @open-settings="emit('open-settings')"
+      />
+
       <div v-if="pager" class="pager">
         <button v-if="pager.prev" class="pager-btn" @click="go(pager.prev.id)">
           ← {{ pager.prev.label }}

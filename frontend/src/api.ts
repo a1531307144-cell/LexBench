@@ -125,6 +125,31 @@ export interface TopicDetail {
   notes: NoteRow[]
 }
 
+export interface AISettings {
+  base_url: string
+  model: string
+  api_key_set: boolean
+  api_key_masked: string
+}
+
+export interface Citation {
+  article_id: number | null
+  title: string
+  label: string
+  cite_text: string
+}
+
+export interface AIMessage {
+  id: number
+  article_id: number | null
+  topic_id: number | null
+  action: 'explain' | 'cases' | 'followup'
+  question: string
+  answer_md: string
+  citations: Citation[]
+  created_at: string
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init)
   if (!resp.ok) {
@@ -224,5 +249,45 @@ export const api = {
   },
   exportTopicUrl(id: number, format: 'md' | 'docx'): string {
     return `/api/topics/${id}/export?format=${format}`
+  },
+  aiSettings(): Promise<AISettings> {
+    return request<AISettings>('/api/ai/settings')
+  },
+  saveAISettings(body: { base_url: string; model: string; api_key?: string }): Promise<{ ok: boolean }> {
+    return request('/api/ai/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+  testAI(): Promise<{ ok: boolean; reply: string }> {
+    return request('/api/ai/test', { method: 'POST' })
+  },
+  aiExplain(articleId: number): Promise<AIMessage> {
+    return request<AIMessage>('/api/ai/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ article_id: articleId }),
+    })
+  },
+  aiCases(articleId: number): Promise<AIMessage> {
+    return request<AIMessage>('/api/ai/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ article_id: articleId }),
+    })
+  },
+  aiFollowup(body: { article_id?: number; topic_id?: number; question: string }): Promise<AIMessage> {
+    return request<AIMessage>('/api/ai/followup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+  aiHistory(articleId: number): Promise<AIMessage[]> {
+    return request<AIMessage[]>(`/api/ai/history?article_id=${articleId}`)
+  },
+  deleteAIMessage(id: number): Promise<{ ok: boolean }> {
+    return request(`/api/ai/messages/${id}`, { method: 'DELETE' })
   },
 }
