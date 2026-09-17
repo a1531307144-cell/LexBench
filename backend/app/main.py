@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core import config
 from app.db.connection import connect, init_db
-from app.routers import documents, search, workspace
+from app.routers import ai, documents, search, workspace
 
 
 def create_app(db_path=None, files_dir=None):
@@ -21,6 +21,7 @@ def create_app(db_path=None, files_dir=None):
     app.include_router(documents.router, prefix="/api")
     app.include_router(search.router, prefix="/api")
     app.include_router(workspace.router, prefix="/api")
+    app.include_router(ai.router, prefix="/api")
 
     dist = config.REPO_ROOT / "frontend" / "dist"
     if dist.exists():

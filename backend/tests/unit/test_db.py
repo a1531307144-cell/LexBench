@@ -13,9 +13,10 @@ def test_init_creates_schema_and_sets_version(tmp_path):
     }
     assert {"documents", "articles", "chunks", "settings"} <= tables
     assert {"topics", "topic_items", "notes"} <= tables
+    assert "ai_messages" in tables
     assert "articles_fts" in tables
     assert "chunks_fts" in tables
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     conn.close()
 
 
@@ -24,14 +25,14 @@ def test_init_is_idempotent(tmp_path):
     init_db(db)
     init_db(db)  # 重复初始化不报错、不重复执行
     conn = sqlite3.connect(db)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     rows = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     assert rows == 0
     conn.close()
 
 
 def test_m1_database_upgrades_to_v2_without_data_loss(tmp_path):
-    """U7：M1 旧库（user_version=1）升级到 v2，已有数据完好。"""
+    """U7：M1 旧库（user_version=1）逐级升级到最新版，已有数据完好。"""
     db = tmp_path / "old.db"
     conn = sqlite3.connect(db)
     conn.executescript(
@@ -69,7 +70,7 @@ def test_m1_database_upgrades_to_v2_without_data_loss(tmp_path):
     init_db(db)  # 应用 002 迁移
 
     conn = sqlite3.connect(db)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
     assert conn.execute("SELECT content FROM articles").fetchone()[0] == "旧内容"
     assert conn.execute("SELECT value FROM settings WHERE key='k'").fetchone()[0] == "v"
@@ -77,7 +78,7 @@ def test_m1_database_upgrades_to_v2_without_data_loss(tmp_path):
         r[0]
         for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
-    assert {"topics", "topic_items", "notes"} <= tables
+    assert {"topics", "topic_items", "notes", "ai_messages"} <= tables
     conn.close()
 
 
