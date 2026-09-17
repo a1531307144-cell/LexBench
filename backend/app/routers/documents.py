@@ -73,8 +73,16 @@ def document_detail(document_id: int, request: Request):
             (document_id,),
         )
     ]
+    chunks = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, seq, content FROM chunks WHERE document_id=? ORDER BY seq",
+            (document_id,),
+        )
+    ]
     body = dict(doc)
     body["articles"] = articles
+    body["chunks"] = chunks
     return body
 
 

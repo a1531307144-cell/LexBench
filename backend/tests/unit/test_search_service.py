@@ -134,6 +134,12 @@ def test_highlight_marks_all_tokens():
     )
 
 
+def test_highlight_escapes_html_in_content():
+    # 文档内容含 HTML 片段时先转义再高亮，防止 v-html 注入
+    out = highlight("<script>离婚</script>", ["离婚"])
+    assert out == "&lt;script&gt;<em>离婚</em>&lt;/script&gt;"
+
+
 def test_highlight_longer_token_first():
     assert highlight("冷静期", ["冷静", "冷静期"]) == "<em>冷静期</em>"
 

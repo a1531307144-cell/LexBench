@@ -1,3 +1,4 @@
+import html
 import re
 from dataclasses import dataclass
 
@@ -121,6 +122,7 @@ def _query_tokens(q: str):
 
 
 def highlight(text, tokens):
+    text = html.escape(text)
     toks = sorted({re.escape(t) for t in tokens if t}, key=len, reverse=True)
     if not toks:
         return text

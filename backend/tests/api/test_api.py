@@ -122,3 +122,23 @@ def test_delete_document_cascades(imported, client):
     # 索引一并清理：全文检索不再命中
     resp = client.get("/api/search", params={"q": "离婚"})
     assert resp.json()["results"] == []
+
+
+CASE = [
+    "北京市海淀区人民法院民事判决书",
+    "（2023）京0108民初12345号",
+    "本院认为，离婚冷静期制度旨在减少冲动离婚，三十日内可撤回申请。",
+]
+
+
+def test_case_document_detail_includes_chunks(client):
+    resp = client.post(
+        "/api/documents",
+        files={"files": ("判决书.docx", _docx_bytes(CASE), "application/octet-stream")},
+    )
+    doc_id = resp.json()["results"][0]["document_id"]
+    detail = client.get(f"/api/documents/{doc_id}").json()
+    assert detail["doc_type"] == "case"
+    assert detail["articles"] == []
+    assert len(detail["chunks"]) >= 1
+    assert "离婚冷静期" in detail["chunks"][0]["content"]
