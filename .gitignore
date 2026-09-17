@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# 注意：frontend/dist 是预构建产物，特意提交，
+# 让非开发者克隆后无需 Node.js 即可运行（见 README）
+
+# 用户数据 —— 永不入库（法律文档可能含版权内容）
+data/
+
+# OS / IDE
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
