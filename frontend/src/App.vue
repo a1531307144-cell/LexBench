@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import {
   api,
   type ArticleDetail,
   type DocumentDetail,
   type DocumentRow,
   type SearchResult,
+  type TopicDetail,
+  type TopicRow,
 } from './api'
 import DocLibrary from './components/DocLibrary.vue'
+import FavoriteDialog from './components/FavoriteDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
+import NotePanel from './components/NotePanel.vue'
 import Reader from './components/Reader.vue'
 import ResultList from './components/ResultList.vue'
+import TopicPanel from './components/TopicPanel.vue'
 
 type ReaderState =
   | { type: 'article'; data: ArticleDetail }
@@ -22,7 +27,7 @@ const searching = ref(false)
 const searched = ref(false)
 const searchMode = ref('')
 const results = ref<SearchResult[]>([])
-const tab = ref<'results' | 'library'>('results')
+const tab = ref<'results' | 'topics' | 'library'>('results')
 const documents = ref<DocumentRow[]>([])
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
@@ -31,7 +36,31 @@ const dropFiles = ref<File[]>([])
 const dragging = ref(false)
 const error = ref('')
 
+const topics = ref<TopicRow[]>([])
+const activeTopic = ref<TopicDetail | null>(null)
+const showFav = ref(false)
+const favArticleId = ref(0)
+const favArticleLabel = ref('')
+
 let dragDepth = 0
+
+const currentArticle = computed(() =>
+  reader.value?.type === 'article' ? reader.value.data : null,
+)
+
+const topicNav = computed(() => {
+  const t = activeTopic.value
+  const a = currentArticle.value
+  if (!t || !a) return null
+  const idx = t.items.findIndex((i) => i.article_id === a.id)
+  if (idx === -1) return null
+  const toBrief = (i?: TopicDetail['items'][number]) =>
+    i ? { id: i.article_id, label: i.label } : null
+  return {
+    prev: toBrief(t.items[idx - 1]),
+    next: toBrief(t.items[idx + 1]),
+  }
+})
 
 async function refreshDocs() {
   try {
@@ -39,6 +68,24 @@ async function refreshDocs() {
   } catch (e) {
     error.value = String(e)
   }
+}
+
+async function refreshTopics() {
+  try {
+    topics.value = await api.topics()
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
+async function refreshActiveTopic() {
+  if (!activeTopic.value) return
+  try {
+    activeTopic.value = await api.topicDetail(activeTopic.value.id)
+  } catch {
+    activeTopic.value = null
+  }
+  await refreshTopics()
 }
 
 async function doSearch() {
@@ -98,6 +145,79 @@ async function deleteDocument(id: number) {
   }
 }
 
+async function openTopic(id: number) {
+  try {
+    activeTopic.value = await api.topicDetail(id)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function backToTopics() {
+  activeTopic.value = null
+}
+
+async function createTopic(name: string, description: string) {
+  try {
+    const t = await api.createTopic(name, description)
+    await refreshTopics()
+    await openTopic(t.id)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function renameTopic(id: number, name: string) {
+  try {
+    await api.updateTopic(id, { name })
+    await refreshActiveTopic()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function deleteTopic(id: number) {
+  try {
+    await api.deleteTopic(id)
+    if (activeTopic.value?.id === id) activeTopic.value = null
+    await refreshTopics()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function removeItem(articleId: number) {
+  if (!activeTopic.value) return
+  await api.removeFavorite(activeTopic.value.id, articleId)
+  await refreshActiveTopic()
+}
+
+function exportTopic(format: 'md' | 'docx') {
+  if (!activeTopic.value) return
+  window.open(api.exportTopicUrl(activeTopic.value.id, format), '_blank')
+}
+
+function openFavorite(articleId: number) {
+  const a = currentArticle.value
+  favArticleId.value = articleId
+  favArticleLabel.value = a && a.id === articleId ? a.label : ''
+  showFav.value = true
+}
+
+async function onFavDone() {
+  await refreshActiveTopic()
+}
+
+async function saveContent(articleId: number, content: string) {
+  try {
+    await api.updateArticle(articleId, content)
+    await openArticle(articleId)
+    await refreshActiveTopic()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 function onDragEnter(e: DragEvent) {
   if (e.dataTransfer?.types.includes('Files')) {
     dragDepth++
@@ -124,6 +244,7 @@ function onDrop(e: DragEvent) {
 
 onMounted(() => {
   refreshDocs()
+  refreshTopics()
   window.addEventListener('dragenter', onDragEnter)
   window.addEventListener('dragleave', onDragLeave)
   window.addEventListener('dragover', (e) => e.preventDefault())
@@ -173,8 +294,16 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
             :class="{ active: tab === 'results' }"
             @click="tab = 'results'"
           >
-            检索结果
+            检索
             <span v-if="searched" class="count">{{ results.length }}</span>
+          </button>
+          <button
+            class="tab"
+            :class="{ active: tab === 'topics' }"
+            @click="tab = 'topics'"
+          >
+            专题
+            <span class="count">{{ topics.length }}</span>
           </button>
           <button
             class="tab"
@@ -198,6 +327,21 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
           @select="openResult"
         />
 
+        <TopicPanel
+          v-show="tab === 'topics'"
+          :topics="topics"
+          :topic="activeTopic"
+          :current-article-id="selectedId()"
+          @create="createTopic"
+          @open="openTopic"
+          @back="backToTopics"
+          @open-article="openArticle"
+          @remove-item="removeItem"
+          @delete-topic="deleteTopic"
+          @rename-topic="renameTopic"
+          @export="exportTopic"
+        />
+
         <DocLibrary
           v-show="tab === 'library'"
           :documents="documents"
@@ -207,11 +351,35 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
       </aside>
 
       <section class="reader-pane">
-        <Reader :state="reader" :loading="readerLoading" @open-article="openArticle" />
+        <Reader
+          :state="reader"
+          :loading="readerLoading"
+          :topic-nav="topicNav"
+          @open-article="openArticle"
+          @favorite="openFavorite"
+          @save-content="saveContent"
+        />
       </section>
+
+      <NotePanel
+        v-if="activeTopic"
+        :topic="activeTopic"
+        :current-article-id="selectedId()"
+        :current-article-label="currentArticle?.label ?? ''"
+        @changed="refreshActiveTopic"
+        @open-article="openArticle"
+        @export="exportTopic"
+      />
     </main>
 
     <ImportDialog v-model="showImport" :initial-files="dropFiles" @uploaded="refreshDocs" />
+
+    <FavoriteDialog
+      v-model="showFav"
+      :article-id="favArticleId"
+      :article-label="favArticleLabel"
+      @done="onFavDone"
+    />
 
     <div v-if="dragging" class="drag-overlay">
       <div class="drag-hint">松开鼠标，导入法律文档</div>
@@ -342,7 +510,7 @@ const selectedId = () => (reader.value?.type === 'article' ? reader.value.data.i
 }
 
 .side {
-  width: 380px;
+  width: 340px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   background: var(--panel);

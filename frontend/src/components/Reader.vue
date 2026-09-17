@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ArticleDetail, DocumentDetail } from '../api'
 
 type ReaderState =
@@ -7,15 +7,36 @@ type ReaderState =
   | { type: 'document'; data: DocumentDetail }
   | null
 
-const props = defineProps<{ state: ReaderState; loading: boolean }>()
-const emit = defineEmits<{ 'open-article': [id: number] }>()
+const props = defineProps<{
+  state: ReaderState
+  loading: boolean
+  topicNav?: { prev: { id: number; label: string } | null; next: { id: number; label: string } | null } | null
+}>()
+const emit = defineEmits<{
+  'open-article': [id: number]
+  favorite: [articleId: number]
+  'save-content': [articleId: number, content: string]
+}>()
+
+const editing = ref(false)
+const draft = ref('')
+const saving = ref(false)
 
 watch(
   () => props.state,
   () => {
     document.querySelector('.reader-pane')?.scrollTo({ top: 0 })
+    editing.value = false
   },
 )
+
+const pager = computed(() => {
+  if (props.topicNav) return props.topicNav
+  if (props.state?.type === 'article') {
+    return { prev: props.state.data.prev, next: props.state.data.next }
+  }
+  return null
+})
 
 function paragraphs(content: string): string[] {
   return content.split('\n').filter((p) => p.trim())
@@ -23,6 +44,24 @@ function paragraphs(content: string): string[] {
 
 function go(id: number) {
   emit('open-article', id)
+}
+
+function startEdit() {
+  if (props.state?.type !== 'article') return
+  draft.value = props.state.data.content
+  editing.value = true
+}
+
+async function saveEdit() {
+  if (props.state?.type !== 'article' || saving.value) return
+  const content = draft.value.trim()
+  if (!content) return
+  saving.value = true
+  try {
+    emit('save-content', props.state.data.id, content)
+  } finally {
+    saving.value = false
+  }
 }
 
 const typeNames: Record<string, string> = {
@@ -45,6 +84,7 @@ const typeNames: Record<string, string> = {
           <p>· 输入 <b>民法典 1077</b> 直接定位《民法典》第一千零七十七条</p>
           <p>· 输入 <b>离婚 冷静期</b> 全文搜索所有已导入文档</p>
           <p>· 把 docx / pdf 拖进窗口即可导入建库</p>
+          <p>· 阅读、检索时点 ★ 收藏到专题，右栏同步记笔记</p>
         </div>
       </div>
     </div>
@@ -57,21 +97,47 @@ const typeNames: Record<string, string> = {
         <span v-if="state.data.chapter"> › {{ state.data.chapter }}</span>
         <span v-if="state.data.section"> › {{ state.data.section }}</span>
       </div>
-      <h1 class="article-label">{{ state.data.label }}</h1>
-      <div class="article-body">
+      <div class="article-head">
+        <h1 class="article-label">{{ state.data.label }}</h1>
+        <div class="article-ops">
+          <button
+            class="fav-btn"
+            title="收藏到专题"
+            @click="emit('favorite', state.data.id)"
+          >
+            ★ 收藏
+          </button>
+          <button v-if="!editing" class="edit-btn" title="手动修正条文内容" @click="startEdit">
+            修正
+          </button>
+        </div>
+      </div>
+
+      <div v-if="editing" class="edit-area">
+        <textarea v-model="draft" rows="10"></textarea>
+        <div class="edit-ops">
+          <span class="edit-hint">修正解析错误的条文内容，保存后全文索引同步更新</span>
+          <button class="edit-cancel" @click="editing = false">取消</button>
+          <button class="edit-save" :disabled="saving || !draft.trim()" @click="saveEdit">
+            {{ saving ? '保存中…' : '保存修正' }}
+          </button>
+        </div>
+      </div>
+      <div v-else class="article-body">
         <p v-for="(p, i) in paragraphs(state.data.content)" :key="i">{{ p }}</p>
       </div>
+
       <div class="article-foot">
         <span v-if="state.data.category" class="foot-chip">{{ state.data.category }}</span>
         <span class="foot-chip">法规</span>
       </div>
-      <div class="pager">
-        <button v-if="state.data.prev" class="pager-btn" @click="go(state.data.prev.id)">
-          ← {{ state.data.prev.label }}
+      <div v-if="pager" class="pager">
+        <button v-if="pager.prev" class="pager-btn" @click="go(pager.prev.id)">
+          ← {{ pager.prev.label }}
         </button>
         <span v-else class="pager-spacer"></span>
-        <button v-if="state.data.next" class="pager-btn" @click="go(state.data.next.id)">
-          {{ state.data.next.label }} →
+        <button v-if="pager.next" class="pager-btn" @click="go(pager.next.id)">
+          {{ pager.next.label }} →
         </button>
       </div>
     </article>
@@ -178,12 +244,102 @@ const typeNames: Record<string, string> = {
   line-height: 1.6;
 }
 
+.article-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
 .article-label {
   font-family: var(--serif);
   font-size: 26px;
   font-weight: 700;
-  margin: 0 0 20px;
+  margin: 0;
   letter-spacing: 1px;
+}
+
+.article-ops {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.fav-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.fav-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.edit-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.edit-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.edit-area textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 2;
+  outline: none;
+  background: #fffdf8;
+  resize: vertical;
+}
+
+.edit-ops {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.edit-hint {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.edit-cancel {
+  padding: 6px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.edit-save {
+  padding: 6px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+}
+
+.edit-save:disabled {
+  opacity: 0.5;
 }
 
 .article-body {
