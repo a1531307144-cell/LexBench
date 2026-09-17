@@ -33,6 +33,20 @@ def test_split_statute_hierarchy_updates():
     assert last.chapter == "第二章 其他规定"
 
 
+def test_split_statute_section_resets_on_new_chapter():
+    """新章开始后，上一章的"节"不应泄漏到本章条文（如民法典离婚章无节）。"""
+    paragraphs = [
+        "第三章 家庭关系",
+        "第一节 夫妻关系",
+        "第一千零六十二条 夫妻共同财产。",
+        "第四章 离婚",
+        "第一千零七十七条 离婚冷静期。",
+    ]
+    articles = split_statute(paragraphs)
+    assert articles[1].chapter == "第四章 离婚"
+    assert articles[1].section == ""
+
+
 def test_split_statute_merges_continuation_paragraphs():
     articles = split_statute(STATUTE_PARAGRAPHS)
     last = articles[-1]

@@ -48,8 +48,10 @@ def split_statute(paragraphs):
             continue
         if BRANCH_RE.match(p):
             branch = p
+            chapter = section = ""
         elif CHAPTER_RE.match(p):
             chapter = p
+            section = ""
         elif SECTION_RE.match(p):
             section = p
         elif current is not None:
