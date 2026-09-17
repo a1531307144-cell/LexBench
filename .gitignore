@@ -15,6 +15,11 @@ node_modules/
 # 用户数据 —— 永不入库（法律文档可能含版权内容）
 data/
 
+# 环境变量 —— AI API key 等敏感配置（.env.example 模板除外）
+.env
+.env.*
+!.env.example
+
 # OS / IDE
 Thumbs.db
 .DS_Store

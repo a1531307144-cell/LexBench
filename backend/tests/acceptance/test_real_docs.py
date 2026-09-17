@@ -1,6 +1,8 @@
-"""M1 验收：用本机真实法律文档库验证导入与双模式检索。
+"""M1 验收：用真实法律文档库验证导入与双模式检索。
 
-未设置 LEXBENCH_REAL_DOCS 或路径不存在时跳过（CI 环境无真实数据）。
+运行方式（仅本机，路径通过环境变量注入，避免个人路径进入代码）:
+    PowerShell:  $env:LEXBENCH_REAL_DOCS = "D:\你的文档库路径"; pytest backend/tests
+未设置该环境变量时自动跳过（CI 与其他开发者环境无真实数据）。
 """
 
 import os
@@ -9,12 +11,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-REAL_DOCS = Path(
-    os.environ.get("LEXBENCH_REAL_DOCS", r"<你的文档库路径>")
-)
+_env = os.environ.get("LEXBENCH_REAL_DOCS", "").strip()
+REAL_DOCS = Path(_env) if _env else None
 
 pytestmark = pytest.mark.skipif(
-    not REAL_DOCS.exists(), reason="本机真实文档库不可用"
+    REAL_DOCS is None or not REAL_DOCS.is_dir(),
+    reason="未设置 LEXBENCH_REAL_DOCS 环境变量，跳过真实文档库验收",
 )
 
 
