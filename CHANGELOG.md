@@ -3,6 +3,19 @@
 本项目的所有显著变更记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-09-18
+
+从"网页版"进化为**可下载的桌面软件**：解压即用，双击 LexBench.exe 打开独立软件窗口，无需安装 Python。
+
+### Added
+
+- **桌面版发布**：Windows 免安装便携包（`LexBench-x.x.x-windows-x64.zip`，GitHub Releases 下载）——PyInstaller 封装 + pywebview 原生窗口，独立任务栏图标与窗口，不再依赖浏览器标签页；数据仍全部存本机（exe 旁 `data/` 文件夹，换电脑整包拷走）
+- **单实例保护**：重复双击不会开出第二个进程写同一个数据库，而是提示"已在运行"
+- **防误用守卫**：未解压直接在压缩包里双击 exe 时，提示先解压（避免数据存在临时目录被清掉）；系统缺 WebView2 运行时时给出官方下载指引
+- **版本标识**：新增 `VERSION` 文件（语义化版本单一来源），窗口标题显示当前版本号
+- **隐私构建流程**：`scripts/build_desktop.ps1` 在不含用户名的中性路径（`C:\Users\Public\...`）下构建，`scripts/check_binary_privacy.py` 扫描打包产物二进制，确保本机用户名/路径未被编译进 exe
+- **测试**：110 个自动化测试（新增端口选择、单实例互斥体、压缩包误用检测、打包后路径配置）
+
 ## [0.1.0] - 2026-09-17
 
 首个公开版本：检索内核 + 研究工作台 + AI 研究助手。
@@ -59,3 +72,4 @@
 - 本地大模型（Ollama）Provider
 - 三栏宽度拖拽调整
 - 功能演示 GIF
+- 桌面版 CI 自动构建（GitHub Actions Windows runner）与代码签名

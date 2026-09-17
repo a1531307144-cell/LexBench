@@ -1,0 +1,6 @@
+# 桌面版专用依赖（源码 Web 模式开发不需要安装）
+# 源码预览窗口模式：pip install -r backend/requirements-desktop.txt
+# 完整打包：powershell -ExecutionPolicy Bypass -File scripts\build_desktop.ps1
+pywebview>=6
+pyinstaller>=6.14
+pillow>=11

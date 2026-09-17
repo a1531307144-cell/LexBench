@@ -23,9 +23,8 @@ def create_app(db_path=None, files_dir=None):
     app.include_router(workspace.router, prefix="/api")
     app.include_router(ai.router, prefix="/api")
 
-    dist = config.REPO_ROOT / "frontend" / "dist"
-    if dist.exists():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+    if config.FRONTEND_DIST.exists():
+        app.mount("/", StaticFiles(directory=config.FRONTEND_DIST, html=True), name="frontend")
     return app
 
 
