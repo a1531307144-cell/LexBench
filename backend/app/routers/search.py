@@ -1,8 +1,30 @@
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
+from app.services.indexer import reindex_article
 from app.services.search import parse_locate_query, search_fulltext, search_locate
 
 router = APIRouter(tags=["search"])
+
+
+class ArticleUpdate(BaseModel):
+    content: str
+
+
+@router.put("/articles/{article_id}")
+def article_update(article_id: int, body: ArticleUpdate, request: Request):
+    """needs_review 手动修正：直接改条文内容并重建全文索引。"""
+    conn = request.app.state.conn
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(422, "条文内容不能为空")
+    cur = conn.execute(
+        "UPDATE articles SET content=? WHERE id=?", (content, article_id)
+    )
+    if cur.rowcount == 0:
+        raise HTTPException(404, "法条不存在")
+    reindex_article(conn, article_id)
+    return {"ok": True}
 
 
 @router.get("/search")

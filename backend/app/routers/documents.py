@@ -4,11 +4,30 @@ from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from app.services.importer import import_file
 from app.services.indexer import remove_document_content
 
 router = APIRouter(tags=["documents"])
+
+
+class StatusUpdate(BaseModel):
+    status: str  # parsed | needs_review
+
+
+@router.put("/documents/{document_id}/status")
+def update_document_status(document_id: int, body: StatusUpdate, request: Request):
+    conn = request.app.state.conn
+    if body.status not in ("parsed", "needs_review"):
+        raise HTTPException(422, "status 仅支持 parsed / needs_review")
+    cur = conn.execute(
+        "UPDATE documents SET status=? WHERE id=?", (body.status, document_id)
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "文档不存在")
+    return {"ok": True}
 
 
 @router.post("/documents")

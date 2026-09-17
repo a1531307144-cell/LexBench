@@ -42,6 +42,21 @@ def index_chunks(conn, document_id, chunks) -> None:
     conn.commit()
 
 
+def reindex_article(conn, article_id) -> None:
+    """单条法条内容修正后重建其 FTS 索引行。"""
+    row = conn.execute(
+        "SELECT content FROM articles WHERE id=?", (article_id,)
+    ).fetchone()
+    if row is None:
+        return
+    conn.execute("DELETE FROM articles_fts WHERE article_id=?", (article_id,))
+    conn.execute(
+        "INSERT INTO articles_fts(article_id, content) VALUES(?,?)",
+        (article_id, tokenize(row["content"])),
+    )
+    conn.commit()
+
+
 def remove_document_content(conn, document_id) -> None:
     """删除文档的法条/段落行及其 FTS 索引行（FTS 表不随外键级联）。"""
     conn.execute(

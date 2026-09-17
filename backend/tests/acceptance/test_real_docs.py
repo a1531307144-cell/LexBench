@@ -97,3 +97,31 @@ def test_acceptance_locate_company_law(client, imported_library):
     body = resp.json()
     assert body["mode"] == "locate"
     assert body["results"][0]["label"] in ("第五十一条", "第五十一条之一")
+
+
+def test_acceptance_research_workflow(client, imported_library):
+    """U4/U6 验收：检索 → 收藏到专题 → 笔记 → 导出研究报告。"""
+    hit = client.get("/api/search", params={"q": "民法典 1077"}).json()
+    article_id = hit["results"][0]["id"]
+
+    topic = client.post(
+        "/api/topics", json={"name": "婚姻家事研究", "description": "验收专题"}
+    ).json()
+    tid = topic["id"]
+    assert client.post(f"/api/topics/{tid}/items", json={"article_id": article_id}).json()[
+        "status"
+    ] == "added"
+    client.post(
+        "/api/notes",
+        json={
+            "topic_id": tid,
+            "article_id": article_id,
+            "content_md": "**要点**：冷静期 30 日内可撤回离婚登记申请",
+        },
+    )
+
+    md = client.get(f"/api/topics/{tid}/export").text
+    assert "第一千零七十七条（中华人民共和国民法典）" in md
+    assert "三十日内" in md
+    assert "冷静期 30 日内可撤回离婚登记申请" in md
+    assert client.delete(f"/api/topics/{tid}").json()["ok"]
