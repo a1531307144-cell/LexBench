@@ -85,7 +85,7 @@ const typeNames: Record<string, string> = {
         <div class="welcome-tips">
           <p>· 输入 <b>民法典 1077</b> 直接定位《民法典》第一千零七十七条</p>
           <p>· 输入 <b>离婚 冷静期</b> 全文搜索所有已导入文档</p>
-          <p>· 把 docx / pdf 拖进窗口即可导入建库</p>
+          <p>· 把 docx / pdf / txt 拖进窗口即可导入（仓库 samples/ 有内置示例）</p>
           <p>· 阅读、检索时点 ★ 收藏到专题，右栏同步记笔记</p>
           <p>· 打开任意法条，用 AI 解读 / 找案例 / 追问（需先在「AI 设置」配置）</p>
         </div>

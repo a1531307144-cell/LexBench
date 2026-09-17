@@ -54,6 +54,21 @@ def extract_pdf_paragraphs(path) -> list:
     return lines
 
 
+def extract_txt_paragraphs(path) -> list:
+    """纯文本导入：尝试常见中文编码（UTF-8 优先，GB18030 兜底）。"""
+    raw = Path(path).read_bytes()
+    text = None
+    for enc in ("utf-8-sig", "gb18030"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
 def chunk_paragraphs(paragraphs, target=500) -> list:
     """把段落合并为约 target 字符的检索块；剩余段落独立成块。"""
     chunks, buf, size = [], [], 0
@@ -83,6 +98,8 @@ def import_file(conn, file_path, files_dir, category="", original_name=None) -> 
                 return ImportResult(
                     "failed", title, message="未检出文本层（可能是扫描版 PDF），暂不支持 OCR"
                 )
+        elif suffix == ".txt":
+            paragraphs = extract_txt_paragraphs(file_path)
         elif suffix == ".doc":
             return ImportResult(
                 "failed", title, message="不支持 .doc 老格式，请先运行 scripts/convert_doc.py 转为 .docx"

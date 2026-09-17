@@ -23,7 +23,7 @@ watch(
 )
 
 function addFiles(list: FileList | null) {
-  const ok = Array.from(list ?? []).filter((f) => /\.(docx|pdf|doc)$/i.test(f.name))
+  const ok = Array.from(list ?? []).filter((f) => /\.(docx|pdf|txt|doc)$/i.test(f.name))
   files.value = [...files.value, ...ok]
 }
 
@@ -90,12 +90,12 @@ const statusText: Record<string, string> = {
             @click="fileInput?.click()"
           >
             <p class="drop-main">点击选择文件，或拖拽到此处</p>
-            <p class="drop-sub">支持 .docx / .pdf，可多选；.doc 老格式请先用转换脚本</p>
+            <p class="drop-sub">支持 .docx / .pdf / .txt，可多选；.doc 老格式请先用转换脚本</p>
             <input
               ref="fileInput"
               type="file"
               multiple
-              accept=".docx,.pdf,.doc"
+              accept=".docx,.pdf,.txt,.doc"
               style="display: none"
               @change="addFiles(($event.target as HTMLInputElement).files)"
             />

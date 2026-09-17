@@ -236,7 +236,7 @@ function onDrop(e: DragEvent) {
   dragDepth = 0
   dragging.value = false
   const files = Array.from(e.dataTransfer?.files ?? []).filter((f) =>
-    /\.(docx|pdf|doc)$/i.test(f.name),
+    /\.(docx|pdf|txt|doc)$/i.test(f.name),
   )
   if (files.length) {
     dropFiles.value = files

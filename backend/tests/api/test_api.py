@@ -142,3 +142,59 @@ def test_case_document_detail_includes_chunks(client):
     assert detail["articles"] == []
     assert len(detail["chunks"]) >= 1
     assert "离婚冷静期" in detail["chunks"][0]["content"]
+
+
+# ---------- 纯文本（.txt）导入 ----------
+
+def test_upload_txt_imports_statute(client):
+    resp = client.post(
+        "/api/documents",
+        files={"files": ("民法典节选.txt", "\n".join(STATUTE).encode("utf-8"), "text/plain")},
+    )
+    body = resp.json()["results"][0]
+    assert body["status"] == "imported"
+    assert body["doc_type"] == "statute"
+    assert body["article_count"] == 6
+    located = client.get("/api/search", params={"q": "民法典 1077"}).json()
+    assert located["results"][0]["label"] == "第一千零七十七条"
+
+
+def test_upload_txt_gbk_encoding(client):
+    """常见 GBK 编码的中文 txt 也能正确导入。"""
+    resp = client.post(
+        "/api/documents",
+        files={"files": ("判决书_gbk.txt", "\n".join(CASE).encode("gbk"), "text/plain")},
+    )
+    body = resp.json()["results"][0]
+    assert body["status"] == "imported"
+    assert body["doc_type"] == "case"
+    hits = client.get("/api/search", params={"q": "冷静期"}).json()["results"]
+    assert hits, "GBK 解码失败会导致全文检索无结果"
+
+
+def test_bundled_samples_import_cleanly(client):
+    """仓库自带 samples/ 必须能干净导入：法条数、类型、两类检索全链路可用。"""
+    from pathlib import Path
+
+    samples = Path(__file__).resolve().parents[3] / "samples"
+    statute = samples / "中华人民共和国民法典_婚姻家庭编节选.txt"
+    case = samples / "示例案例_离婚纠纷_虚构演示.txt"
+    resp = client.post(
+        "/api/documents",
+        files=[
+            ("files", (statute.name, statute.read_bytes(), "text/plain")),
+            ("files", (case.name, case.read_bytes(), "text/plain")),
+        ],
+    )
+    results = {r["title"]: r for r in resp.json()["results"]}
+    statute_r = results["中华人民共和国民法典_婚姻家庭编节选"]
+    assert statute_r["status"] == "imported"
+    assert statute_r["article_count"] == 32
+    case_r = results["示例案例_离婚纠纷_虚构演示"]
+    assert case_r["status"] == "imported"
+    assert case_r["doc_type"] == "case"
+
+    located = client.get("/api/search", params={"q": "民法典 1077"}).json()
+    assert located["results"][0]["label"] == "第一千零七十七条"
+    fulltext = client.get("/api/search", params={"q": "离婚 冷静期"}).json()
+    assert any(r["label"] == "第一千零七十七条" for r in fulltext["results"])
