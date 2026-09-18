@@ -11,12 +11,17 @@ type ReaderState =
 const props = defineProps<{
   state: ReaderState
   loading: boolean
+  /** 专题模式翻页 override：传值（含首尾 null）时优先于法条自身前后条（App 传专题顺序相邻条） */
+  navPrev?: { id: number; label: string } | null
+  navNext?: { id: number; label: string } | null
 }>()
 
 const emit = defineEmits<{
   'open-article': [id: number]
   /** 条文修正已保存并重取详情，App 用它同步阅读器状态 */
   saved: [detail: ArticleDetail]
+  /** ★ 收藏：App 打开 FavoriteDialog */
+  favorite: []
   error: [message: string]
 }>()
 
@@ -42,6 +47,10 @@ function readerKey(s: ReaderState): string {
 
 const pager = computed(() => {
   if (props.state?.type !== 'article') return null
+  // 专题 override：navPrev/navNext 任一传值（含 null=到头）即按专题顺序翻页；未传则走法条自身前后条
+  if (props.navPrev !== undefined || props.navNext !== undefined) {
+    return { prev: props.navPrev ?? null, next: props.navNext ?? null }
+  }
   return { prev: props.state.data.prev, next: props.state.data.next }
 })
 
@@ -103,7 +112,7 @@ const typeNames: Record<string, string> = {
           <p>· 输入 <b>民法典 1077</b> 直接定位《民法典》第一千零七十七条</p>
           <p>· 输入 <b>离婚 冷静期</b> 全文搜索所有已导入文档</p>
           <p>· 把 docx / pdf / txt 拖进窗口，或点右上角「导入文档」建库</p>
-          <p>· 阅读时 <b>★ 收藏到专题</b>（随研究工作台在 v0.4.0 上线）</p>
+          <p>· 阅读时点 <b>★ 收藏</b>，把法条收进研究专题并随手记笔记</p>
         </div>
       </div>
     </div>
@@ -124,9 +133,10 @@ const typeNames: Record<string, string> = {
       </div>
       <div class="article-head">
         <h1 class="article-label">{{ state.data.article.label }}</h1>
-        <button v-if="!editing" class="ghost-btn" title="手动修正条文内容" @click="startEdit">
-          修正
-        </button>
+        <div v-if="!editing" class="head-ops">
+          <button class="ghost-btn" title="收藏到研究专题" @click="emit('favorite')">★ 收藏</button>
+          <button class="ghost-btn" title="手动修正条文内容" @click="startEdit">修正</button>
+        </div>
       </div>
 
       <div v-if="editing" class="edit-area">
@@ -302,6 +312,12 @@ const typeNames: Record<string, string> = {
 .ghost-btn:hover {
   border-color: var(--lb-accent-2);
   color: var(--lb-accent);
+}
+
+.head-ops {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .edit-area textarea {

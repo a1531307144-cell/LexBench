@@ -2,17 +2,24 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DocLibrary from './components/DocLibrary.vue'
+import FavoriteDialog from './components/FavoriteDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
+import NotePanel from './components/NotePanel.vue'
 import Reader from './components/Reader.vue'
 import ResultList from './components/ResultList.vue'
+import TopicPanel from './components/TopicPanel.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
+import type { ItemMoveDirection, TopicPatch } from '@shared/ipc'
 import type {
   ArticleDetail,
   DocumentDetail,
   DocumentRow,
+  ExportFormat,
   SearchHit,
   SearchMode,
-  SearchOutcome
+  SearchOutcome,
+  TopicDetail,
+  TopicRow
 } from '@shared/types'
 
 /** 阅读器状态：法条模式 / 文档模式（与 Reader.vue 内声明保持同一形状） */
@@ -46,9 +53,19 @@ const error = ref('')
 const version = ref('')
 const pendingDelete = ref<DocumentRow | null>(null)
 
-let dragDepth = 0
+// ---------- 研究工作台（v0.4.0） ----------
+const topics = ref<TopicRow[]>([])
+const activeTopic = ref<TopicDetail | null>(null)
+const showFav = ref(false)
+/** 待收藏的法条（id + label），由阅读器的 ★ 收藏按钮赋值 */
+const favArticle = ref<{ id: number; label: string } | null>(null)
+/** 全局消息条：导出成功 / 收藏成功等正向反馈（复用错误条容器，6 秒自动消失） */
+const notice = ref<{ text: string; kind: 'success' | 'warn' } | null>(null)
 
-// 当前打开的法条 id（结果列表高亮用）
+let dragDepth = 0
+let noticeTimer: ReturnType<typeof setTimeout> | undefined
+
+// 当前打开的法条 id（结果列表高亮 / 专题条目高亮用）
 const selectedId = computed(() =>
   reader.value?.type === 'article' ? reader.value.data.article.id : 0
 )
@@ -65,6 +82,155 @@ function showError(e: unknown): void {
   const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : ''
   error.value = msg || '操作失败，请稍后重试'
 }
+
+/** 消息条（修复旧版 #23：导出等操作不再无反馈），6 秒自动消失 */
+function setNotice(text: string, kind: 'success' | 'warn' = 'success'): void {
+  notice.value = { text, kind }
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => {
+    notice.value = null
+  }, 6000)
+}
+
+// ---------- 工作台：专题 ----------
+
+async function refreshTopics(): Promise<void> {
+  try {
+    topics.value = await window.lexbench.workspace.listTopics()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function refreshActiveTopic(): Promise<void> {
+  if (!activeTopic.value) return
+  try {
+    activeTopic.value = await window.lexbench.workspace.getTopic(activeTopic.value.id)
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function openTopic(id: number): Promise<void> {
+  try {
+    activeTopic.value = await window.lexbench.workspace.getTopic(id)
+  } catch (e) {
+    showError(e)
+  }
+}
+
+function backToTopics(): void {
+  activeTopic.value = null
+}
+
+async function createTopic(name: string, description: string): Promise<void> {
+  try {
+    await window.lexbench.workspace.createTopic(name, description || undefined)
+    await refreshTopics()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function renameTopic(id: number, patch: TopicPatch): Promise<void> {
+  try {
+    await window.lexbench.workspace.updateTopic(id, patch)
+    await refreshTopics()
+    if (activeTopic.value?.id === id) await refreshActiveTopic()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function deleteTopic(id: number): Promise<void> {
+  try {
+    await window.lexbench.workspace.deleteTopic(id)
+    // 删除后清理：若删的是打开中的专题，右栏笔记随 activeTopic 一并消失
+    if (activeTopic.value?.id === id) activeTopic.value = null
+    await refreshTopics()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function removeTopicItem(topicId: number, articleId: number): Promise<void> {
+  try {
+    await window.lexbench.workspace.removeTopicItem(topicId, articleId)
+    await refreshTopics()
+    if (activeTopic.value?.id === topicId) await refreshActiveTopic()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function moveTopicItem(
+  topicId: number,
+  articleId: number,
+  dir: ItemMoveDirection
+): Promise<void> {
+  try {
+    await window.lexbench.workspace.moveTopicItem(topicId, articleId, dir)
+    if (activeTopic.value?.id === topicId) await refreshActiveTopic()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+// ---------- 工作台：收藏 / 导出 ----------
+
+function openFavorite(): void {
+  if (reader.value?.type !== 'article') return
+  favArticle.value = { id: reader.value.data.article.id, label: reader.value.data.article.label }
+  showFav.value = true
+}
+
+/** 收藏成功（含重复幂等）：关对话框 + 刷新计数 + 消息条提示（修复旧版 #15） */
+function onFavorited(res: { topicName: string; duplicate: boolean }): void {
+  showFav.value = false
+  setNotice(
+    res.duplicate ? `该法条已收藏在「${res.topicName}」中` : `已收藏到「${res.topicName}」`,
+    res.duplicate ? 'warn' : 'success'
+  )
+  void refreshTopics()
+  void refreshActiveTopic()
+}
+
+/** 导出报告（修复旧版 #23：window.open 无反馈 → 本地写盘 + 成功消息条显示保存路径） */
+async function exportTopic(format: ExportFormat): Promise<void> {
+  const t = activeTopic.value
+  if (!t) return
+  try {
+    const r = await window.lexbench.export.saveTopicReport(t.id, format)
+    if (!r.canceled && r.path) setNotice(`已导出到 ${r.path}`)
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** NotePanel 笔记增删改后：刷新专题详情与列表计数 */
+async function onNotesChanged(): Promise<void> {
+  await refreshTopics()
+  await refreshActiveTopic()
+}
+
+// ---------- 工作台：专题内翻页 override ----------
+// 当前法条在激活专题内 → 按专题顺序给相邻条；不在专题内 → undefined（Reader 走法条自身前后条）
+const topicNeighbors = computed(() => {
+  const t = activeTopic.value
+  const r = reader.value
+  if (!t || r?.type !== 'article') return undefined
+  const cur = r.data.article.id
+  const items = t.items
+  const i = items.findIndex((it) => it.article_id === cur)
+  if (i < 0) return undefined
+  return {
+    prev: i > 0 ? { id: items[i - 1].article_id, label: items[i - 1].article_label } : null,
+    next:
+      i < items.length - 1
+        ? { id: items[i + 1].article_id, label: items[i + 1].article_label }
+        : null
+  }
+})
 
 async function refreshDocs(): Promise<void> {
   try {
@@ -127,9 +293,12 @@ function openResult(hit: SearchHit): void {
   else void openDocument(hit.document_id)
 }
 
-/** 条文修正保存完成（Reader 已重取详情）：同步阅读器状态 */
+/** 条文修正保存完成（Reader 已重取详情）：同步阅读器状态；若该条在激活专题内则刷新专题摘要 */
 function onArticleSaved(detail: ArticleDetail): void {
   reader.value = { type: 'article', data: detail }
+  if (activeTopic.value?.items.some((it) => it.article_id === detail.article.id)) {
+    void refreshActiveTopic()
+  }
 }
 
 function askDelete(doc: DocumentRow): void {
@@ -143,6 +312,9 @@ async function confirmDelete(): Promise<void> {
     await window.lexbench.library.deleteDocument(doc.id)
     if (reader.value?.type === 'document' && reader.value.data.id === doc.id) reader.value = null
     await refreshDocs()
+    // FK 级联会连带删除该文档的收藏条目（笔记保留并置空关联），同步刷新工作台
+    void refreshTopics()
+    void refreshActiveTopic()
   } catch (e) {
     showError(e)
   } finally {
@@ -217,6 +389,7 @@ onMounted(() => {
   window.addEventListener('dragover', onDragOver)
   window.addEventListener('drop', onDrop)
   void refreshDocs()
+  void refreshTopics()
   void window.lexbench.app
     .getVersion()
     .then((v) => {
@@ -230,6 +403,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragleave', onDragLeave)
   window.removeEventListener('dragover', onDragOver)
   window.removeEventListener('drop', onDrop)
+  clearTimeout(noticeTimer)
 })
 </script>
 
@@ -268,6 +442,12 @@ onBeforeUnmount(() => {
       <button class="error-close" title="关闭" @click="error = ''">✕</button>
     </div>
 
+    <!-- 全局消息条：成功/提示反馈（导出、收藏等），6 秒自动消失，也可手动关闭 -->
+    <div v-if="notice" class="error-bar notice" :data-kind="notice.kind">
+      <span class="error-text">{{ notice.text }}</span>
+      <button class="error-close" title="关闭" @click="notice = null">✕</button>
+    </div>
+
     <main class="main">
       <aside class="side">
         <div class="tabs">
@@ -275,7 +455,7 @@ onBeforeUnmount(() => {
             检索<span v-if="searched" class="count">{{ results.length }}</span>
           </button>
           <button class="tab" :class="{ active: tab === 'topics' }" @click="tab = 'topics'">
-            专题
+            专题<span class="count">{{ topics.length }}</span>
           </button>
           <button class="tab" :class="{ active: tab === 'library' }" @click="tab = 'library'">
             文档库<span class="count">{{ documents.length }}</span>
@@ -294,13 +474,21 @@ onBeforeUnmount(() => {
           @select="openResult"
         />
 
-        <div v-show="tab === 'topics'" class="tab-page">
-          <div class="placeholder-card">
-            <div class="ph-seal">研</div>
-            <p class="ph-title">研究工作台将在 v0.4.0 到来</p>
-            <p class="ph-sub">专题收藏、关联笔记与一键导出正在路上</p>
-          </div>
-        </div>
+        <TopicPanel
+          v-show="tab === 'topics'"
+          :topics="topics"
+          :active="activeTopic"
+          :selected-id="selectedId"
+          @create="createTopic"
+          @open="openTopic"
+          @back="backToTopics"
+          @rename="renameTopic"
+          @remove="deleteTopic"
+          @remove-item="removeTopicItem"
+          @move="moveTopicItem"
+          @open-article="openArticle"
+          @export-topic="exportTopic"
+        />
 
         <DocLibrary
           v-show="tab === 'library'"
@@ -315,17 +503,40 @@ onBeforeUnmount(() => {
         <Reader
           :state="reader"
           :loading="readerLoading"
+          :nav-prev="topicNeighbors ? topicNeighbors.prev : undefined"
+          :nav-next="topicNeighbors ? topicNeighbors.next : undefined"
           @open-article="openArticle"
           @saved="onArticleSaved"
+          @favorite="openFavorite"
           @error="showError"
         />
       </section>
+
+      <!-- 右栏笔记：仅打开专题且阅读器为法条模式时出现（与旧版一致的动态三栏） -->
+      <NotePanel
+        v-if="activeTopic && reader?.type === 'article'"
+        :topic="activeTopic"
+        :current-article-id="reader.data.article.id"
+        :current-article-label="reader.data.article.label"
+        @changed="onNotesChanged"
+        @open-article="openArticle"
+        @export="exportTopic"
+        @error="showError"
+      />
     </main>
 
     <ImportDialog
       v-model:visible="showImport"
       :initial-files="dropFiles"
       @imported="refreshDocs"
+      @error="showError"
+    />
+
+    <FavoriteDialog
+      v-model:visible="showFav"
+      :article-id="favArticle?.id ?? 0"
+      :article-label="favArticle?.label ?? ''"
+      @done="onFavorited"
       @error="showError"
     />
 
@@ -549,6 +760,17 @@ onBeforeUnmount(() => {
   background: rgba(0, 0, 0, 0.06);
 }
 
+/* 消息条变体：复用错误条容器（成功=绿 / 提示=黄） */
+.error-bar.notice[data-kind='success'] {
+  background: var(--lb-ok-bg);
+  color: var(--lb-ok-fg);
+}
+
+.error-bar.notice[data-kind='warn'] {
+  background: var(--lb-warn-bg);
+  color: var(--lb-warn-fg);
+}
+
 /* ---------- 主区布局 ---------- */
 .main {
   display: flex;
@@ -597,52 +819,6 @@ onBeforeUnmount(() => {
   background: var(--lb-chip);
   font-size: 12px;
   text-align: center;
-}
-
-.tab-page {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.placeholder-card {
-  max-width: 260px;
-  padding: 32px 28px;
-  background: var(--lb-panel);
-  border: 1px solid var(--lb-border);
-  border-radius: var(--lb-radius-l);
-  text-align: center;
-}
-
-.ph-seal {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  background: var(--lb-grad);
-  color: #fff;
-  font-family: var(--lb-serif);
-  font-size: 22px;
-  margin-bottom: 14px;
-  opacity: 0.85;
-}
-
-.ph-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--lb-text);
-  margin-bottom: 6px;
-}
-
-.ph-sub {
-  font-size: 12px;
-  color: var(--lb-muted);
-  line-height: 1.7;
 }
 
 .reader-pane {

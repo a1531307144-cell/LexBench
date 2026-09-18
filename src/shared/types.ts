@@ -90,3 +90,56 @@ export interface SearchOutcome {
   query: string
   results: SearchHit[]
 }
+
+// ---------- 研究工作台（阶段2） ----------
+
+export interface TopicRow {
+  id: number
+  name: string
+  description: string
+  created_at: string
+  updated_at: string
+  item_count: number
+  note_count: number
+}
+
+/** 专题详情里的收藏条目：条目行 + JOIN 出的法条/文档展示字段 */
+export interface TopicItemRow {
+  id: number
+  topic_id: number
+  article_id: number
+  order_index: number
+  added_at: string
+  article_label: string
+  title: string
+  category: string
+  content: string
+}
+
+export interface NoteRow {
+  id: number
+  topic_id: number
+  /** 可空：不关联具体法条 = 专题级笔记 */
+  article_id: number | null
+  content_md: string
+  created_at: string
+  updated_at: string
+  /** LEFT JOIN 出的关联条文标签，供卡片展示（无关联时为 null） */
+  article_label: string | null
+}
+
+export interface TopicDetail {
+  id: number
+  name: string
+  description: string
+  items: TopicItemRow[]
+  notes: NoteRow[]
+}
+
+export type ExportFormat = 'md' | 'docx'
+
+export interface ExportResult {
+  canceled: boolean
+  /** 保存成功后的完整路径（canceled 时省略） */
+  path?: string
+}

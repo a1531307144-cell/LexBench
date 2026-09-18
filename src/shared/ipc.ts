@@ -22,6 +22,20 @@ export interface PickFilesResult {
   paths: string[]
 }
 
+// ---------- 研究工作台（阶段2） ----------
+
+export interface AddItemResult {
+  status: 'added' | 'duplicate'
+  itemId: number
+}
+
+export interface TopicPatch {
+  name?: string
+  description?: string
+}
+
+export type ItemMoveDirection = 'up' | 'down'
+
 // ---------- 检索（阶段1） ----------
 
 // SearchOutcome / SearchHit / SearchMode 见 types.ts

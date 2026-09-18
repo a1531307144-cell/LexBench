@@ -3,6 +3,8 @@ import { join } from 'path'
 import { setupUpdater } from './updater'
 import { registerLibraryIpc } from './library'
 import { registerSearchIpc } from './search'
+import { registerWorkspaceIpc } from './workspace'
+import { registerExportIpc } from './exporter'
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
 function createWindow(): void {
@@ -46,6 +48,8 @@ ipcMain.handle('app:getVersion', () => app.getVersion())
 app.whenReady().then(() => {
   registerLibraryIpc()
   registerSearchIpc()
+  registerWorkspaceIpc()
+  registerExportIpc()
   createWindow()
   setupUpdater()
 
