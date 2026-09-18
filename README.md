@@ -33,6 +33,8 @@
 2. 浏览器自动打开 http://127.0.0.1:8788
 ```
 
+想用**独立软件窗口**（非浏览器）且保留现有数据：双击 `scripts\start-desktop.bat`——效果与下载版一致，且直接读取仓库 `data\` 里已导入的文档。
+
 源码模式下也可预览桌面窗口形态：`pip install -r backend/requirements-desktop.txt` 后运行 `python desktop.py`。
 
 > 《民法典》婚姻家庭编节选示例：试试搜索 `民法典 1077`（法条定位）和 `离婚 冷静期`（全文搜索）。
