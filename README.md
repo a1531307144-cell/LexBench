@@ -1,81 +1,53 @@
-# LexBench · 法研台
+# 法研台 · LexBench
 
-**本地优先的个人法律研究工作台** —— 导入、检索、收藏、笔记、AI 辅助，全流程一个界面完成。你的文档、笔记、配置全部保存在本机，不上传任何服务器。
+**本地优先的个人法律研究工作台** —— 导入你的 Word / PDF / TXT 法律文档，自动按「第X条」切分建库；输入「民法典 1077」直接跳到那条法条；全文检索带高亮与摘要；条文可随手修正。你的文档、数据、配置全部保存在本机，不上传任何服务器。
 
-> **English** — LexBench is a local-first legal research workbench: import your Word/PDF statutes and cases, locate articles by number ("民法典 1077"), run full-text search with highlights, collect articles into research topics with Markdown notes, and ask an OpenAI-compatible AI assistant to explain any article with clickable citations. Ships as a portable Windows desktop app (no Python needed) — all data stays on your machine.
+> **English** — LexBench is a local-first legal research workbench for Chinese law: import your Word/PDF/TXT statutes and cases, locate articles by number ("民法典 1077"), run full-text search with highlights and snippets, and correct mis-parsed articles in place. Ships as a proper Windows installer with auto-update — all data stays on your machine.
 
 ## 界面预览
 
-| 法条定位 + AI 助手 | 全文检索 | 研究工作台 |
+| 法条定位 + 阅读 | 全文检索 | 文档库 |
 |---|---|---|
-| ![法条定位](docs/screenshots/01-locate.png) | ![全文检索](docs/screenshots/02-fulltext.png) | ![研究工作台](docs/screenshots/03-workbench.png) |
+| ![法条定位](docs/screenshots/01-locate.png) | ![全文检索](docs/screenshots/02-fulltext.png) | ![文档库](docs/screenshots/03-library.png) |
 
-## 下载安装（推荐）
+## 下载安装
 
-1. 打开 [Releases 页面](https://github.com/a1531307144-cell/LexBench/releases)，下载最新的 `LexBench-x.x.x-windows-x64.zip`
-2. **解压**压缩包到任意文件夹（如桌面）
-3. 双击 `LexBench.exe` —— 打开的是独立软件窗口，无需安装 Python，也不占用浏览器
+1. 打开 [Releases 页面](https://github.com/a1531307144-cell/LexBench/releases)，下载最新的 `LexBench-Setup-x.x.x.exe`
+2. 双击安装（可选安装位置），桌面与开始菜单自动创建快捷方式
+3. 有新版本时软件会**提示你**决定是否下载安装（绝不擅自下载）
 
 **常见问题**
 
 - **Windows 提示"已保护你的电脑"**：本软件是个人开源项目，没有购买微软代码签名证书（每年数百美元），所有个人开源软件都会遇到。点「更多信息」→「仍要运行」即可；全部源代码公开可查
-- **你的数据在哪**：全在 LexBench.exe 旁边的 `data\` 文件夹里。换电脑 = 整个文件夹拷走；卸载 = 直接删除
-- **双击没反应**：确认已解压（不要在压缩包里直接双击）；窗口打不开时按提示安装微软 WebView2 运行时
-
-> 示例数据：仓库 [samples/](samples/) 目录有《民法典》婚姻家庭编节选等示例文本，拖进软件窗口即可体验全部功能。
-
-## 从源码运行（开发者）
-
-前置要求：Windows + Python 3.10+（无需 Node.js，前端已预构建）
-
-```
-1. 双击 start.bat（首次运行自动创建虚拟环境并安装依赖）
-2. 浏览器自动打开 http://127.0.0.1:8788
-```
-
-想用**独立软件窗口**（非浏览器）且保留现有数据：双击 `scripts\start-desktop.bat`——效果与下载版一致，且直接读取仓库 `data\` 里已导入的文档。
-
-源码模式下也可预览桌面窗口形态：`pip install -r backend/requirements-desktop.txt` 后运行 `python desktop.py`。
-
-> 《民法典》婚姻家庭编节选示例：试试搜索 `民法典 1077`（法条定位）和 `离婚 冷静期`（全文搜索）。
+- **你的数据在哪**：全在本机用户数据目录（数据库 + 原件归档），卸载软件也不会动它
+- **旧网页版 / 便携版的数据**：将在 v0.5.0 提供一键迁移（本版本起数据库结构与旧版完全一致，迁移零损失）
 
 ## 功能
 
-- **文档导入**：拖拽导入 Word (.docx) / PDF / 纯文本 (.txt) 法律文档，自动按"第X条"切分建库（法规 / 案例 / 其他资料三种类型）；内容哈希去重；解析异常自动标记"需复查"
-- **双模式检索**：
-  - 法条定位 —— 输入 `民法典 1077` 直接跳到《民法典》第一千零七十七条；法规名支持简写（`民诉法` → 《民事诉讼法》）
-  - 全文搜索 —— 中文分词 + bm25 排序，关键词高亮与上下文摘要
-- **研究工作台**：按专题（如"离婚财产分割"）★ 收藏法条，专题内逐条浏览，右栏 Markdown 笔记（可关联具体法条），一键导出 Markdown / Word 研究报告
-- **AI 研究助手**：接入任意 OpenAI 兼容接口（DeepSeek / 通义 / Kimi 等），在法条页一键「解读本条」「找案例」或自由追问；回答中的《法规名》第X条引用可点击跳转核对；问答按条文存档本机
-- **条文修正**：解析有误的条文可直接在阅读器内修正，全文索引同步更新
+- **文档导入**：拖拽或点选导入 Word (.docx) / PDF / 纯文本 (.txt)，自动识别法规 / 案例 / 其他资料三种类型，按「第X条」切分建库（编 / 章 / 节层级齐全，支持「第一千零七十七条」与「之X」变体）；内容哈希去重；解析异常自动标记「需复查」并支持一键标记已复查
+- **双模式检索**（可手动切换或用自动模式）：
+  - 法条定位 —— 输入 `民法典 1077`、`公司法 第51条` 或 `民法典第一千零七十七条` 直接跳到条文；法规名支持简写（`民诉法` → 《民事诉讼法》）
+  - 全文搜索 —— 中文分词 + bm25 相关度排序，关键词高亮与上下文摘要，多关键词部分命中也召回
+- **阅读器**：编/章/节面包屑、衬线条文排版、上一条/下一条翻页、文档目录浏览
+- **条文修正**：解析有误的条文可直接在阅读器内修正，保存后全文索引同步更新
+- **研究工作台**（v0.4.0）：专题收藏、Markdown 笔记、一键导出研究报告
+- **AI 研究助手**（v0.5.0）：解读法条 / 找案例 / 自由追问，引用可点击核对
 
-## AI 助手配置（可选）
+## 从源码运行（开发者）
 
-1. 点击右上角「AI 设置」，填入 OpenAI 兼容接口地址（如 `https://api.deepseek.com/v1`）、模型名与 API Key，点「测试连接」验证
-2. 打开任意法条，在正文下方「AI 研究助手」面板使用三个功能
-3. API Key 只保存在本机 `data/` 目录的数据库中，不会上传 GitHub、不写入任何日志；AI 调用只发生在你主动配置之后
+前置要求：Windows + Node.js 20+
+
+```
+1. npm install
+2. npm run dev        # 开发模式（热更新 + 调试端口）
+3. npm test           # src/shared 纯函数单测
+4. npm run dist       # 构建 Windows 安装包（release/ 目录）
+```
+
+> 仓库 `samples/` 目录有《民法典》婚姻家庭编节选与一份明确标注虚构的演示案例，拖进窗口即可体验全部功能。
 
 ## 开发
 
-```
-backend:  cd backend && pip install -r requirements.txt && pytest
-frontend: cd frontend && npm install && npm run dev
-桌面打包: powershell -ExecutionPolicy Bypass -File scripts\build_desktop.ps1
-```
-
-详细设计见 [docs/plans/2026-09-17-lexbench-design.md](docs/plans/2026-09-17-lexbench-design.md)。
-
-## 发布流程（维护者）
-
-对外发布（push / 打 tag / Release）前必须走 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 审批：
-
-```
-python scripts/security_check.py --history --strict   # 第一关：自动扫描隐私与密钥
-人工复核 RELEASE_CHECKLIST.md 清单                     # 第二关：逐项确认
-```
-
-CI 会在每次推送时自动复检测试与安全扫描，本地漏掉的会被拦截。
-
-## 许可
-
-代码采用 [MIT License](LICENSE)。你的法律文档、笔记、AI 配置等数据全部保存在本地 `data/` 目录，不上传、不入库。
+- `backend` 不存在了——v0.3.0 起是纯 Electron 工程：`src/main`（主进程）/ `src/preload`（白名单 API）/ `src/renderer`（Vue 3 界面）/ `src/shared`（三进程共享纯函数，vitest 覆盖）
+- 旧 Python 版完整保留在 `legacy/` 目录，仅作移植参考；新旧数据库 schema 一致，为旧数据迁移铺路
+- 发布：推 `v*` 标签 → GitHub Actions 自动测试 → 隐私扫描 → 构建安装包 → 发布 Release
