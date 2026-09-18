@@ -158,13 +158,19 @@ CREATE TABLE IF NOT EXISTS book_notes (
 CREATE INDEX IF NOT EXISTS idx_book_notes_doc ON book_notes(document_id, start_para);
 `
 
+const MIGRATION_006_FILE_EXT = `-- 006_file_ext: documents 记录原始扩展名（.pdf 的书籍走「页面阅读模式」，其余走文字模式）
+
+ALTER TABLE documents ADD COLUMN file_ext TEXT NOT NULL DEFAULT '';
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
   { version: 2, sql: MIGRATION_002_RESEARCH },
   { version: 3, sql: MIGRATION_003_AI },
   { version: 4, sql: MIGRATION_004_READING },
-  { version: 5, sql: MIGRATION_005_READING_V2 }
+  { version: 5, sql: MIGRATION_005_READING_V2 },
+  { version: 6, sql: MIGRATION_006_FILE_EXT }
 ]
 
 /** 全局唯一连接（单例） */
@@ -209,6 +215,18 @@ export function initDb(): void {
 export function getDb(): DatabaseSync {
   if (!db) initDb()
   return db as DatabaseSync
+}
+
+/** 关闭并清空单例连接（数据包导入替换数据库文件前调用；之后 getDb() 会重开新文件） */
+export function closeDb(): void {
+  if (db) {
+    try {
+      db.close()
+    } catch {
+      /* 连接已异常时放弃关闭 */
+    }
+    db = null
+  }
 }
 
 /** 原件存储目录：userData/files（导入时把原始文件拷到这里），不存在则自动创建 */

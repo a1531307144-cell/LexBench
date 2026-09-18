@@ -19,7 +19,8 @@ const SKIP_DIRS = new Set([
   'dist',
   '.vite',
   '.claude',
-  'legacy' // 旧 Python 工程存档（发布前保持原样，不参与新代码扫描）
+  'legacy', // 旧 Python 工程存档（发布前保持原样，不参与新代码扫描）
+  'pdf-assets' // pdfjs 解码资源（postinstall 从 node_modules 生成；第三方文件里的长数字常量会误报手机号）
 ])
 const SKIP_FILES = new Set(['package-lock.json'])
 const SCAN_EXT = ['.ts', '.tsx', '.vue', '.mjs', '.js', '.json', '.yml', '.yaml', '.md', '.html', '.css', '.txt']

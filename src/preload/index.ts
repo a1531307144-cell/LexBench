@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { AddItemResult, BookNoteInput, ItemMoveDirection, TopicPatch, UpdateCheckInfo, UpdateStatus } from '../shared/ipc'
+import type {
+  AddItemResult,
+  BackupImportOutcome,
+  BookNoteInput,
+  ItemMoveDirection,
+  TopicPatch,
+  UpdateCheckInfo,
+  UpdateStatus
+} from '../shared/ipc'
 import type {
   ArticleDetail,
   BookNoteRow,
@@ -36,7 +44,9 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
  */
 const api = {
   app: {
-    getVersion: (): Promise<string> => invoke('app:getVersion')
+    getVersion: (): Promise<string> => invoke('app:getVersion'),
+    /** 数据包导入后重启软件使新数据生效 */
+    relaunch: (): Promise<void> => invoke('app:relaunch')
   },
   dialog: {
     /** 选择要导入的文档文件（多选），取消返回 canceled:true */
@@ -113,7 +123,24 @@ const api = {
     getProgress: (documentId: number): Promise<ReadingProgress | null> =>
       invoke('reading:getProgress', documentId),
     saveProgress: (documentId: number, paraIndex: number): Promise<void> =>
-      invoke('reading:saveProgress', documentId, paraIndex)
+      invoke('reading:saveProgress', documentId, paraIndex),
+    /** 读取 PDF 原件（优先归档副本，路径失效也能读），供渲染层 pdfjs 渲染页面 */
+    getPdfData: (documentId: number): Promise<ArrayBuffer> =>
+      invoke('reading:getPdfData', documentId),
+    /** PDF 原件本机路径（优先归档副本）——内置 PDF 阅读器以 file:// 加载 */
+    getPdfPath: (documentId: number): Promise<string> =>
+      invoke('reading:getPdfPath', documentId)
+  },
+  backup: {
+    /** 弹出保存对话框 → 打包全部数据（数据库+原件+AI 配置）→ 写盘 */
+    exportAll: (): Promise<ExportResult> => invoke('backup:exportAll'),
+    /** 选择数据包 → 校验 → 自动备份当前数据 → 暂存写入；needsRestart=true 时重启软件生效 */
+    importAll: (): Promise<BackupImportOutcome> => invoke('backup:importAll'),
+    /** 仅开发模式存在：跳过对话框直接按给定路径导出/导入（自测用） */
+    __testExport: (outPath: string): Promise<ExportResult> =>
+      invoke('backup:__testExport', outPath),
+    __testImport: (zipPath: string): Promise<BackupImportOutcome> =>
+      invoke('backup:__testImport', zipPath)
   },
   update: {
     check: (): Promise<void> => invoke('update:check'),

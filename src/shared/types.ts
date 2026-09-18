@@ -18,6 +18,8 @@ export interface DocumentRow {
   status: DocStatus
   article_count: number
   imported_at: string
+  /** 原始扩展名（含点，如 '.pdf'）；决定阅读模式：pdf 书籍=页面模式，其余=文字模式 */
+  file_ext: string
 }
 
 export interface ArticleRow {

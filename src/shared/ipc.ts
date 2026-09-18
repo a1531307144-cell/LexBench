@@ -49,6 +49,14 @@ export interface BookNoteInput {
   endOffset: number
 }
 
+// ---------- 数据包（阶段3 v0.5.0：设备间迁移 + 本地备份） ----------
+
+export interface BackupImportOutcome {
+  canceled: boolean
+  /** 暂存写入完成、需重启软件生效 */
+  needsRestart: boolean
+}
+
 // ---------- 检索（阶段1） ----------
 
 // SearchOutcome / SearchHit / SearchMode 见 types.ts

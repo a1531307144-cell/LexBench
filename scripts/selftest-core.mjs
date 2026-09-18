@@ -34,9 +34,13 @@ ws.onmessage = (ev) => {
     pending.get(m.id)(m.result)
     pending.delete(m.id)
   } else if (m.method === 'Runtime.exceptionThrown') {
-    errors.push('EXCEPTION: ' + JSON.stringify(m.params.exceptionDetails).slice(0, 400))
+    errors.push('EXCEPTION: ' + JSON.stringify(m.params.exceptionDetails).slice(0, 1200))
   } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
-    errors.push('CONSOLE-ERROR: ' + m.params.args.map((a) => a.value || a.description || '').join(' ').slice(0, 400))
+    errors.push('CONSOLE-ERROR: ' + m.params.args.map((a) => a.value || a.description || '').join(' ').slice(0, 1200))
+  } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'warning') {
+    // Vue 警告（如 beforeUnmount 钩子异常）会让界面状态卡死却是 warning，必须当失败对待
+    const text = m.params.args.map((a) => a.value || a.description || '').join(' ')
+    if (text.includes('[Vue warn]')) errors.push('VUE-WARN: ' + text.slice(0, 1200))
   }
 }
 await new Promise((r) => ws.onopen = r)

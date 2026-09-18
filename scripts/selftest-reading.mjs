@@ -36,9 +36,13 @@ ws.onmessage = (ev) => {
     pending.get(m.id)(m.result)
     pending.delete(m.id)
   } else if (m.method === 'Runtime.exceptionThrown') {
-    errors.push('EXCEPTION: ' + JSON.stringify(m.params.exceptionDetails).slice(0, 300))
+    errors.push('EXCEPTION: ' + JSON.stringify(m.params.exceptionDetails).slice(0, 1200))
   } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
-    errors.push('CONSOLE-ERROR: ' + m.params.args.map((a) => a.value || a.description || '').join(' ').slice(0, 300))
+    errors.push('CONSOLE-ERROR: ' + m.params.args.map((a) => a.value || a.description || '').join(' ').slice(0, 1200))
+  } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'warning') {
+    // Vue 警告（如 beforeUnmount 钩子异常）会让界面状态卡死却是 warning，必须当失败对待
+    const text = m.params.args.map((a) => a.value || a.description || '').join(' ')
+    if (text.includes('[Vue warn]')) errors.push('VUE-WARN: ' + text.slice(0, 1200))
   }
 }
 await new Promise((r) => (ws.onopen = r))
@@ -214,6 +218,123 @@ const docs = await api('library.listDocuments()')
 check('清理完成（书籍与批注已删）', docs?.every((d) => d.id !== docId))
 
 rmSync(tmp, { recursive: true, force: true })
+
+// ===== PDF 页面模式（内置 Chromium 阅读器） =====
+console.log('\n=== PDF 页面模式 ===')
+
+function buildSamplePdf(pagesText) {
+  const esc = (s) => s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
+  const objs = []
+  objs.push('<< /Type /Catalog /Pages 2 0 R >>')
+  const kids = pagesText.map((_, i) => `${3 + i * 2} 0 R`).join(' ')
+  objs.push(`<< /Type /Pages /Kids [${kids}] /Count ${pagesText.length} >>`)
+  pagesText.forEach((text, i) => {
+    const contentNum = 4 + i * 2
+    const stream = `BT /F1 18 Tf 72 720 Td (${esc(text)}) Tj ET`
+    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentNum} 0 R /Resources << /Font << /F1 7 0 R >> >> >>`)
+    objs.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`)
+  })
+  objs.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  let out = '%PDF-1.4\n'
+  const offsets = []
+  objs.forEach((body, i) => {
+    offsets.push(out.length)
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`
+  })
+  const xrefPos = out.length
+  const n = objs.length + 1
+  out += `xref\n0 ${n}\n0000000000 65535 f \n`
+  for (const off of offsets) out += `${String(off).padStart(10, '0')} 00000 n \n`
+  out += `trailer\n<< /Size ${n} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`
+  return Buffer.from(out, 'latin1')
+}
+
+const pdfTmp = mkdtempSync(join(tmpdir(), 'lexbench-pdf-'))
+const pdfPath = join(pdfTmp, '页面模式自测书.pdf').replace(/\//g, '\\')
+writeFileSync(
+  pdfPath,
+  buildSamplePdf([
+    'Page one text for selection and note test. The quick brown fox jumps over the lazy dog.',
+    'Page two text continues the cross page note test. Pack my box with five dozen liquor jugs.',
+    'Page three adds one more page for the jump test.'
+  ])
+)
+
+const pdfImported = await api(`library.importDocuments([${JSON.stringify(pdfPath)}], '', 'book')`)
+const pdfItem = Array.isArray(pdfImported) ? pdfImported[0] : null
+check('PDF 书籍导入（file_ext=.pdf）', pdfItem?.status === 'imported' && pdfItem?.doc_type === 'book')
+const pdfDocId = pdfItem?.document_id
+const pdfDetail = await api(`library.getDocument(${pdfDocId})`)
+check('按页建索引（3 页=3 chunk）+ file_ext', pdfDetail?.chunks?.length === 3 && pdfDetail.file_ext === '.pdf')
+const pdfSize = await evalJs(`window.lexbench.reading.getPdfData(${pdfDocId}).then((ab) => ab.byteLength)`)
+check('getPdfData 返回原件字节', typeof pdfSize === 'number' && pdfSize > 500)
+
+const pageNote = await api(
+  `reading.createBookNote(${pdfDocId}, { contentMd: '这是第 2 页的页笔记', quote: '', startPara: 1, startOffset: 0, endPara: 1, endOffset: 0 })`
+)
+check('页笔记创建（quote 为空、锚定页）', !!pageNote?.id && pageNote.start_para === 1 && pageNote.quote === '')
+await api(`reading.saveProgress(${pdfDocId}, 1)`)
+const pdfProg = await api(`reading.getProgress(${pdfDocId})`)
+check('进度按页存取', pdfProg?.paraIndex === 1)
+
+// UI：打开 → 内置阅读器 iframe（blob 地址）+ 页码工具条
+await evalJs('location.reload()')
+for (let i = 0; i < 20; i++) {
+  await new Promise((r) => setTimeout(r, 500))
+  if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) break
+}
+await send('Runtime.enable', {})
+await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
+await new Promise((r) => setTimeout(r, 400))
+await evalJs(`[...document.querySelectorAll('.row')].find((r) => r.textContent.includes('页面模式自测书'))?.click()`)
+let pdfUiReady = false
+for (let i = 0; i < 24; i++) {
+  await new Promise((r) => setTimeout(r, 500))
+  if ((await evalJs(`!!document.querySelector('.rv .pdf-iframe')`)) === true) {
+    pdfUiReady = true
+    break
+  }
+}
+check('页面模式打开（内置阅读器 iframe）', pdfUiReady)
+const frameProbe = await evalJs(`(() => {
+  const f = document.querySelector('.pdf-iframe')
+  return {
+    srcPrefix: (f?.src ?? '').slice(0, 12),
+    hasPageFrag: (f?.src ?? '').includes('#page=2'),
+    totalHint: document.querySelector('.rv-page-ind')?.textContent?.trim() ?? ''
+  }
+})()`)
+check('blob 载入 + 进度恢复定位到第 2 页', frameProbe?.srcPrefix === 'blob:http://' && frameProbe.hasPageFrag === true)
+check('工具条显示总页数', (frameProbe?.totalHint ?? '').includes('共 3 页'))
+
+// 跳页：填第 3 页 → 跳转
+await evalJs(`(() => {
+  const input = document.querySelector('.rv-page-input')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '3')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  ;[...document.querySelectorAll('.rv-top-btn')].find((b) => b.textContent.trim() === '跳转')?.click()
+  return 'ok'
+})()`)
+await new Promise((r) => setTimeout(r, 800))
+const jumpProbe = await evalJs(`(document.querySelector('.pdf-iframe')?.src ?? '').includes('#page=3')`)
+check('跳页生效（地址片段指向第 3 页）', jumpProbe === true)
+
+const sideProbe = await evalJs(`document.querySelector('.rv-side')?.textContent?.includes('第 2 页') ?? false`)
+check('批注栏显示页笔记（第 2 页）', sideProbe === true)
+
+await api(`reading.deleteBookNote(${pageNote.id})`)
+await api(`library.deleteDocument(${pdfDocId})`)
+const pdfDocsAfter = await api('library.listDocuments()')
+check('PDF 清理完成', pdfDocsAfter?.every((d) => d.id !== pdfDocId))
+rmSync(pdfTmp, { recursive: true, force: true })
+
+// 重载避免测试态残留（裸 API 删除正打开的文档会绕过 App 视图清理）
+await evalJs('location.reload()')
+for (let i = 0; i < 20; i++) {
+  await new Promise((r) => setTimeout(r, 500))
+  if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) break
+}
 
 console.log('\n=== 结论 ===')
 let pass = true

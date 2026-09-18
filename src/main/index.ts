@@ -6,6 +6,7 @@ import { registerSearchIpc } from './search'
 import { registerWorkspaceIpc } from './workspace'
 import { registerExportIpc } from './exporter'
 import { registerReadingIpc } from './reading'
+import { registerBackupIpc } from './backup'
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
 function createWindow(): void {
@@ -22,7 +23,9 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      // 内置 PDF 阅读器（Chromium/PDFium）需要启用插件支持
+      plugins: true
     }
   })
 
@@ -46,12 +49,19 @@ function createWindow(): void {
 // 预加载 API 白名单（只读接口）
 ipcMain.handle('app:getVersion', () => app.getVersion())
 
+// 数据包导入完成后重启软件（重新加载暂存的数据库与原件）
+ipcMain.handle('app:relaunch', () => {
+  app.relaunch()
+  app.exit(0)
+})
+
 app.whenReady().then(() => {
   registerLibraryIpc()
   registerSearchIpc()
   registerWorkspaceIpc()
   registerExportIpc()
   registerReadingIpc()
+  registerBackupIpc()
   createWindow()
   setupUpdater()
 

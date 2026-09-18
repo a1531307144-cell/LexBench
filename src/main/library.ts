@@ -69,8 +69,29 @@ async function loadPdfjs(): Promise<PdfjsModule> {
   return pdfjsModule
 }
 
-/** pdf：逐页 getTextContent，按 item.hasEOL 重建行；无文本层（扫描版）由调用方按字符数判定 */
-async function extractPdfParagraphs(filePath: string): Promise<string[]> {
+/** PDF 轻探测：页数 + 前 3 页文本量（判定扫描/文字），不逐页提取（真实书籍逐页提取太慢） */
+async function probePdf(filePath: string): Promise<{ numPages: number; scanned: boolean }> {
+  const pdfjs = await loadPdfjs()
+  const data = new Uint8Array(readFileSync(filePath))
+  const loadingTask = pdfjs.getDocument({ data })
+  const doc = await loadingTask.promise
+  try {
+    let sample = ''
+    for (let i = 1; i <= Math.min(3, doc.numPages); i++) {
+      const tc = await (await doc.getPage(i)).getTextContent()
+      for (const item of tc.items) {
+        if ('str' in item) sample += item.str
+      }
+      if (sample.length > PDF_MIN_TEXT_CHARS) break
+    }
+    return { numPages: doc.numPages, scanned: sample.length < PDF_MIN_TEXT_CHARS }
+  } finally {
+    await loadingTask.destroy()
+  }
+}
+
+/** pdf：逐页 getTextContent，按 item.hasEOL 重建行，**按页返回**（页 = 索引/笔记/进度单元） */
+async function extractPdfPages(filePath: string): Promise<string[][]> {
   const pdfjs = await loadPdfjs()
   // 复制一份普通 Uint8Array，避免 pdfjs 接管/转移 Buffer 底层内存
   const data = new Uint8Array(readFileSync(filePath))
@@ -78,24 +99,26 @@ async function extractPdfParagraphs(filePath: string): Promise<string[]> {
   const loadingTask = pdfjs.getDocument({ data })
   const doc = await loadingTask.promise
   try {
-    const lines: string[] = []
-    let line = ''
-    const flush = (): void => {
-      const t = line.trim()
-      if (t) lines.push(t)
-      line = ''
-    }
+    const pages: string[][] = []
     for (let pageNo = 1; pageNo <= doc.numPages; pageNo++) {
       const page = await doc.getPage(pageNo)
       const text = await page.getTextContent()
+      const lines: string[] = []
+      let line = ''
+      const flush = (): void => {
+        const t = line.trim()
+        if (t) lines.push(t)
+        line = ''
+      }
       for (const item of text.items) {
         if (!('str' in item)) continue // TextMarkedContent 无文本内容
         line += item.str
         if (item.hasEOL) flush()
       }
       flush() // 页尾最后一行可能没有 EOL 标记
+      pages.push(lines)
     }
-    return lines
+    return pages
   } finally {
     await loadingTask.destroy()
   }
@@ -223,28 +246,33 @@ async function importOne(
     message
   })
 
-  // ①② 解析阶段（.doc 拒绝 / 未知后缀 / 扫描版 PDF / 空文档）
-  let paragraphs: string[]
+  // ①② 解析阶段（.doc 拒绝 / 未知后缀 / 空文档）
+  // PDF 先轻探测（页数 + 前 3 页文本量）：书籍型 PDF 走快路径——不逐页提取文字
+  // （真实书籍逐页提取可达分钟级且无进度反馈）；页面模式按需渲染，文字提取留给 OCR 阶段
+  let pages: string[][] | null = null // 每页的行（docx/txt 视为单页）；PDF 快路径为 null
+  let pdfFast: { numPages: number; scanned: boolean } | null = null
   try {
     if (suffix === '.doc') return fail('不支持 .doc 老格式，请先转换为 .docx')
     if (suffix !== '.docx' && suffix !== '.pdf' && suffix !== '.txt') {
       return fail(`不支持的文件类型 ${suffix || '(无后缀)'}`)
     }
-    if (suffix === '.docx') {
-      paragraphs = await extractDocxParagraphs(filePath)
-    } else if (suffix === '.pdf') {
-      paragraphs = await extractPdfParagraphs(filePath)
-      // 全部段落合计不足 20 字：无文本层（空段落同样落入此分支）
-      if (paragraphs.reduce((sum, p) => sum + p.length, 0) < PDF_MIN_TEXT_CHARS) {
-        return fail('未检出文本层（可能是扫描版 PDF），暂不支持 OCR')
-      }
+    if (suffix === '.pdf') {
+      const probe = await probePdf(filePath)
+      const wantsBook = typeChoice === 'book' || (typeChoice === 'auto' && probe.scanned)
+      if (wantsBook) pdfFast = { numPages: probe.numPages, scanned: probe.scanned }
+      else pages = await extractPdfPages(filePath)
+    } else if (suffix === '.docx') {
+      pages = [await extractDocxParagraphs(filePath)]
     } else {
-      paragraphs = extractTxtParagraphs(filePath)
+      pages = [extractTxtParagraphs(filePath)]
     }
-    if (paragraphs.length === 0) return fail('文档内容为空')
   } catch (e) {
     return fail(`解析失败：${errMessage(e)}`)
   }
+  const paragraphs = pages ? pages.flat() : []
+  const totalChars = paragraphs.reduce((sum, p) => sum + p.length, 0)
+  const pdfScanned = !!pdfFast?.scanned
+  if (pages && paragraphs.length === 0 && !pdfScanned) return fail('文档内容为空')
 
   // ③⑥⑦ 哈希去重 → 类型判定/切分 → 归档原件 → 单事务入库
   const db = getDb()
@@ -264,9 +292,14 @@ async function importOne(
       }
     }
 
-    // 类型判定：手动指定优先；auto 走启发式。法规切条（条数为 0 或平均条长过短 → needs_review），
-    // 案例/书籍/其它恒 parsed；书籍按「一段一 chunk」建索引（阅读模式按段落渲染，检索按段落命中）
-    const docType: DocType = typeChoice === 'auto' ? detectDocType(paragraphs) : typeChoice
+    // 类型判定：手动指定优先；auto 走启发式（扫描版 PDF 自动按书籍入库，走页面阅读模式）。
+    // 法规切条（条数为 0 或平均条长过短 → needs_review），案例/书籍/其它恒 parsed
+    const effectiveChoice: ImportTypeChoice = typeChoice === 'auto' && pdfScanned ? 'book' : typeChoice
+    const docType: DocType = pdfFast
+      ? 'book'
+      : effectiveChoice === 'auto'
+        ? detectDocType(paragraphs)
+        : effectiveChoice
     const articles = docType === 'statute' ? splitStatute(paragraphs) : []
     let status: DocStatus = 'parsed'
     if (docType === 'statute') {
@@ -281,15 +314,21 @@ async function importOne(
     mkdirSync(filesDir, { recursive: true })
     copyFileSync(filePath, join(filesDir, `${fileHash}${suffix}`))
 
-    const chunks =
-      docType === 'statute' ? [] : docType === 'book' ? paragraphs : chunkParagraphs(paragraphs)
+    let chunks: string[] = []
+    if (docType === 'book') {
+      // PDF 书籍：一页一 chunk（seq=页序，页笔记/进度以页定位），内容留空——
+      // 页面按需渲染，全文检索 PDF 书籍留给 OCR/按需回填阶段；其余书籍一段一 chunk
+      chunks = pdfFast ? Array.from({ length: pdfFast.numPages }, () => '') : paragraphs
+    } else if (docType !== 'statute') {
+      chunks = chunkParagraphs(paragraphs)
+    }
     const docId = withTransaction(db, () => {
       const info = db
         .prepare(
-          'INSERT INTO documents(title, doc_type, category, file_hash, original_path, status)' +
-            ' VALUES(?,?,?,?,?,?)'
+          'INSERT INTO documents(title, doc_type, category, file_hash, original_path, status, file_ext)' +
+            ' VALUES(?,?,?,?,?,?,?)'
         )
-        .run(title, docType, category, fileHash, filePath, status)
+        .run(title, docType, category, fileHash, filePath, status, suffix)
       const id = Number(info.lastInsertRowid)
       if (docType === 'statute') indexArticles(db, id, articles)
       else indexChunks(db, id, chunks)

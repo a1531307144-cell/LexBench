@@ -5,7 +5,8 @@
 
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import type { DatabaseSync } from 'node:sqlite'
-import { writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import type { BookNoteInput } from '../shared/ipc'
 import type { BookNoteRow, ExportFormat, ExportResult, ReadingProgress } from '../shared/types'
@@ -310,4 +311,34 @@ export function registerReadingIpc(): void {
       }
     )
   }
+
+  // PDF 文件路径（优先归档副本）——渲染层用内置 PDF 阅读器加载 file:// 地址
+  ipcMain.handle('reading:getPdfPath', (_e, documentId: number): string => {
+    const db = getDb()
+    const row = db
+      .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
+      .get(Number(documentId)) as DbRow | undefined
+    if (!row) throw new Error('文档不存在')
+    const ext = String(row['file_ext'] || '.pdf')
+    const archived = join(app.getPath('userData'), 'files', `${String(row['file_hash'])}${ext}`)
+    if (existsSync(archived)) return archived
+    const original = String(row['original_path'] || '')
+    if (original && existsSync(original)) return original
+    throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
+  })
+
+  // 读取 PDF 原件（优先归档副本，原件路径失效也能读），供渲染层 pdfjs 渲染页面
+  ipcMain.handle('reading:getPdfData', (_e, documentId: number): ArrayBuffer => {
+    const db = getDb()
+    const row = db
+      .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
+      .get(Number(documentId)) as DbRow | undefined
+    if (!row) throw new Error('文档不存在')
+    const ext = String(row['file_ext'] || '.pdf')
+    const archived = join(app.getPath('userData'), 'files', `${String(row['file_hash'])}${ext}`)
+    const path = existsSync(archived) ? archived : String(row['original_path'] || archived)
+    const buf = readFileSync(path)
+    // 拷出精确的 ArrayBuffer（Buffer 底层可能带池化偏移，直接给 buffer 会多发字节）
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
+  })
 }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import BackupDialog from './components/BackupDialog.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DocLibrary from './components/DocLibrary.vue'
 import FavoriteDialog from './components/FavoriteDialog.vue'
@@ -51,6 +52,8 @@ const readerLoading = ref(false)
 /** 进入书籍阅读模式前的 Tab（返回时恢复） */
 const preReaderTab = ref<'results' | 'topics' | 'library'>('results')
 const showImport = ref(false)
+/** 数据备份/恢复对话框（v0.5.0 数据包） */
+const showBackup = ref(false)
 const dropFiles = ref<ImportFileEntry[]>([])
 const dragging = ref(false)
 const error = ref('')
@@ -480,6 +483,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <button class="top-btn" @click="showImport = true">导入文档</button>
+      <button class="top-btn" title="导出/导入数据包（换电脑与备份）" @click="showBackup = true">
+        数据
+      </button>
     </header>
 
     <div v-if="error" class="error-bar">
@@ -595,6 +601,12 @@ onBeforeUnmount(() => {
       :article-label="favArticle?.label ?? ''"
       @done="onFavorited"
       @error="showError"
+    />
+
+    <BackupDialog
+      v-model:visible="showBackup"
+      @error="showError"
+      @notice="setNotice"
     />
 
     <ConfirmModal

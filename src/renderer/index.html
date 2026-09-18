@@ -3,9 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <title>法研台</title>
+    <!-- frame-src/object-src 放行 blob:：PDF 原件做成 blob 地址交给内置阅读器（Chromium/PDFium）渲染；
+         script-src 的 wasm-unsafe-eval 供主进程之外可能用到的 WASM 能力 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws://localhost:5173 http://localhost:5173"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws://localhost:5173 http://localhost:5173; frame-src 'self' file: blob:; object-src 'self' file: blob:"
     />
   </head>
   <body>

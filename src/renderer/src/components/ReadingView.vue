@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
 import type { BookNoteRow, DocumentDetail, ExportFormat } from '@shared/types'
 
 /**
- * 沉浸阅读器（doc_type='book'）：划选记笔记 → <mark class="bn"> 高亮恢复 →
- * 右栏批注管理 → 阅读进度记忆。正文列按 chunks 渲染，每 chunk = 一段（seq=段落序号）。
+ * 沉浸阅读器（doc_type='book'），双模式：
+ * - 文字模式（docx/txt）：chunks 渲染段落，划选记笔记 → <mark class="bn"> 高亮恢复
+ * - 页面模式（.pdf）：系统内置 PDF 阅读器（iframe file://）呈现原书页面，批注按页码记录
  */
 const props = defineProps<{
   /** 书籍详情：chunks 每项即一段；批注 start_para/end_para 与 chunk.seq 对应 */
@@ -105,6 +106,8 @@ let pendingSel: PendingSel | null = null
 const form = ref<
   (SelBox & {
     quote: string
+    /** 页笔记模式：不显示引用，显示「第 N 页」 */
+    pageLabel?: string
     startPara: number
     startOffset: number
     endPara: number
@@ -326,16 +329,20 @@ function onMarkClick(noteId: number): void {
   sideFlashTimer = setTimeout(() => (sideFlashId.value = 0), 1600)
 }
 
-/** 点批注列表项 → 滚动到对应段落并闪现高亮 */
+/** 点批注列表项 → 文字模式滚到段落 / 页面模式跳到对应页 */
 function openNoteFromList(n: BookNoteRow): void {
   activeNoteId.value = n.id
-  const el = scrollEl.value
-  const p = el?.querySelector<HTMLElement>(`p[data-para="${n.start_para}"]`)
-  if (el && p) {
-    el.scrollTo({
-      top: Math.max(0, p.offsetTop - el.clientHeight / 2 + p.clientHeight / 2),
-      behavior: 'smooth'
-    })
+  if (isPdf.value) {
+    jumpToPdfPage(n.start_para + 1)
+  } else {
+    const el = scrollEl.value
+    const p = el?.querySelector<HTMLElement>(`p[data-para="${n.start_para}"]`)
+    if (el && p) {
+      el.scrollTo({
+        top: Math.max(0, p.offsetTop - el.clientHeight / 2 + p.clientHeight / 2),
+        behavior: 'smooth'
+      })
+    }
   }
   flashNote.value = n.id
   clearTimeout(noteFlashTimer)
@@ -352,6 +359,8 @@ const backHint = ref(false)
 let backHintTimer: ReturnType<typeof setTimeout> | undefined
 
 function onScroll(): void {
+  // 页面模式（内置阅读器）不在此追踪进度：进度在「本页笔记」时按页码保存
+  if (isPdf.value) return
   if (progTimer) return
   progTimer = setTimeout(() => {
     progTimer = undefined
@@ -359,14 +368,14 @@ function onScroll(): void {
   }, 500)
 }
 
-/** 找视口顶部可见段落的 data-para 存为进度 */
+/** 找视口顶部可见段落的 data-para 存为进度（文字模式） */
 async function saveProgressNow(): Promise<void> {
   const el = scrollEl.value
   if (!el) return
   const box = el.getBoundingClientRect()
   const paras = el.querySelectorAll<HTMLElement>('p[data-para]')
-  let seq = 0
   let found = false
+  let seq = 0
   for (const p of paras) {
     if (p.getBoundingClientRect().bottom >= box.top + 64) {
       seq = Number(p.dataset.para)
@@ -384,11 +393,12 @@ async function saveProgressNow(): Promise<void> {
   }
 }
 
-/** 滚动定位到段落：start=顶部留白补偿；center=居中 */
+/** 滚动定位到段落：start=顶部留白补偿；center=居中（文字模式） */
 function scrollToSeq(seq: number, mode: 'start' | 'center'): void {
   const el = scrollEl.value
-  const p = el?.querySelector<HTMLElement>(`p[data-para="${seq}"]`)
-  if (!el || !p) return
+  if (!el) return
+  const p = el.querySelector<HTMLElement>(`p[data-para="${seq}"]`)
+  if (!p) return
   const target =
     mode === 'center'
       ? p.offsetTop - el.clientHeight / 2 + p.clientHeight / 2
@@ -400,6 +410,89 @@ function flashParaSeq(seq: number): void {
   flashPara.value = seq
   clearTimeout(paraFlashTimer)
   paraFlashTimer = setTimeout(() => (flashPara.value = -1), 2000)
+}
+
+// ---------- PDF 页面模式 ----------
+
+// 采用系统内置 Chromium PDF 引擎（iframe 以 file:// 加载原件）：翻页/缩放/搜索由内置
+// 阅读器负责，兼容各类扫描件；批注按「页码 + 想法」记录（页笔记）。自研 pdfjs 渲染
+// 对部分扫描件（内容流非标准）读不出内容，已弃用。
+
+const isPdf = computed(() => props.doc.file_ext === '.pdf')
+/** PDF 书籍一页一 chunk：chunk 数即总页数 */
+const pdfTotal = computed(() => props.doc.chunks.length)
+/** 原件字节的 blob 地址（http 页面不能直接载入 file://，用 blob 喂内置阅读器） */
+const pdfBlob = ref<Blob | null>(null)
+const pdfBlobUrl = ref('')
+/** 当前页（1 基）：用于跳页与页笔记定位 */
+const pdfPage = ref(1)
+const notePageInput = ref(1)
+
+const pdfViewerUrl = computed(() =>
+  pdfBlobUrl.value ? `${pdfBlobUrl.value}#page=${pdfPage.value}&zoom=page-width` : ''
+)
+
+/** 用当前页码重建 blob 地址（内置阅读器按 URL 片段跳页，换地址即重新定位） */
+function rebuildBlobUrl(): void {
+  const blob = pdfBlob.value
+  if (!blob) return
+  if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
+  pdfBlobUrl.value = URL.createObjectURL(blob)
+}
+
+async function loadPdf(): Promise<void> {
+  try {
+    const buf = await window.lexbench.reading.getPdfData(props.doc.id)
+    pdfBlob.value = new Blob([buf], { type: 'application/pdf' })
+    if (props.focusPara !== undefined) {
+      // 检索命中进入：直达对应页
+      pdfPage.value = props.focusPara + 1
+      notePageInput.value = props.focusPara + 1
+    } else {
+      const prog = await window.lexbench.reading.getProgress(props.doc.id)
+      if (prog && prog.paraIndex >= 0) {
+        pdfPage.value = prog.paraIndex + 1
+        notePageInput.value = prog.paraIndex + 1
+        backHint.value = true
+        clearTimeout(backHintTimer)
+        backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+      }
+    }
+    rebuildBlobUrl()
+  } catch (e) {
+    emit('error', `PDF 打开失败：${errText(e)}`)
+  }
+}
+
+/** 跳到指定页（1 基）：重建地址让内置阅读器定位 */
+function jumpToPdfPage(page: number): void {
+  pdfPage.value = Math.min(Math.max(1, Math.round(page)), Math.max(1, pdfTotal.value))
+  notePageInput.value = pdfPage.value
+  rebuildBlobUrl()
+}
+
+/** 工具条「✎ 本页笔记」：按输入框页码创建批注，并同步阅读进度 */
+function openPageNoteForm(): void {
+  const p = Math.min(
+    Math.max(1, Math.round(Number(notePageInput.value) || pdfPage.value)),
+    Math.max(1, pdfTotal.value)
+  )
+  pdfPage.value = p
+  notePageInput.value = p
+  void window.lexbench.reading.saveProgress(props.doc.id, p - 1).catch(() => {})
+  const vh = window.innerHeight
+  form.value = {
+    top: Math.max(8, Math.round(vh / 2 - POP_H / 2)),
+    left: Math.max(8, Math.round(window.innerWidth / 2 - POP_W / 2)),
+    quote: '',
+    pageLabel: `第 ${p} 页`,
+    startPara: p - 1,
+    startOffset: 0,
+    endPara: p - 1,
+    endOffset: 0
+  }
+  draft.value = ''
+  void nextTick(() => noteAreaEl.value?.focus())
 }
 
 // ---------- 导出笔记 ----------
@@ -430,6 +523,11 @@ function onKeydown(e: KeyboardEvent): void {
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   await reloadNotes()
+  if (isPdf.value) {
+    // 页面模式：内置 PDF 阅读器加载原件；进度/检索命中都以页为定位（loadPdf 内处理）
+    await loadPdf()
+    return
+  }
   await nextTick()
   if (props.focusPara !== undefined) {
     // 检索命中进入：定位该段并短暂高亮
@@ -453,6 +551,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
   clearTimeout(progTimer)
   clearTimeout(backHintTimer)
   clearTimeout(sideFlashTimer)
@@ -473,6 +572,23 @@ onBeforeUnmount(() => {
         </transition>
       </div>
       <div class="rv-ops">
+        <template v-if="isPdf">
+          <span class="rv-page-ind">共 {{ pdfTotal }} 页</span>
+          <label class="rv-page-jump">
+            第
+            <input
+              v-model.number="notePageInput"
+              class="rv-page-input"
+              type="number"
+              min="1"
+              :max="pdfTotal"
+              @keydown.enter="jumpToPdfPage(notePageInput)"
+            />
+            页
+          </label>
+          <button class="rv-top-btn" title="跳到该页" @click="jumpToPdfPage(notePageInput)">跳转</button>
+          <button class="rv-top-btn" title="给该页记批注" @click="openPageNoteForm">✎ 本页笔记</button>
+        </template>
         <button class="rv-top-btn" :disabled="exporting" title="导出批注为 Markdown" @click="exportNotes('md')">
           导出 .md
         </button>
@@ -491,8 +607,19 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="rv-main">
-      <!-- 左主区：滚动正文 -->
+      <!-- PDF 页面模式：系统内置 PDF 阅读器（翻页/缩放/搜索由内置引擎负责） -->
+      <div v-if="isPdf" class="rv-pdf-frame">
+        <iframe
+          v-if="pdfViewerUrl"
+          :src="pdfViewerUrl"
+          class="pdf-iframe"
+          title="PDF 阅读器"
+        ></iframe>
+        <div v-else class="rv-pdf-loading">正在加载 PDF…</div>
+      </div>
+      <!-- 文字模式：滚动正文 -->
       <div
+        v-else
         ref="scrollEl"
         class="rv-scroll"
         @mousedown="onContentMousedown"
@@ -555,7 +682,8 @@ onBeforeUnmount(() => {
               </div>
             </template>
             <template v-else>
-              <p class="rv-note-quote">「{{ briefQuote(n.quote) }}」</p>
+              <p v-if="n.quote" class="rv-note-quote">「{{ briefQuote(n.quote) }}」</p>
+              <p v-else class="rv-note-quote"><span class="rv-note-page">第 {{ n.start_para + 1 }} 页</span></p>
               <p class="rv-note-body">{{ n.content_md }}</p>
               <div class="rv-note-foot">
                 <span class="rv-note-time">{{ fmtTime(n.updated_at || n.created_at) }}</span>
@@ -571,8 +699,9 @@ onBeforeUnmount(() => {
 
     <!-- 记笔记小表单 -->
     <div v-if="form" class="rv-pop" :style="{ top: form.top + 'px', left: form.left + 'px' }">
-      <div class="rv-pop-label">划选原文</div>
-      <div class="rv-pop-quote">「{{ form.quote }}」</div>
+      <div class="rv-pop-label">{{ form.pageLabel ? '批注位置' : '划选原文' }}</div>
+      <div v-if="form.pageLabel" class="rv-pop-quote">{{ form.pageLabel }}</div>
+      <div v-else class="rv-pop-quote">「{{ form.quote }}」</div>
       <textarea
         ref="noteAreaEl"
         v-model="draft"
@@ -1019,5 +1148,61 @@ onBeforeUnmount(() => {
 .rv-mini:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ---------- PDF 页面模式（内置阅读器） ---------- */
+.rv-pdf-frame {
+  flex: 1;
+  min-width: 0;
+  background: #525659;
+}
+
+.pdf-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.rv-pdf-loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d7d7de;
+}
+
+.rv-page-ind {
+  font-size: 12px;
+  color: #7c7c92;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.rv-page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #7c7c92;
+}
+
+.rv-page-input {
+  width: 56px;
+  padding: 3px 6px;
+  border: 1px solid var(--lb-border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #24242e;
+  text-align: center;
+}
+
+.rv-note-page {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--lb-warn-bg);
+  color: var(--lb-warn-fg);
+  font-size: 12px;
 }
 </style>
