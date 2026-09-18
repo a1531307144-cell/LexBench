@@ -16,16 +16,17 @@ import { getDb, getSetting, initDb, setSetting } from './db'
 /** node:sqlite 原始行：字段值一律 unknown，经转换函数收窄成 shared 类型 */
 type DbRow = Record<string, unknown>
 
-/** 行 → BookNoteRow：book_notes 全列 */
+/** 行 → BookNoteRow：book_notes 全列（起止锚点） */
 function toBookNoteRow(row: DbRow): BookNoteRow {
   return {
     id: Number(row['id']),
     document_id: Number(row['document_id']),
     content_md: String(row['content_md']),
     quote: String(row['quote'] ?? ''),
-    para_index: Number(row['para_index']),
-    quote_start: Number(row['quote_start']),
-    quote_end: Number(row['quote_end']),
+    start_para: Number(row['start_para']),
+    start_offset: Number(row['start_offset']),
+    end_para: Number(row['end_para']),
+    end_offset: Number(row['end_offset']),
     created_at: String(row['created_at']),
     updated_at: String(row['updated_at'])
   }
@@ -72,10 +73,17 @@ function reportFileName(name: string, ext: string): string {
   return `${cleaned || '读书笔记'}${ext}`
 }
 
-/** book_notes 全列，按 para_index, quote_start 排序（同段内再按 id 稳定排序；列表与导出共用） */
+/** 批注的段落位置标签：单段「第X段」，跨段「第X-Y段」（para 为 seq，+1 是自然段号） */
+function paraLabel(n: BookNoteRow): string {
+  return n.start_para === n.end_para
+    ? `第${n.start_para + 1}段`
+    : `第${n.start_para + 1}-${n.end_para + 1}段`
+}
+
+/** book_notes 全列，按 start_para, start_offset 排序（同段内再按 id 稳定排序；列表与导出共用） */
 function listNoteRows(db: DatabaseSync, documentId: number): BookNoteRow[] {
   const rows = db
-    .prepare('SELECT * FROM book_notes WHERE document_id=? ORDER BY para_index, quote_start, id')
+    .prepare('SELECT * FROM book_notes WHERE document_id=? ORDER BY start_para, start_offset, id')
     .all(documentId) as unknown as DbRow[]
   return rows.map(toBookNoteRow)
 }
@@ -98,8 +106,8 @@ function buildMarkdown(title: string, notes: BookNoteRow[]): string {
   const lines: string[] = [`# ${title}`, '', `> 阅读笔记 · 共 ${notes.length} 则`, '']
   if (notes.length === 0) lines.push('暂无批注', '')
   for (const n of notes) {
-    // 引用块：标注段落序号（paraIndex+1 为自然段号），原文逐行 "> " 前缀（空行出 ">"）
-    lines.push(`> **引用**（第${n.para_index + 1}段）`)
+    // 引用块：标注段落位置（跨段为「第X-Y段」），原文逐行 "> " 前缀（空行出 ">"）
+    lines.push(`> **引用**（${paraLabel(n)}）`)
     for (const l of splitLines(n.quote)) lines.push(l ? `> ${l}` : '>')
     lines.push('')
     // 批注：首行加「**批注**：」标签，其余行原样输出（多行批注不丢换行）
@@ -187,7 +195,7 @@ export function registerReadingIpc(): void {
     return listNoteRows(db, Number(documentId))
   })
 
-  // 新建批注：文档必须存在；内容 trim 后为空拒绝；数值列收窄（非有限值退列默认值）；返回完整 BookNoteRow
+  // 新建批注：文档必须存在；内容 trim 后为空拒绝；锚点收窄并按文档序归一（起在止前）；返回完整 BookNoteRow
   ipcMain.handle(
     'reading:createBookNote',
     (_e, documentId: number, note: BookNoteInput): BookNoteRow => {
@@ -196,19 +204,21 @@ export function registerReadingIpc(): void {
       const raw = (note ?? {}) as Partial<BookNoteInput>
       const content = String(raw.contentMd ?? '').trim()
       if (!content) throw new Error('批注内容为空')
+      let sp = intOr(raw.startPara, -1)
+      let so = intOr(raw.startOffset, 0)
+      let ep = intOr(raw.endPara, -1)
+      let eo = intOr(raw.endOffset, 0)
+      if (sp > ep || (sp === ep && so > eo)) {
+        // 选区方向反了（渲染层正常不会发生）：按文档序交换
+        ;[sp, ep] = [ep, sp]
+        ;[so, eo] = [eo, so]
+      }
       const info = db
         .prepare(
-          'INSERT INTO book_notes(document_id, content_md, quote, para_index, quote_start, quote_end)' +
-            ' VALUES(?,?,?,?,?,?)'
+          'INSERT INTO book_notes(document_id, content_md, quote, start_para, start_offset, end_para, end_offset)' +
+            ' VALUES(?,?,?,?,?,?,?)'
         )
-        .run(
-          Number(documentId),
-          content,
-          String(raw.quote ?? ''),
-          intOr(raw.paraIndex, -1),
-          intOr(raw.quoteStart, 0),
-          intOr(raw.quoteEnd, 0)
-        )
+        .run(Number(documentId), content, String(raw.quote ?? ''), sp, so, ep, eo)
       const row = db
         .prepare('SELECT * FROM book_notes WHERE id=?')
         .get(Number(info.lastInsertRowid)) as DbRow

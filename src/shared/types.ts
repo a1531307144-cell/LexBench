@@ -149,15 +149,16 @@ export interface ExportResult {
 
 // ---------- 阅读模式（阶段2.5，并入 v0.4.0） ----------
 
-/** 划选批注：锚定到段落序号（= chunks.seq）与段内字符区间，渲染时恢复高亮 */
+/** 划选批注：起止锚点（起段 seq+偏移 / 止段 seq+偏移），支持跨段划选，渲染时恢复高亮 */
 export interface BookNoteRow {
   id: number
   document_id: number
   content_md: string
   quote: string
-  para_index: number
-  quote_start: number
-  quote_end: number
+  start_para: number
+  start_offset: number
+  end_para: number
+  end_offset: number
   created_at: string
   updated_at: string
 }

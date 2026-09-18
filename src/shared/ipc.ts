@@ -40,10 +40,13 @@ export type ItemMoveDirection = 'up' | 'down'
 
 export interface BookNoteInput {
   contentMd: string
+  /** 跨段划选的原文（段落间以 \n 相接） */
   quote: string
-  paraIndex: number
-  quoteStart: number
-  quoteEnd: number
+  /** 起止锚点：起段 seq + 段内偏移（含）、止段 seq + 段内偏移（不含） */
+  startPara: number
+  startOffset: number
+  endPara: number
+  endOffset: number
 }
 
 // ---------- 检索（阶段1） ----------

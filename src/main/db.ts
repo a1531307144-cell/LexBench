@@ -138,12 +138,33 @@ CREATE TABLE IF NOT EXISTS book_notes (
 CREATE INDEX IF NOT EXISTS idx_book_notes_doc ON book_notes(document_id, para_index);
 `
 
+const MIGRATION_005_READING_V2 = `-- 005_reading_v2: 批注锚点升级为「起止锚点」，支持跨段划选
+-- v0.4.0 未发布、book_notes 是新表，直接重建（单段三列 → 起止四列）
+
+DROP TABLE IF EXISTS book_notes;
+
+CREATE TABLE IF NOT EXISTS book_notes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    content_md   TEXT NOT NULL,                  -- 批注（想法）
+    quote        TEXT NOT NULL DEFAULT '',       -- 划选原文（跨段按 \\n 拼接，展示/导出用）
+    start_para   INTEGER NOT NULL DEFAULT -1,    -- 起始段落（= chunks.seq）
+    start_offset INTEGER NOT NULL DEFAULT 0,     -- 起段内字符偏移（含）
+    end_para     INTEGER NOT NULL DEFAULT -1,    -- 结束段落（= chunks.seq）
+    end_offset   INTEGER NOT NULL DEFAULT 0,     -- 止段内字符偏移（不含）
+    created_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_book_notes_doc ON book_notes(document_id, start_para);
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
   { version: 2, sql: MIGRATION_002_RESEARCH },
   { version: 3, sql: MIGRATION_003_AI },
-  { version: 4, sql: MIGRATION_004_READING }
+  { version: 4, sql: MIGRATION_004_READING },
+  { version: 5, sql: MIGRATION_005_READING_V2 }
 ]
 
 /** 全局唯一连接（单例） */

@@ -8,7 +8,7 @@ import type { BookNoteRow, DocumentDetail, ExportFormat } from '@shared/types'
  * 右栏批注管理 → 阅读进度记忆。正文列按 chunks 渲染，每 chunk = 一段（seq=段落序号）。
  */
 const props = defineProps<{
-  /** 书籍详情：chunks 每项即一段；批注 para_index 与 chunk.seq 对应 */
+  /** 书籍详情：chunks 每项即一段；批注 start_para/end_para 与 chunk.seq 对应 */
   doc: DocumentDetail
   /** 进入时定位的段落 seq（检索命中传入，定位后短暂高亮）；缺省走阅读进度恢复 */
   focusPara?: number
@@ -45,12 +45,12 @@ async function reloadNotes(): Promise<void> {
   }
 }
 
-/** 批注栏列表顺序：按段落 → 段内偏移 */
+/** 批注栏列表顺序：按起段 → 起偏移 */
 const sortedNotes = computed(() =>
-  [...notes.value].sort((a, b) => a.para_index - b.para_index || a.quote_start - b.quote_start)
+  [...notes.value].sort((a, b) => a.start_para - b.start_para || a.start_offset - b.start_offset)
 )
 
-// ---------- 段落切片：把批注区间包进 <mark class="bn"> ----------
+// ---------- 段落切片：把批注区间包进 <mark class="bn">（支持跨段批注） ----------
 
 interface Seg {
   text: string
@@ -58,25 +58,29 @@ interface Seg {
 }
 const EMPTY_SEGS: Seg[] = []
 
-/** 段落 seq → 切片数组；重叠区间以先出现的批注为准 */
+/** 段落 seq → 切片数组；批注覆盖本段时：起段从 start_offset 到段尾、止段从段首到 end_offset、
+ *  中间段整段包裹；重叠区间以先出现的批注为准 */
 const segByPara = computed(() => {
   const map = new Map<number, Seg[]>()
   for (const c of props.doc.chunks) {
     const text = c.content
+    const seq = c.seq
     const list = notes.value
-      .filter((n) => n.para_index === c.seq)
-      .sort((a, b) => a.quote_start - b.quote_start)
+      .filter((n) => n.start_para <= seq && seq <= n.end_para)
+      .sort((a, b) => a.start_para - b.start_para || a.start_offset - b.start_offset)
     const segs: Seg[] = []
     let pos = 0
     for (const n of list) {
-      const s = Math.max(pos, Math.min(n.quote_start, text.length))
-      const e = Math.max(s, Math.min(n.quote_end, text.length))
+      const rawStart = seq === n.start_para ? n.start_offset : 0
+      const rawEnd = seq === n.end_para ? n.end_offset : text.length
+      const s = Math.max(pos, Math.min(rawStart, text.length))
+      const e = Math.max(s, Math.min(rawEnd, text.length))
       if (s > pos) segs.push({ text: text.slice(pos, s) })
       if (e > s) segs.push({ text: text.slice(s, e), noteId: n.id })
       pos = Math.max(pos, e)
     }
     if (pos < text.length) segs.push({ text: text.slice(pos) })
-    map.set(c.seq, segs)
+    map.set(seq, segs)
   }
   return map
 })
@@ -88,21 +92,27 @@ interface SelBox {
   left: number
 }
 interface PendingSel {
-  paraIndex: number
-  quoteStart: number
-  quoteEnd: number
+  startPara: number
+  startOffset: number
+  endPara: number
+  endOffset: number
   quote: string
   rect: DOMRect
 }
 
-const selHint = ref<(SelBox & { text: string }) | null>(null)
-/** 待成文选区（按钮点击后转成 form） */
+/** 待成文选区（mouseup 后直接转成 form） */
 let pendingSel: PendingSel | null = null
-const form = ref<(SelBox & { quote: string; paraIndex: number; quoteStart: number; quoteEnd: number }) | null>(null)
+const form = ref<
+  (SelBox & {
+    quote: string
+    startPara: number
+    startOffset: number
+    endPara: number
+    endOffset: number
+  }) | null
+>(null)
 const draft = ref('')
 const saving = ref(false)
-
-let hintTimer: ReturnType<typeof setTimeout> | undefined
 
 function clampX(x: number): number {
   return Math.min(Math.max(8, x), window.innerWidth - 8)
@@ -125,20 +135,26 @@ function paraOfNode(node: Node | null): HTMLElement | null {
   return el ? (el.closest('p[data-para]') as HTMLElement | null) : null
 }
 
+/** 由起止锚点拼出划选原文（跨段以 \n 相接，与 book_notes.quote 口径一致） */
+function buildQuote(startPara: number, startOffset: number, endPara: number, endOffset: number): string {
+  const textOf = (seq: number): string =>
+    props.doc.chunks.find((c) => c.seq === seq)?.content ?? ''
+  if (endPara === startPara) return textOf(startPara).slice(startOffset, endOffset)
+  const parts: string[] = [textOf(startPara).slice(startOffset)]
+  for (let s = startPara + 1; s < endPara; s++) parts.push(textOf(s))
+  parts.push(textOf(endPara).slice(0, endOffset))
+  return parts.join('\n')
+}
+
 function closeSelectionUi(): void {
-  selHint.value = null
   pendingSel = null
   if (form.value) cancelForm()
 }
 
 function onContentMousedown(): void {
-  // 在正文里重新按下鼠标：收起上一轮划选 UI（表单若有草稿即放弃）
-  if (selHint.value) {
-    selHint.value = null
-    pendingSel = null
-  } else if (form.value) {
-    cancelForm()
-  }
+  // 在正文里重新按下鼠标：收起上一轮划选（表单若有草稿即放弃）
+  if (form.value) cancelForm()
+  else pendingSel = null
 }
 
 function onMouseUp(): void {
@@ -155,37 +171,28 @@ function onMouseUp(): void {
   }
   const startP = paraOfNode(range.startContainer)
   const endP = paraOfNode(range.endContainer)
-  const rect = range.getBoundingClientRect()
-  if (!startP || startP !== endP) {
-    // 跨段划选：不能锚定，就近提示（纵坐标钳制进视口，选区很大时也看得到）。
-    // 若批注表单正开着（编辑流程中）先关掉；否则只清待成文选区，保留用户划选的原文
-    if (form.value) cancelForm()
-    pendingSel = null
-    selHint.value = {
-      top: Math.min(Math.max(8, rect.bottom + 8), window.innerHeight - 48),
-      left: clampX(rect.left + rect.width / 2),
-      text: '请在同一段落内划选'
-    }
-    clearTimeout(hintTimer)
-    hintTimer = setTimeout(() => (selHint.value = null), 2400)
-    return
-  }
-  const start = textOffsetTo(startP, range.startContainer, range.startOffset)
-  const end = textOffsetTo(startP, range.endContainer, range.endOffset)
-  const quote = (startP.textContent ?? '').slice(start, end)
-  if (end <= start || !quote.trim()) {
+  if (!startP || !endP) {
     closeSelectionUi()
     return
   }
-  selHint.value = null
-  pendingSel = {
-    paraIndex: Number(startP.dataset.para),
-    quoteStart: start,
-    quoteEnd: end,
-    quote,
-    rect
+  const startPara = Number(startP.dataset.para)
+  const endPara = Number(endP.dataset.para)
+  const startOffset = textOffsetTo(startP, range.startContainer, range.startOffset)
+  const endOffset = textOffsetTo(endP, range.endContainer, range.endOffset)
+  const quote = buildQuote(startPara, startOffset, endPara, endOffset)
+  if (!quote.trim()) {
+    closeSelectionUi()
+    return
   }
-  // 一选中直接弹批注表单，不设中间按钮
+  pendingSel = {
+    startPara,
+    startOffset,
+    endPara,
+    endOffset,
+    quote,
+    rect: range.getBoundingClientRect()
+  }
+  // 一选中直接弹批注表单（段内/跨段同一流程，不设中间按钮）
   openForm()
 }
 
@@ -206,9 +213,10 @@ function openForm(): void {
     top,
     left: Math.min(Math.max(8, left), window.innerWidth - POP_W - 8),
     quote: sel.quote,
-    paraIndex: sel.paraIndex,
-    quoteStart: sel.quoteStart,
-    quoteEnd: sel.quoteEnd
+    startPara: sel.startPara,
+    startOffset: sel.startOffset,
+    endPara: sel.endPara,
+    endOffset: sel.endOffset
   }
   draft.value = ''
   void nextTick(() => noteAreaEl.value?.focus())
@@ -230,9 +238,10 @@ async function saveNote(): Promise<void> {
     await window.lexbench.reading.createBookNote(props.doc.id, {
       contentMd,
       quote: form.value.quote,
-      paraIndex: form.value.paraIndex,
-      quoteStart: form.value.quoteStart,
-      quoteEnd: form.value.quoteEnd
+      startPara: form.value.startPara,
+      startOffset: form.value.startOffset,
+      endPara: form.value.endPara,
+      endOffset: form.value.endOffset
     })
     cancelForm()
     await reloadNotes()
@@ -321,7 +330,7 @@ function onMarkClick(noteId: number): void {
 function openNoteFromList(n: BookNoteRow): void {
   activeNoteId.value = n.id
   const el = scrollEl.value
-  const p = el?.querySelector<HTMLElement>(`p[data-para="${n.para_index}"]`)
+  const p = el?.querySelector<HTMLElement>(`p[data-para="${n.start_para}"]`)
   if (el && p) {
     el.scrollTo({
       top: Math.max(0, p.offsetTop - el.clientHeight / 2 + p.clientHeight / 2),
@@ -415,10 +424,7 @@ async function exportNotes(format: ExportFormat): Promise<void> {
 function onKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return
   if (form.value) cancelForm()
-  else if (selHint.value) {
-    selHint.value = null
-    pendingSel = null
-  }
+  else pendingSel = null
 }
 
 onMounted(async () => {
@@ -449,7 +455,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   clearTimeout(progTimer)
   clearTimeout(backHintTimer)
-  clearTimeout(hintTimer)
   clearTimeout(sideFlashTimer)
   clearTimeout(noteFlashTimer)
   clearTimeout(paraFlashTimer)
@@ -562,15 +567,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </aside>
-    </div>
-
-    <!-- 跨段提示 -->
-    <div
-      v-if="selHint"
-      class="sel-hint"
-      :style="{ top: selHint.top + 'px', left: selHint.left + 'px' }"
-    >
-      {{ selHint.text }}
     </div>
 
     <!-- 记笔记小表单 -->
@@ -936,19 +932,6 @@ onBeforeUnmount(() => {
 
 .rv-flex {
   flex: 1;
-}
-
-/* ---------- 跨段提示 ---------- */
-.sel-hint {
-  position: fixed;
-  z-index: 320;
-  transform: translateX(-50%);
-  padding: 5px 14px;
-  border-radius: 999px;
-  background: var(--lb-warn-bg);
-  color: var(--lb-warn-fg);
-  font-size: 12px;
-  box-shadow: 0 4px 14px rgba(24, 28, 55, 0.12);
 }
 
 /* ---------- 记笔记小表单 ---------- */
