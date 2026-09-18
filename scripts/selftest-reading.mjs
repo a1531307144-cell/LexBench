@@ -124,6 +124,57 @@ const markProbe = await evalJs(`(() => {
 })()`)
 check('原文高亮恢复（mark.bn 落在第 3 段）', markProbe?.count === 1 && markProbe.inPara3 === true)
 
+// 划选交互：小段选中 → 直接弹表单；大段选中 → 表单仍钳制在视口内；跨段 → 提示可见
+const selAndUp = `(startP, startO, endP, endO) => {
+  const ps = document.querySelectorAll('.para')
+  const sEl = [...ps].find((p) => p.dataset.para === String(startP))
+  const eEl = [...ps].find((p) => p.dataset.para === String(endP))
+  const tn = (el) => [...el.childNodes].find((n) => n.nodeType === 3 && n.length > 20)
+  const range = document.createRange()
+  range.setStart(tn(sEl), startO)
+  range.setEnd(tn(eEl), endO)
+  const sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+  document.querySelector('.rv-scroll').dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+  return 'fired'
+}`
+const popProbe = `(() => {
+  const pop = document.querySelector('.rv-pop')
+  if (!pop) return null
+  const r = pop.getBoundingClientRect()
+  return { top: r.top, bottom: r.bottom, vh: window.innerHeight }
+})()`
+
+// 小段选中 → 表单直接出现
+await evalJs(`(${selAndUp})(1, 6, 1, 26)`)
+const smallPop = await evalJs(popProbe)
+check('一选中即弹批注表单（无中间按钮）', !!smallPop)
+await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
+
+// 大段选中（跨出视口的选区）→ 表单仍在视口内
+await evalJs(`(${selAndUp})(4, 0, 4, 30)`)
+const bigPop = await evalJs(popProbe)
+check(
+  '大段选中表单不跑出视口',
+  !!bigPop && bigPop.top >= 8 && bigPop.bottom <= bigPop.vh - 4
+)
+await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
+
+// 跨段划选 → 提示条可见且在视口内
+await evalJs(`(${selAndUp})(5, 3, 6, 8)`)
+const hintProbe = await evalJs(`(() => {
+  const h = document.querySelector('.sel-hint')
+  if (!h) return null
+  const r = h.getBoundingClientRect()
+  return { top: r.top, bottom: r.bottom, vh: window.innerHeight, text: h.textContent.trim() }
+})()`)
+check(
+  '跨段划选给出可见提示',
+  !!hintProbe && hintProbe.text.includes('同一段落') && hintProbe.top >= 8 && hintProbe.bottom <= hintProbe.vh
+)
+await new Promise((r) => setTimeout(r, 2600)) // 等提示自动消失
+
 // 5. 导出（走 __test 通道）
 const mdPath = join(tmp, 'notes.md').replace(/\//g, '\\')
 const mdOut = await api(`export.__testSaveBookNotes(${docId}, 'md', ${JSON.stringify(mdPath)})`)

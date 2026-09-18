@@ -95,7 +95,6 @@ interface PendingSel {
   rect: DOMRect
 }
 
-const selBtn = ref<SelBox | null>(null)
 const selHint = ref<(SelBox & { text: string }) | null>(null)
 /** 待成文选区（按钮点击后转成 form） */
 let pendingSel: PendingSel | null = null
@@ -127,7 +126,6 @@ function paraOfNode(node: Node | null): HTMLElement | null {
 }
 
 function closeSelectionUi(): void {
-  selBtn.value = null
   selHint.value = null
   pendingSel = null
   if (form.value) cancelForm()
@@ -135,8 +133,7 @@ function closeSelectionUi(): void {
 
 function onContentMousedown(): void {
   // 在正文里重新按下鼠标：收起上一轮划选 UI（表单若有草稿即放弃）
-  if (selBtn.value || selHint.value) {
-    selBtn.value = null
+  if (selHint.value) {
     selHint.value = null
     pendingSel = null
   } else if (form.value) {
@@ -160,12 +157,12 @@ function onMouseUp(): void {
   const endP = paraOfNode(range.endContainer)
   const rect = range.getBoundingClientRect()
   if (!startP || startP !== endP) {
-    // 跨段划选：不生成按钮，就近提示
-    closeForm()
-    selBtn.value = null
+    // 跨段划选：不能锚定，就近提示（纵坐标钳制进视口，选区很大时也看得到）。
+    // 若批注表单正开着（编辑流程中）先关掉；否则只清待成文选区，保留用户划选的原文
+    if (form.value) cancelForm()
     pendingSel = null
     selHint.value = {
-      top: rect.bottom + 8,
+      top: Math.min(Math.max(8, rect.bottom + 8), window.innerHeight - 48),
       left: clampX(rect.left + rect.width / 2),
       text: '请在同一段落内划选'
     }
@@ -188,23 +185,8 @@ function onMouseUp(): void {
     quote,
     rect
   }
-  selBtn.value = {
-    top: rect.bottom + 8,
-    left: clampX(rect.left + rect.width / 2)
-  }
-}
-
-/** 滚动时浮动按钮跟随选区（选区本身不丢） */
-function repositionSelUi(): void {
-  if (!selBtn.value) return
-  const sel = window.getSelection()
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !pendingSel) {
-    selBtn.value = null
-    return
-  }
-  const rect = sel.getRangeAt(0).getBoundingClientRect()
-  pendingSel.rect = rect
-  selBtn.value = { top: rect.bottom + 8, left: clampX(rect.left + rect.width / 2) }
+  // 一选中直接弹批注表单，不设中间按钮
+  openForm()
 }
 
 const POP_W = 360
@@ -213,9 +195,12 @@ const POP_H = 300 // 估高：引文 + 输入 + 按钮
 function openForm(): void {
   const sel = pendingSel
   if (!sel) return
-  selBtn.value = null
-  let top = sel.rect.bottom + 40
-  if (top + POP_H > window.innerHeight - 8) top = Math.max(8, sel.rect.top - POP_H - 12)
+  // 大段划选时选区矩形会超出视口：先尝试放选区下方，放不下放上方，再放不下贴视口底部
+  const vh = window.innerHeight
+  let top = sel.rect.bottom + 12
+  if (top + POP_H > vh - 8) top = sel.rect.top - POP_H - 12
+  if (top < 8 || top + POP_H > vh - 8) top = vh - POP_H - 8
+  top = Math.min(Math.max(8, top), Math.max(8, vh - POP_H - 8))
   const left = clampX(sel.rect.left + sel.rect.width / 2 - POP_W / 2)
   form.value = {
     top,
@@ -358,7 +343,6 @@ const backHint = ref(false)
 let backHintTimer: ReturnType<typeof setTimeout> | undefined
 
 function onScroll(): void {
-  repositionSelUi()
   if (progTimer) return
   progTimer = setTimeout(() => {
     progTimer = undefined
@@ -431,8 +415,7 @@ async function exportNotes(format: ExportFormat): Promise<void> {
 function onKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return
   if (form.value) cancelForm()
-  else if (selBtn.value || selHint.value) {
-    selBtn.value = null
+  else if (selHint.value) {
     selHint.value = null
     pendingSel = null
   }
@@ -580,16 +563,6 @@ onBeforeUnmount(() => {
         </div>
       </aside>
     </div>
-
-    <!-- 划选浮动按钮 -->
-    <button
-      v-if="selBtn"
-      class="sel-btn"
-      :style="{ top: selBtn.top + 'px', left: selBtn.left + 'px' }"
-      @click="openForm"
-    >
-      ✎ 记笔记
-    </button>
 
     <!-- 跨段提示 -->
     <div
@@ -965,24 +938,7 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 
-/* ---------- 划选浮动按钮 / 提示 ---------- */
-.sel-btn {
-  position: fixed;
-  z-index: 320;
-  transform: translateX(-50%);
-  padding: 6px 16px;
-  border: none;
-  border-radius: 999px;
-  background: var(--lb-grad);
-  color: #fff;
-  font-size: 13px;
-  box-shadow: 0 4px 14px rgba(24, 28, 55, 0.22);
-}
-
-.sel-btn:hover {
-  filter: brightness(1.06);
-}
-
+/* ---------- 跨段提示 ---------- */
 .sel-hint {
   position: fixed;
   z-index: 320;
