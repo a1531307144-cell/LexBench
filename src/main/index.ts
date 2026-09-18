@@ -5,6 +5,7 @@ import { registerLibraryIpc } from './library'
 import { registerSearchIpc } from './search'
 import { registerWorkspaceIpc } from './workspace'
 import { registerExportIpc } from './exporter'
+import { registerReadingIpc } from './reading'
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
 function createWindow(): void {
@@ -50,6 +51,7 @@ app.whenReady().then(() => {
   registerSearchIpc()
   registerWorkspaceIpc()
   registerExportIpc()
+  registerReadingIpc()
   createWindow()
   setupUpdater()
 

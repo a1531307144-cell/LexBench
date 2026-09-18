@@ -2,10 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import type { ArticleDetail, DocumentDetail } from '@shared/types'
 
-/** 阅读器状态：法条模式 / 文档模式（与 App.vue 内声明保持同一形状） */
+/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读（书籍由 ReadingView 渲染，这里仅为类型对齐与兜底） */
 type ReaderState =
   | { type: 'article'; data: ArticleDetail }
   | { type: 'document'; data: DocumentDetail }
+  | { type: 'book'; data: DocumentDetail; focusPara?: number }
   | null
 
 const props = defineProps<{
@@ -42,7 +43,8 @@ watch(
 
 function readerKey(s: ReaderState): string {
   if (!s) return ''
-  return s.type === 'article' ? `article:${s.data.article.id}` : `document:${s.data.id}`
+  if (s.type === 'article') return `article:${s.data.article.id}`
+  return `${s.type}:${s.data.id}`
 }
 
 const pager = computed(() => {
@@ -94,6 +96,7 @@ function errText(e: unknown): string {
 const typeNames: Record<string, string> = {
   statute: '法规',
   case: '案例',
+  book: '书籍',
   other: '资料'
 }
 </script>
@@ -170,7 +173,7 @@ const typeNames: Record<string, string> = {
     </article>
 
     <!-- 文档模式 -->
-    <article v-else class="doc">
+    <article v-else-if="state.type === 'document'" class="doc">
       <div class="doc-head">
         <h1 class="doc-title">{{ state.data.title }}</h1>
         <div class="doc-meta">

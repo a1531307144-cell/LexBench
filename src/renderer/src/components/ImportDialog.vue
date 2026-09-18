@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
-import type { ImportResultItem } from '@shared/types'
+import type { ImportResultItem, ImportTypeChoice } from '@shared/types'
 
 /** 待导入文件（路径仅用于交回主进程读取；经原生对话框选择时拿不到大小，记 0） */
 interface ImportFileEntry {
@@ -23,6 +23,8 @@ const emit = defineEmits<{
 
 const files = ref<ImportFileEntry[]>([])
 const category = ref('')
+/** 导入类型：auto=自动识别（主进程启发式），其余手动指定（书籍资料走一段一段落建索引） */
+const typeSel = ref<ImportTypeChoice>('auto')
 const importing = ref(false)
 const results = ref<ImportResultItem[]>([])
 const zoneOver = ref(false)
@@ -38,6 +40,7 @@ watch(
       results.value = []
       note.value = ''
       zoneOver.value = false
+      typeSel.value = 'auto'
     }
   }
 )
@@ -113,7 +116,8 @@ async function startImport(): Promise<void> {
   try {
     const res = await window.lexbench.library.importDocuments(
       files.value.map((f) => f.path),
-      category.value.trim()
+      category.value.trim(),
+      typeSel.value
     )
     results.value = res
     emit('imported')
@@ -191,6 +195,17 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
           </ul>
 
           <label class="category-line">
+            类型：
+            <select v-model="typeSel" class="type-select" :disabled="importing">
+              <option value="auto">自动识别</option>
+              <option value="statute">法规</option>
+              <option value="case">案例</option>
+              <option value="book">书籍资料</option>
+              <option value="other">其他资料</option>
+            </select>
+          </label>
+
+          <label class="category-line">
             分类（可选）：
             <input
               v-model="category"
@@ -205,7 +220,13 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
               <span class="result-status">{{ statusText[r.status] || r.status }}</span>
               <span class="result-title">{{ r.title }}</span>
               <span v-if="r.status === 'imported'" class="result-detail">
-                {{ r.doc_type === 'statute' ? `${r.article_count} 条` : '已分块索引' }}
+                {{
+                  r.doc_type === 'statute'
+                    ? `${r.article_count} 条`
+                    : r.doc_type === 'book'
+                      ? '已按段落建索引'
+                      : '已分块索引'
+                }}
               </span>
               <span v-if="r.message" class="result-msg">{{ r.message }}</span>
             </div>
@@ -379,6 +400,22 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
 }
 
 .category-line input:focus {
+  border-color: var(--lb-accent-2);
+}
+
+.type-select {
+  flex: 1;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--lb-border-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--lb-text);
+  outline: none;
+  background: #fff;
+}
+
+.type-select:focus {
   border-color: var(--lb-accent-2);
 }
 

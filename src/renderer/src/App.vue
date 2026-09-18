@@ -6,6 +6,7 @@ import FavoriteDialog from './components/FavoriteDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import NotePanel from './components/NotePanel.vue'
 import Reader from './components/Reader.vue'
+import ReadingView from './components/ReadingView.vue'
 import ResultList from './components/ResultList.vue'
 import TopicPanel from './components/TopicPanel.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
@@ -22,10 +23,11 @@ import type {
   TopicRow
 } from '@shared/types'
 
-/** 阅读器状态：法条模式 / 文档模式（与 Reader.vue 内声明保持同一形状） */
+/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读（与 Reader.vue 内声明保持同一形状） */
 type ReaderState =
   | { type: 'article'; data: ArticleDetail }
   | { type: 'document'; data: DocumentDetail }
+  | { type: 'book'; data: DocumentDetail; focusPara?: number }
   | null
 
 /** 交给 ImportDialog 的待导入文件（路径经 webUtils 解析，仅用于交回主进程读取） */
@@ -46,6 +48,8 @@ const tab = ref<'results' | 'topics' | 'library'>('results')
 const documents = ref<DocumentRow[]>([])
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
+/** 进入书籍阅读模式前的 Tab（返回时恢复） */
+const preReaderTab = ref<'results' | 'topics' | 'library'>('results')
 const showImport = ref(false)
 const dropFiles = ref<ImportFileEntry[]>([])
 const dragging = ref(false)
@@ -278,6 +282,11 @@ async function openArticle(id: number): Promise<void> {
 }
 
 async function openDocument(id: number): Promise<void> {
+  // 书籍走沉浸阅读模式（阅读模式与法条/文档模式互斥）
+  if (documents.value.find((d) => d.id === id)?.doc_type === 'book') {
+    await openBook(id)
+    return
+  }
   readerLoading.value = true
   try {
     reader.value = { type: 'document', data: await window.lexbench.library.getDocument(id) }
@@ -288,8 +297,38 @@ async function openDocument(id: number): Promise<void> {
   }
 }
 
+/** 打开书籍沉浸阅读：hitId（检索命中的 chunk id）/focusPara 用于进入后定位段落 */
+async function openBook(id: number, opts?: { hitId?: number; focusPara?: number }): Promise<void> {
+  preReaderTab.value = tab.value
+  readerLoading.value = true
+  try {
+    const detail = await window.lexbench.library.getDocument(id)
+    let focus = opts?.focusPara
+    if (focus === undefined && opts?.hitId !== undefined) {
+      focus = detail.chunks.find((c) => c.id === opts.hitId)?.seq
+    }
+    reader.value = { type: 'book', data: detail, focusPara: focus }
+  } catch (e) {
+    showError(e)
+  } finally {
+    readerLoading.value = false
+  }
+}
+
+/** 退出阅读模式：恢复进入前的 Tab */
+function closeReading(): void {
+  reader.value = null
+  tab.value = preReaderTab.value
+}
+
+/** 阅读模式正向反馈 → 全局消息条 */
+function onReadingNotice(text: string): void {
+  setNotice(text)
+}
+
 function openResult(hit: SearchHit): void {
   if (hit.kind === 'article') void openArticle(hit.id)
+  else if (hit.doc_type === 'book') void openBook(hit.document_id, { hitId: hit.id })
   else void openDocument(hit.document_id)
 }
 
@@ -310,7 +349,13 @@ async function confirmDelete(): Promise<void> {
   if (!doc) return
   try {
     await window.lexbench.library.deleteDocument(doc.id)
-    if (reader.value?.type === 'document' && reader.value.data.id === doc.id) reader.value = null
+    if (
+      (reader.value?.type === 'document' || reader.value?.type === 'book') &&
+      reader.value.data.id === doc.id
+    ) {
+      reader.value = null
+      tab.value = preReaderTab.value
+    }
     await refreshDocs()
     // FK 级联会连带删除该文档的收藏条目（笔记保留并置空关联），同步刷新工作台
     void refreshTopics()
@@ -448,7 +493,19 @@ onBeforeUnmount(() => {
       <button class="error-close" title="关闭" @click="notice = null">✕</button>
     </div>
 
-    <main class="main">
+    <!-- 书籍沉浸阅读：整区替换工作台三栏（返回时恢复原 Tab） -->
+    <main v-if="reader?.type === 'book'" class="reading-full">
+      <ReadingView
+        :key="reader.data.id"
+        :doc="reader.data"
+        :focus-para="reader.focusPara"
+        @back="closeReading"
+        @error="showError"
+        @notice="onReadingNotice"
+      />
+    </main>
+
+    <main v-else class="main">
       <aside class="side">
         <div class="tabs">
           <button class="tab" :class="{ active: tab === 'results' }" @click="tab = 'results'">
@@ -774,6 +831,14 @@ onBeforeUnmount(() => {
 /* ---------- 主区布局 ---------- */
 .main {
   display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 书籍沉浸阅读：整区替换（侧栏/阅读器均由 ReadingView 自管） */
+.reading-full {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
 }

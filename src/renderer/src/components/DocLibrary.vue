@@ -14,6 +14,7 @@ defineEmits<{
 const typeNames: Record<string, string> = {
   statute: '法规',
   case: '案例',
+  book: '书籍',
   other: '资料'
 }
 </script>

@@ -1,14 +1,17 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { AddItemResult, ItemMoveDirection, TopicPatch, UpdateCheckInfo, UpdateStatus } from '../shared/ipc'
+import type { AddItemResult, BookNoteInput, ItemMoveDirection, TopicPatch, UpdateCheckInfo, UpdateStatus } from '../shared/ipc'
 import type {
   ArticleDetail,
+  BookNoteRow,
   DocStatus,
   DocumentDetail,
   DocumentRow,
   ExportFormat,
   ExportResult,
   ImportResultItem,
+  ImportTypeChoice,
   NoteRow,
+  ReadingProgress,
   SearchMode,
   SearchOutcome,
   TopicDetail,
@@ -49,9 +52,9 @@ const api = {
     deleteDocument: (id: number): Promise<void> => invoke('library:deleteDocument', id),
     setDocumentStatus: (id: number, status: DocStatus): Promise<void> =>
       invoke('library:setDocumentStatus', id, status),
-    /** 导入本地文件（路径来自 dialog:pickImportFiles 或拖放 webUtils），返回逐文件结果 */
-    importDocuments: (paths: string[], category: string): Promise<ImportResultItem[]> =>
-      invoke('library:importDocuments', paths, category),
+    /** 导入本地文件（路径来自 dialog:pickImportFiles 或拖放 webUtils），返回逐文件结果；typeChoice='auto' 走自动识别 */
+    importDocuments: (paths: string[], category: string, typeChoice: ImportTypeChoice): Promise<ImportResultItem[]> =>
+      invoke('library:importDocuments', paths, category, typeChoice),
     /** 法条详情（含同文档前后条） */
     getArticle: (id: number): Promise<ArticleDetail> => invoke('library:getArticle', id),
     /** 条文修正：保存并同步重建全文索引 */
@@ -90,7 +93,27 @@ const api = {
       invoke('export:saveTopicReport', topicId, format),
     /** 仅开发模式存在：跳过对话框直接写到指定路径（自测用） */
     __testSaveTopicReport: (topicId: number, format: ExportFormat, outPath: string): Promise<ExportResult> =>
-      invoke('export:__testSaveTopicReport', topicId, format, outPath)
+      invoke('export:__testSaveTopicReport', topicId, format, outPath),
+    /** 读书笔记导出：引用 + 批注成对列出 */
+    saveBookNotes: (documentId: number, format: ExportFormat): Promise<ExportResult> =>
+      invoke('export:saveBookNotes', documentId, format),
+    /** 仅开发模式存在：跳过对话框直接写到指定路径（自测用） */
+    __testSaveBookNotes: (documentId: number, format: ExportFormat, outPath: string): Promise<ExportResult> =>
+      invoke('export:__testSaveBookNotes', documentId, format, outPath)
+  },
+  reading: {
+    listBookNotes: (documentId: number): Promise<BookNoteRow[]> =>
+      invoke('reading:listBookNotes', documentId),
+    createBookNote: (documentId: number, note: BookNoteInput): Promise<BookNoteRow> =>
+      invoke('reading:createBookNote', documentId, note),
+    updateBookNote: (id: number, contentMd: string): Promise<void> =>
+      invoke('reading:updateBookNote', id, contentMd),
+    deleteBookNote: (id: number): Promise<void> => invoke('reading:deleteBookNote', id),
+    /** 阅读进度；从未读过返回 null */
+    getProgress: (documentId: number): Promise<ReadingProgress | null> =>
+      invoke('reading:getProgress', documentId),
+    saveProgress: (documentId: number, paraIndex: number): Promise<void> =>
+      invoke('reading:saveProgress', documentId, paraIndex)
   },
   update: {
     check: (): Promise<void> => invoke('update:check'),

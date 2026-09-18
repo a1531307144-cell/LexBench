@@ -1,9 +1,12 @@
 // 领域类型：三进程共用（阶段1 v0.3.0 —— 导入/建库/检索/阅读器）
 // 与 legacy/backend 的数据库 schema 一一对应，保证未来旧数据迁移无损
 
-export type DocType = 'statute' | 'case' | 'other'
+export type DocType = 'statute' | 'case' | 'other' | 'book'
 export type DocStatus = 'parsed' | 'needs_review'
 export type ImportStatus = 'imported' | 'duplicate' | 'failed'
+
+/** 导入时的类型选择：auto = 自动识别（现有启发式），其余为手动指定 */
+export type ImportTypeChoice = 'auto' | DocType
 
 export interface DocumentRow {
   id: number
@@ -142,4 +145,34 @@ export interface ExportResult {
   canceled: boolean
   /** 保存成功后的完整路径（canceled 时省略） */
   path?: string
+}
+
+// ---------- 阅读模式（阶段2.5，并入 v0.4.0） ----------
+
+/** 划选批注：锚定到段落序号（= chunks.seq）与段内字符区间，渲染时恢复高亮 */
+export interface BookNoteRow {
+  id: number
+  document_id: number
+  content_md: string
+  quote: string
+  para_index: number
+  quote_start: number
+  quote_end: number
+  created_at: string
+  updated_at: string
+}
+
+/** 新建批注的输入（quote/偏移由渲染层从选区计算） */
+export interface BookNoteInput {
+  contentMd: string
+  quote: string
+  paraIndex: number
+  quoteStart: number
+  quoteEnd: number
+}
+
+/** 阅读进度（settings 表 reading_progress:<docId> 的解析形态） */
+export interface ReadingProgress {
+  paraIndex: number
+  updatedAt: string
 }

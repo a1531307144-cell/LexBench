@@ -121,11 +121,29 @@ CREATE INDEX IF NOT EXISTS idx_ai_messages_article ON ai_messages(article_id, id
 CREATE INDEX IF NOT EXISTS idx_ai_messages_topic ON ai_messages(topic_id, id);
 `
 
+const MIGRATION_004_READING = `-- 004_reading: 阅读模式 —— book_notes（划选批注，锚定段落与字符区间）
+-- 阅读进度不建表：settings 表存 reading_progress:<docId> JSON（paraIndex + 更新时间）
+
+CREATE TABLE IF NOT EXISTS book_notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    content_md  TEXT NOT NULL,                   -- 批注（想法）
+    quote       TEXT NOT NULL DEFAULT '',        -- 划选的原文（引用）
+    para_index  INTEGER NOT NULL DEFAULT -1,     -- 段落序号（= chunks.seq，渲染定位用）
+    quote_start INTEGER NOT NULL DEFAULT 0,      -- 段内字符偏移（含）
+    quote_end   INTEGER NOT NULL DEFAULT 0,      -- 段内字符偏移（不含）
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_book_notes_doc ON book_notes(document_id, para_index);
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
   { version: 2, sql: MIGRATION_002_RESEARCH },
-  { version: 3, sql: MIGRATION_003_AI }
+  { version: 3, sql: MIGRATION_003_AI },
+  { version: 4, sql: MIGRATION_004_READING }
 ]
 
 /** 全局唯一连接（单例） */

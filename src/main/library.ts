@@ -19,7 +19,8 @@ import type {
   DocType,
   DocumentDetail,
   DocumentRow,
-  ImportResultItem
+  ImportResultItem,
+  ImportTypeChoice
 } from '../shared/types'
 import { detectDocType, splitStatute } from '@shared/splitter'
 import type { SplitArticle } from '@shared/splitter'
@@ -207,7 +208,8 @@ function errMessage(e: unknown): string {
 async function importOne(
   filePath: string,
   filesDir: string,
-  category: string
+  category: string,
+  typeChoice: ImportTypeChoice
 ): Promise<ImportResultItem> {
   const fileName = basename(filePath)
   const title = cleanTitle(fileName)
@@ -262,8 +264,9 @@ async function importOne(
       }
     }
 
-    // 类型判定：法规切条（条数为 0 或平均条长过短 → needs_review），案例/其它恒 parsed
-    const docType = detectDocType(paragraphs)
+    // 类型判定：手动指定优先；auto 走启发式。法规切条（条数为 0 或平均条长过短 → needs_review），
+    // 案例/书籍/其它恒 parsed；书籍按「一段一 chunk」建索引（阅读模式按段落渲染，检索按段落命中）
+    const docType: DocType = typeChoice === 'auto' ? detectDocType(paragraphs) : typeChoice
     const articles = docType === 'statute' ? splitStatute(paragraphs) : []
     let status: DocStatus = 'parsed'
     if (docType === 'statute') {
@@ -278,7 +281,8 @@ async function importOne(
     mkdirSync(filesDir, { recursive: true })
     copyFileSync(filePath, join(filesDir, `${fileHash}${suffix}`))
 
-    const chunks = docType === 'statute' ? [] : chunkParagraphs(paragraphs)
+    const chunks =
+      docType === 'statute' ? [] : docType === 'book' ? paragraphs : chunkParagraphs(paragraphs)
     const docId = withTransaction(db, () => {
       const info = db
         .prepare(
@@ -378,16 +382,26 @@ export function registerLibraryIpc(): void {
     if (Number(info.changes) === 0) throw new Error('文档不存在')
   })
 
-  // 批量导入：逐文件顺序处理，单文件失败不阻断批量
+  // 批量导入：逐文件顺序处理，单文件失败不阻断批量；typeChoice 校验白名单（缺省 auto 兼容旧调用）
   ipcMain.handle(
     'library:importDocuments',
-    async (_e, paths: string[], category: string): Promise<ImportResultItem[]> => {
+    async (
+      _e,
+      paths: string[],
+      category: string,
+      typeChoice: ImportTypeChoice
+    ): Promise<ImportResultItem[]> => {
       const list = Array.isArray(paths) ? paths : []
       const filesDir = getFilesDir()
       const cat = typeof category === 'string' ? category : ''
+      const choice: ImportTypeChoice = (
+        ['auto', 'statute', 'case', 'book', 'other'] as const
+      ).includes(typeChoice)
+        ? typeChoice
+        : 'auto'
       const results: ImportResultItem[] = []
       for (const p of list) {
-        results.push(await importOne(String(p), filesDir, cat))
+        results.push(await importOne(String(p), filesDir, cat, choice))
       }
       return results
     }

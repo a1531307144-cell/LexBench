@@ -36,6 +36,16 @@ export interface TopicPatch {
 
 export type ItemMoveDirection = 'up' | 'down'
 
+// ---------- 阅读模式（阶段2.5） ----------
+
+export interface BookNoteInput {
+  contentMd: string
+  quote: string
+  paraIndex: number
+  quoteStart: number
+  quoteEnd: number
+}
+
 // ---------- 检索（阶段1） ----------
 
 // SearchOutcome / SearchHit / SearchMode 见 types.ts
