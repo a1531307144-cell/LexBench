@@ -1,0 +1,91 @@
+name: Release
+
+# 推送 v* 标签时自动构建 Windows 安装包并发布到 GitHub Releases
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 允许在 Actions 页面手动触发（测试用）
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      # 隐私闸门：扫到手机号 / 邮箱 / 密钥 / 内嵌图片 / 本机路径 / 专属敏感词就直接失败。
+      # 这一步失败 = 发不出 Release，不依赖人「记得检查」。
+      - name: Privacy check
+        run: node scripts/privacy-check.mjs
+
+      - name: Build renderer/main/preload
+        run: npm run build
+
+      # 先创建草稿 Release，避免 electron-builder 并发上传时竞争创建导致丢文件
+      # 注意：notes 里「本版本新增」每次发版前手动更新为本版内容
+      - name: Pre-create draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          @"
+          ## 法研台（LexBench）$env:GITHUB_REF_NAME
+
+          本地优先的个人法律研究工作台。
+
+          ### ✨ 本版本新增
+          - **全新桌面版内核**：与安装包形态彻底重构，启动更快、界面更清爽
+          - 文档导入（Word / PDF / TXT），自动按「第X条」切分建库
+          - 法条定位（如「民法典 1077」）+ 全文检索（中文分词 + 相关度排序）
+
+          ### 📥 安装
+          下载下方 **LexBench-Setup-$env:GITHUB_REF_NAME.exe** 双击安装。
+          首次安装如遇「Windows 已保护你的电脑」：点 **更多信息 → 仍要运行**（个人开源软件未购买签名证书，属正常现象）。
+          "@ | Out-File -FilePath release-notes.md -Encoding utf8
+          gh release create "$env:GITHUB_REF_NAME" --draft --title "法研台（LexBench）$env:GITHUB_REF_NAME" --notes-file release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build installer & upload to draft release
+        run: npx electron-builder --win nsis --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          $hashes = Get-ChildItem release -Include *.exe, *.blockmap -Recurse | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)"
+          }
+          $hashes | Out-File -FilePath release/SHA256SUMS.txt -Encoding utf8
+          Get-Content release/SHA256SUMS.txt
+
+      - name: Upload checksums to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: gh release upload "$env:GITHUB_REF_NAME" release/SHA256SUMS.txt --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 草稿转正式：electron-updater 只认正式 Release
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: gh release edit "$env:GITHUB_REF_NAME" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

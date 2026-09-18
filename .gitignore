@@ -1,32 +1,21 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-*.egg-info/
-.pytest_cache/
-
-# Node
 node_modules/
-
-# 注意：frontend/dist 是预构建产物，特意提交，
-# 让非开发者克隆后无需 Node.js 即可运行（见 README）
-
-# 用户数据 —— 永不入库（法律文档可能含版权内容）
-data/
-
-# 桌面版打包产物（PyInstaller 输出，构建机生成，不入库）
-/dist/
-/build/
-desktop.log
-
-# 环境变量 —— AI API key 等敏感配置（.env.example 模板除外）
-.env
-.env.*
-!.env.example
-
-# OS / IDE
-Thumbs.db
+out/
+release/
+dist/
+*.local
 .DS_Store
-.idea/
-.vscode/
+.vite/
+.claude/
+
+# 本机专属隐私敏感词（绝不提交）
+scripts/.privacy-terms
+
+# 运行期数据库一律不入库
+*.db
+*.db-wal
+*.db-shm
+
+# 旧 Python 工程遗留的运行产物（legacy/ 源码本身保留）
+legacy/.venv/
+legacy/**/__pycache__/
+legacy/.pytest_cache/

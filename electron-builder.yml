@@ -1,0 +1,32 @@
+# electron-builder 打包配置
+# 本地构建: npm run dist    发布: push 标签 v* 由 GitHub Actions 自动构建发布
+appId: io.github.a1531307144-cell.lexbench
+productName: 法研台
+artifactName: LexBench-Setup-${version}.${ext}
+
+directories:
+  output: release
+
+files:
+  - out/**
+  - "!**/.DS_Store"
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+
+# 自动更新源：GitHub Releases（electron-updater 读取 latest.yml）
+publish:
+  provider: github
+  owner: a1531307144-cell
+  repo: LexBench

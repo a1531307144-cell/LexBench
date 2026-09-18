@@ -1,0 +1,52 @@
+/* 应用级基础样式（编辑器 UI 主题；与业务组件样式分层管理） */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family:
+    'Microsoft YaHei',
+    'PingFang SC',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  font-size: 14px;
+  color: #24242e;
+  background: #f7f7fb;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d4d4de;
+  border-radius: 5px;
+  border: 2px solid #f7f7fb;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #bcbcc8;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
