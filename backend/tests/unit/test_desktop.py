@@ -6,10 +6,10 @@ import pytest
 
 from app.core import config
 from app.desktop import (
+    _is_zip_tool_temp_path,
     acquire_single_instance,
     pick_port,
     port_is_free,
-    running_from_unextracted_zip,
 )
 
 
@@ -47,17 +47,17 @@ def test_single_instance_lock_second_call_fails():
     assert acquire_single_instance() is False
 
 
-def test_zip_preview_detection():
-    import tempfile
-    from pathlib import Path
-
-    temp_dir = Path(tempfile.gettempdir())
-    # zip 工具的临时解压特征目录 → 拦截
-    for tool_dir in ("Rar$EXa0.123", "Temp1_LexBench.zip", "7zO4567", "BANDIZIPTEMP"):
-        assert running_from_unextracted_zip(temp_dir / tool_dir / "LexBench") is True
-    # 用户主动解压到 Temp 普通文件夹 / 正常位置 → 放行
-    assert running_from_unextracted_zip(temp_dir / "LexBench") is False
-    assert running_from_unextracted_zip(Path("D:/Apps/LexBench")) is False
+def test_zip_preview_detection(tmp_path):
+    """zip 工具临时解压特征目录 → 判定为未解压运行（纯路径逻辑，跨平台可测）。"""
+    temp = tmp_path / "TempRoot"
+    temp.mkdir()
+    assert _is_zip_tool_temp_path(temp / "Rar$EXa0.123" / "LexBench", temp) is True
+    assert _is_zip_tool_temp_path(temp / "Temp1_LexBench.zip" / "LexBench", temp) is True
+    assert _is_zip_tool_temp_path(temp / "7zO4567" / "LexBench", temp) is True
+    assert _is_zip_tool_temp_path(temp / "BANDIZIPTEMP" / "LexBench", temp) is True
+    # 用户主动解压到 Temp 普通文件夹 / 临时目录之外 → 放行
+    assert _is_zip_tool_temp_path(temp / "LexBench", temp) is False
+    assert _is_zip_tool_temp_path(tmp_path / "elsewhere" / "LexBench", temp) is False
 
 
 def test_frozen_config_points_to_exe_dir(tmp_path, monkeypatch):

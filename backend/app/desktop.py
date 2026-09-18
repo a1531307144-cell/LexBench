@@ -60,20 +60,26 @@ def pick_port(start: int, attempts: int = 20) -> int | None:
     return None
 
 
+ZIP_TOOL_TEMP_PREFIXES = ("Rar$", "Temp1_", "Temp2_", "7zO", "7zS", "BANDIZIPTEMP")
+
+
+def _is_zip_tool_temp_path(app_dir, temp_dir) -> bool:
+    """纯路径判断：app_dir 是否位于 zip 工具的临时解压特征目录下（跨平台可测）。"""
+    try:
+        rel = Path(app_dir).resolve().relative_to(Path(temp_dir).resolve())
+    except ValueError:
+        return False
+    first = rel.parts[0] if rel.parts else ""
+    return first.startswith(ZIP_TOOL_TEMP_PREFIXES)
+
+
 def running_from_unextracted_zip(app_dir) -> bool:
     """未解压、直接在压缩包里双击 exe 时，zip 工具会解压到 Temp 下的特征目录
     运行（数据随临时目录消失）。只拦截这些工具特征目录——用户自己解压到
     Temp 下的普通文件夹属于合法用法，不拦。"""
     if os.name != "nt":
         return False
-    app_path = Path(app_dir).resolve()
-    temp = Path(tempfile.gettempdir()).resolve()
-    try:
-        rel = app_path.relative_to(temp)
-    except ValueError:
-        return False
-    first = rel.parts[0] if rel.parts else ""
-    return first.startswith(("Rar$", "Temp1_", "Temp2_", "7zO", "7zS", "BANDIZIPTEMP"))
+    return _is_zip_tool_temp_path(app_dir, tempfile.gettempdir())
 
 
 def alert(message: str, title: str = "LexBench · 法研台", question: bool = False) -> bool:
