@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
 import type { DocGroupRow, DocumentRow, DocType } from '@shared/types'
 
@@ -233,6 +233,32 @@ async function onGroupDrop(g: DocGroupRow): Promise<void> {
   }
 }
 
+/**
+ * 「移动到…」下拉的收起：点页面其它任何地方、或按 Esc 都应关闭。
+ * 此前只有「再点一次 ⇄ / 选一项 / 切类型」才会关，而文档库是 v-show（切视图不卸载），
+ * 于是下拉会一直常驻在列表里。
+ */
+function onDocMouseDown(e: MouseEvent): void {
+  if (moveDocId.value === null) return
+  const t = e.target as HTMLElement | null
+  if (t?.closest('.move-select') || t?.closest('.move-btn')) return
+  moveDocId.value = null
+}
+
+function onDocKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && moveDocId.value !== null) moveDocId.value = null
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown, true)
+  window.addEventListener('keydown', onDocKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocMouseDown, true)
+  window.removeEventListener('keydown', onDocKeydown)
+})
+
 /** 移动文档到文件夹：'none'=移出，''=未选择（占位项，忽略），其余为分组 id */
 async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   moveDocId.value = null
@@ -371,6 +397,8 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
             v-if="moveDocId === d.id"
             class="move-select"
             :value="''"
+            @click.stop
+            @mousedown.stop
             @change="onMoveChange(d, $event)"
           >
             <option value="">移动到…</option>

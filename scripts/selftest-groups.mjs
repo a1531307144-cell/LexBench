@@ -137,7 +137,41 @@ check(
 await api(`groups.remove(${gA.id})`)
 await api(`groups.remove(${gB.id})`)
 
-// 8. 清理测试文档
+// 8. 「移动到…」下拉的收起行为（回归：此前点别处不关、点框体还会连带打开文档）
+await evalJs('location.reload()')
+for (let i = 0; i < 20; i++) {
+  await new Promise((r) => setTimeout(r, 500))
+  if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) break
+}
+await send('Runtime.enable', {})
+await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
+await new Promise((r) => setTimeout(r, 600))
+
+const openMover = await evalJs(`(() => {
+  const btn = document.querySelector('.move-btn')
+  if (!btn) return 'NO-BTN'
+  btn.click()
+  return 'ok'
+})()`)
+await new Promise((r) => setTimeout(r, 400))
+check('点「⇄」弹出移动下拉', openMover === 'ok' && (await evalJs(`!!document.querySelector('.move-select')`)) === true)
+
+// 点页面别处 → 应收起
+await evalJs(`document.querySelector('.library')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
+await new Promise((r) => setTimeout(r, 400))
+check('点别处后下拉自动收起', (await evalJs(`!document.querySelector('.move-select')`)) === true)
+
+// 点下拉框体本身 → 不应连带打开文档（阅读器/阅读页不应出现）
+await evalJs(`document.querySelector('.move-btn')?.click()`)
+await new Promise((r) => setTimeout(r, 300))
+const stillOpen = await evalJs(`!!document.querySelector('.move-select')`)
+await evalJs(`(() => { const s = document.querySelector('.move-select'); s?.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'ok' })()`)
+await new Promise((r) => setTimeout(r, 500))
+// 判据：主区域仍停在欢迎页（.welcome）说明没有误打开文档
+const openedDoc = await evalJs(`!document.querySelector('.welcome')`)
+check('点下拉框体不会误打开文档', stillOpen === true && !openedDoc)
+
+// 9. 清理测试文档
 await api(`library.deleteDocument(${docId})`)
 const finalDocs = await api('library.listDocuments()')
 check('测试文档已清理', (finalDocs ?? []).every((d) => d.id !== docId))
