@@ -163,6 +163,35 @@ const MIGRATION_006_FILE_EXT = `-- 006_file_ext: documents 记录原始扩展名
 ALTER TABLE documents ADD COLUMN file_ext TEXT NOT NULL DEFAULT '';
 `
 
+const MIGRATION_007_DOC_GROUPS = `-- 007_doc_groups: 用户自建分类文件夹（每个文档类型下可各自建组）
+-- documents.category 保留为组名的冗余副本（导出/兼容用），group_id 为权威关联；
+-- 现有 category 文本一次性转成分组并回填，老数据不丢。
+
+CREATE TABLE IF NOT EXISTS doc_groups (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_type   TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE(doc_type, name)
+);
+
+ALTER TABLE documents ADD COLUMN group_id INTEGER REFERENCES doc_groups(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_documents_group ON documents(group_id);
+
+INSERT OR IGNORE INTO doc_groups(doc_type, name)
+    SELECT DISTINCT doc_type, category FROM documents WHERE category <> '';
+UPDATE documents SET group_id = (
+    SELECT g.id FROM doc_groups g
+    WHERE g.doc_type = documents.doc_type AND g.name = documents.category
+) WHERE category <> '';
+`
+
+const MIGRATION_008_GROUP_ORDER = `-- 008_group_order: 分类文件夹支持拖动排序（sort_order 越小越靠前）
+
+ALTER TABLE doc_groups ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+UPDATE doc_groups SET sort_order = id;
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -170,7 +199,9 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 3, sql: MIGRATION_003_AI },
   { version: 4, sql: MIGRATION_004_READING },
   { version: 5, sql: MIGRATION_005_READING_V2 },
-  { version: 6, sql: MIGRATION_006_FILE_EXT }
+  { version: 6, sql: MIGRATION_006_FILE_EXT },
+  { version: 7, sql: MIGRATION_007_DOC_GROUPS },
+  { version: 8, sql: MIGRATION_008_GROUP_ORDER }
 ]
 
 /** 全局唯一连接（单例） */

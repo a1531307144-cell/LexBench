@@ -14,6 +14,7 @@ import UpdateToast from './updaterUI/UpdateToast.vue'
 import type { ItemMoveDirection, TopicPatch } from '@shared/ipc'
 import type {
   ArticleDetail,
+  DocGroupRow,
   DocumentDetail,
   DocumentRow,
   ExportFormat,
@@ -47,6 +48,8 @@ const lastMode = ref<SearchOutcome['mode']>('none')
 const results = ref<SearchHit[]>([])
 const tab = ref<'results' | 'topics' | 'library'>('results')
 const documents = ref<DocumentRow[]>([])
+/** 用户自建分类文件夹（全类型，DocLibrary / ImportDialog 各自按类型过滤） */
+const groups = ref<DocGroupRow[]>([])
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
 /** 进入书籍阅读模式前的 Tab（返回时恢复） */
@@ -247,6 +250,26 @@ async function refreshDocs(): Promise<void> {
   }
 }
 
+async function refreshGroups(): Promise<void> {
+  try {
+    groups.value = await window.lexbench.groups.list()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** DocLibrary 内分类增删改 / 文档改归属：分组计数与文档列表都要重取 */
+async function onGroupsChanged(): Promise<void> {
+  await refreshGroups()
+  await refreshDocs()
+}
+
+/** 导入完成（含部分失败）：新文档可能新建/归入分类，文档库与分组计数一并刷新 */
+async function onImported(): Promise<void> {
+  await refreshDocs()
+  await refreshGroups()
+}
+
 async function doSearch(): Promise<void> {
   const q = query.value.trim()
   if (!q || searching.value) return
@@ -352,12 +375,13 @@ async function confirmDelete(): Promise<void> {
   if (!doc) return
   try {
     await window.lexbench.library.deleteDocument(doc.id)
+    // 删除的正是打开中的文档/书籍时才关掉阅读视图；**不改当前标签页**
+    // （此前会跳回「进入阅读前」的页面，在文档库里删文件时会被弹到检索页）
     if (
       (reader.value?.type === 'document' || reader.value?.type === 'book') &&
       reader.value.data.id === doc.id
     ) {
       reader.value = null
-      tab.value = preReaderTab.value
     }
     await refreshDocs()
     // FK 级联会连带删除该文档的收藏条目（笔记保留并置空关联），同步刷新工作台
@@ -437,6 +461,7 @@ onMounted(() => {
   window.addEventListener('dragover', onDragOver)
   window.addEventListener('drop', onDrop)
   void refreshDocs()
+  void refreshGroups()
   void refreshTopics()
   void window.lexbench.app
     .getVersion()
@@ -565,9 +590,12 @@ onBeforeUnmount(() => {
         <DocLibrary
           v-show="tab === 'library'"
           :documents="documents"
+          :groups="groups"
           @open="openDocument"
           @remove="askDelete"
           @mark-reviewed="markReviewed"
+          @groups-changed="onGroupsChanged"
+          @error="showError"
         />
       </aside>
 
@@ -600,7 +628,8 @@ onBeforeUnmount(() => {
     <ImportDialog
       v-model:visible="showImport"
       :initial-files="dropFiles"
-      @imported="refreshDocs"
+      :groups="groups"
+      @imported="onImported"
       @error="showError"
     />
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
-import type { ImportResultItem, ImportTypeChoice } from '@shared/types'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import type { DocGroupRow, ImportResultItem, ImportTypeChoice } from '@shared/types'
 
 /** 待导入文件（路径仅用于交回主进程读取；经原生对话框选择时拿不到大小，记 0） */
 interface ImportFileEntry {
@@ -12,6 +12,8 @@ interface ImportFileEntry {
 const props = defineProps<{
   visible: boolean
   initialFiles: ImportFileEntry[]
+  /** 全部分类文件夹（按当前所选类型过滤后作为选项） */
+  groups: DocGroupRow[]
 }>()
 
 const emit = defineEmits<{
@@ -21,8 +23,13 @@ const emit = defineEmits<{
   error: [message: string]
 }>()
 
+const NEW_GROUP = '__new__'
+
 const files = ref<ImportFileEntry[]>([])
-const category = ref('')
+/** 归入的文件夹：''=不归入，'__new__'=新建，其余为分组 id 字符串 */
+const groupChoice = ref('')
+/** 新建文件夹名（groupChoice='__new__' 时显示输入框） */
+const newGroupName = ref('')
 /** 导入类型：auto=自动识别（主进程启发式），其余手动指定（书籍资料走一段一段落建索引） */
 const typeSel = ref<ImportTypeChoice>('auto')
 const importing = ref(false)
@@ -41,9 +48,37 @@ watch(
       note.value = ''
       zoneOver.value = false
       typeSel.value = 'auto'
+      groupChoice.value = ''
+      newGroupName.value = ''
     }
   }
 )
+
+/** 当前所选类型下的分类文件夹（自动识别时不可归入：类型未定，分组无从选择） */
+const typeGroups = computed(() =>
+  typeSel.value === 'auto' ? [] : props.groups.filter((g) => g.doc_type === typeSel.value)
+)
+
+/** 提交导入时传给主进程的 category：传【文件夹名】，主进程按「类型+名称」自动找组或建组 */
+const category = computed(() => {
+  if (typeSel.value === 'auto' || !groupChoice.value) return ''
+  if (groupChoice.value === NEW_GROUP) return newGroupName.value.trim()
+  return props.groups.find((g) => g.id === Number(groupChoice.value))?.name ?? ''
+})
+
+// 类型变更后原选中分组可能不属于新类型：清空选择，避免把「分组」落到别的类型下
+watch(typeSel, () => {
+  if (typeSel.value === 'auto') {
+    groupChoice.value = ''
+    return
+  }
+  if (groupChoice.value && groupChoice.value !== NEW_GROUP) {
+    const stillValid = props.groups.some(
+      (g) => g.doc_type === typeSel.value && g.id === Number(groupChoice.value)
+    )
+    if (!stillValid) groupChoice.value = ''
+  }
+})
 
 function setNote(msg: string): void {
   note.value = msg
@@ -111,12 +146,17 @@ function close(): void {
 
 async function startImport(): Promise<void> {
   if (!files.value.length || importing.value) return
+  // 选了「新建文件夹」却没填名字：明确提示，避免静默按「不归入」导入
+  if (groupChoice.value === NEW_GROUP && !newGroupName.value.trim()) {
+    emit('error', '请填写新文件夹名称，或改选「（不归入文件夹）」')
+    return
+  }
   importing.value = true
   results.value = []
   try {
     const res = await window.lexbench.library.importDocuments(
       files.value.map((f) => f.path),
-      category.value.trim(),
+      category.value,
       typeSel.value
     )
     results.value = res
@@ -206,11 +246,27 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
           </label>
 
           <label class="category-line">
-            分类（可选）：
+            文件夹：
+            <select
+              v-model="groupChoice"
+              class="type-select"
+              :disabled="importing || typeSel === 'auto'"
+            >
+              <option value="">（不归入文件夹）</option>
+              <option v-for="g in typeGroups" :key="g.id" :value="String(g.id)">
+                {{ g.name }}
+              </option>
+              <option :value="NEW_GROUP">＋ 新建文件夹…</option>
+            </select>
+          </label>
+
+          <p v-if="typeSel === 'auto'" class="field-hint">选定具体类型后可归入文件夹</p>
+          <label v-else-if="groupChoice === NEW_GROUP" class="category-line">
+            新文件夹名：
             <input
-              v-model="category"
+              v-model="newGroupName"
               type="text"
-              placeholder="如：民法典、公司法、劳动法"
+              placeholder="如：民法典、公司法"
               :disabled="importing"
             />
           </label>
@@ -401,6 +457,12 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
 
 .category-line input:focus {
   border-color: var(--lb-accent-2);
+}
+
+.field-hint {
+  margin: 6px 0 0 48px;
+  font-size: 12px;
+  color: var(--lb-muted);
 }
 
 .type-select {

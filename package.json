@@ -1,6 +1,6 @@
 {
   "name": "lexbench",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "法研台 —— 本地优先的个人法律研究工作台",
   "main": "./out/main/index.js",
   "author": "a1531307144-cell",

@@ -11,7 +11,9 @@ import type {
 import type {
   ArticleDetail,
   BookNoteRow,
+  DocGroupRow,
   DocStatus,
+  DocType,
   DocumentDetail,
   DocumentRow,
   ExportFormat,
@@ -68,6 +70,9 @@ const api = {
     /** 导入本地文件（路径来自 dialog:pickImportFiles 或拖放 webUtils），返回逐文件结果；typeChoice='auto' 走自动识别 */
     importDocuments: (paths: string[], category: string, typeChoice: ImportTypeChoice): Promise<ImportResultItem[]> =>
       invoke('library:importDocuments', paths, category, typeChoice),
+    /** 把文档归入某分类文件夹（groupId=null 表示移出到未分类） */
+    setDocumentGroup: (documentId: number, groupId: number | null): Promise<void> =>
+      invoke('library:setDocumentGroup', documentId, groupId),
     /** 法条详情（含同文档前后条） */
     getArticle: (id: number): Promise<ArticleDetail> => invoke('library:getArticle', id),
     /** 条文修正：保存并同步重建全文索引 */
@@ -77,6 +82,18 @@ const api = {
   search: {
     run: (q: string, mode: SearchMode): Promise<SearchOutcome> =>
       invoke('search:run', q, mode)
+  },
+  groups: {
+    /** 某类型下的分类文件夹（含文档数）；不传类型则返回全部 */
+    list: (docType?: DocType): Promise<DocGroupRow[]> => invoke('groups:list', docType),
+    /** 新建分类文件夹（同类型下重名会被拒绝） */
+    create: (docType: DocType, name: string): Promise<DocGroupRow> =>
+      invoke('groups:create', docType, name),
+    rename: (id: number, name: string): Promise<void> => invoke('groups:rename', id, name),
+    /** 拖动排序：按传入 id 顺序重排（传同一类型下的完整顺序） */
+    reorder: (ids: number[]): Promise<void> => invoke('groups:reorder', ids),
+    /** 删除文件夹（其中文档移入「未分类」，不随之删除） */
+    remove: (id: number): Promise<void> => invoke('groups:remove', id)
   },
   workspace: {
     listTopics: (): Promise<TopicRow[]> => invoke('workspace:listTopics'),

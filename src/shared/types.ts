@@ -20,6 +20,18 @@ export interface DocumentRow {
   imported_at: string
   /** 原始扩展名（含点，如 '.pdf'）；决定阅读模式：pdf 书籍=页面模式，其余=文字模式 */
   file_ext: string
+  /** 所属分类文件夹（未分类为 null） */
+  group_id: number | null
+}
+
+/** 用户自建分类文件夹（每个文档类型下各自一套；名称可自定义） */
+export interface DocGroupRow {
+  id: number
+  doc_type: DocType
+  name: string
+  created_at: string
+  /** 该文件夹下文档数 */
+  doc_count: number
 }
 
 export interface ArticleRow {

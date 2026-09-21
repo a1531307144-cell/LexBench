@@ -8,6 +8,7 @@ import { registerExportIpc } from './exporter'
 import { registerReadingIpc } from './reading'
 import { registerBackupIpc } from './backup'
 import { applySeedIfNeeded } from './seed'
+import { registerGroupsIpc } from './groups'
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
 function createWindow(): void {
@@ -63,6 +64,7 @@ app.whenReady().then(async () => {
   registerExportIpc()
   registerReadingIpc()
   registerBackupIpc()
+  registerGroupsIpc()
   // 首次启动预置常用法条（仅首跑执行一次；失败不阻断启动）
   await applySeedIfNeeded()
   createWindow()

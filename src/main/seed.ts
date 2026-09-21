@@ -3,7 +3,7 @@
 //       仅在从未预置过（settings 无 seed_version）时执行一次；用户删除后不会被重新塞回。
 
 import { app } from 'electron'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSetting, setSetting } from './db'
 import { importFiles, markSeedApplied } from './library'
@@ -15,6 +15,28 @@ const SEED_VERSION = '1'
 function seedDir(): string {
   if (app.isPackaged) return join(process.resourcesPath, 'seed')
   return join(__dirname, '../../seed')
+}
+
+/** 种子包里的分类顺序（order.json 的 statute 数组）；缺失或损坏时退回目录顺序 */
+function readSeedOrder(dir: string): string[] {
+  const names = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+  const orderFile = join(dir, 'order.json')
+  if (existsSync(orderFile)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(orderFile, 'utf-8'))
+      const list = (parsed as { statute?: unknown }).statute
+      if (Array.isArray(list)) {
+        const valid = list.filter((x): x is string => typeof x === 'string' && names.includes(x))
+        const rest = names.filter((n) => !valid.includes(n))
+        return [...valid, ...rest]
+      }
+    } catch (e) {
+      console.warn('seed/order.json 解析失败，按目录顺序预置：', e)
+    }
+  }
+  return names
 }
 
 /**
@@ -29,11 +51,12 @@ export async function applySeedIfNeeded(): Promise<number> {
       console.warn('预置法条目录不存在，跳过：', dir)
       return 0
     }
+    // 分类文件夹的展示顺序：优先按 seed/order.json（用户排定的顺序），缺省退回目录顺序
+    const ordered = readSeedOrder(dir)
     let imported = 0
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
-      const category = entry.name
+    for (const category of ordered) {
       const categoryDir = join(dir, category)
+      if (!existsSync(categoryDir)) continue
       const files = readdirSync(categoryDir)
         .filter((f) => f.toLowerCase().endsWith('.docx'))
         .map((f) => join(categoryDir, f))

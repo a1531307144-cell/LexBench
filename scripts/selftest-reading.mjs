@@ -125,7 +125,7 @@ check('进度存取（null → 5）', p0 === null && p5?.paraIndex === 5)
 // 4. UI 层：打开阅读模式，验证段落渲染 + 高亮恢复（段内 mark + 跨段双段 mark）
 await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
 await new Promise((r) => setTimeout(r, 400))
-await evalJs(`[...document.querySelectorAll('.row')].find((r) => r.textContent.includes('阅读模式自测书'))?.click()`)
+await evalJs(`[...document.querySelectorAll('.doc-card')].find((r) => r.textContent.includes('阅读模式自测书'))?.click()`)
 let uiReady = false
 for (let i = 0; i < 20; i++) {
   await new Promise((r) => setTimeout(r, 500))
@@ -286,7 +286,7 @@ for (let i = 0; i < 20; i++) {
 await send('Runtime.enable', {})
 await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
 await new Promise((r) => setTimeout(r, 400))
-await evalJs(`[...document.querySelectorAll('.row')].find((r) => r.textContent.includes('页面模式自测书'))?.click()`)
+await evalJs(`[...document.querySelectorAll('.doc-card')].find((r) => r.textContent.includes('页面模式自测书'))?.click()`)
 let pdfUiReady = false
 for (let i = 0; i < 24; i++) {
   await new Promise((r) => setTimeout(r, 500))

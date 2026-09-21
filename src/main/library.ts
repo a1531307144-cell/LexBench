@@ -325,10 +325,10 @@ async function importOne(
     const docId = withTransaction(db, () => {
       const info = db
         .prepare(
-          'INSERT INTO documents(title, doc_type, category, file_hash, original_path, status, file_ext)' +
-            ' VALUES(?,?,?,?,?,?,?)'
+          'INSERT INTO documents(title, doc_type, category, file_hash, original_path, status, file_ext, group_id)' +
+            ' VALUES(?,?,?,?,?,?,?,?)'
         )
-        .run(title, docType, category, fileHash, filePath, status, suffix)
+        .run(title, docType, category, fileHash, filePath, status, suffix, resolveGroupId(db, docType, category))
       const id = Number(info.lastInsertRowid)
       if (docType === 'statute') indexArticles(db, id, articles)
       else indexChunks(db, id, chunks)
@@ -350,6 +350,18 @@ async function importOne(
 /** 原件归档目录：与 lexbench.db 同在用户数据目录 */
 function getFilesDir(): string {
   return join(app.getPath('userData'), 'files')
+}
+
+/** 按「类型 + 名称」找分类文件夹，没有就建一个（返回 id；名称为空返回 null） */
+export function resolveGroupId(db: DatabaseSync, docType: DocType, name: string): number | null {
+  const trimmed = (name ?? '').trim()
+  if (!trimmed) return null
+  const existing = db
+    .prepare('SELECT id FROM doc_groups WHERE doc_type=? AND name=?')
+    .get(docType, trimmed) as { id: number } | undefined
+  if (existing) return Number(existing.id)
+  const info = db.prepare('INSERT INTO doc_groups(doc_type, name) VALUES(?,?)').run(docType, trimmed)
+  return Number(info.lastInsertRowid)
 }
 
 /** 批量导入（IPC 与预置种子共用）：逐文件顺序处理，单文件失败不阻断 */
@@ -468,6 +480,26 @@ export function registerLibraryIpc(): void {
   // 首次启动预置法条的结果查询（渲染层用于展示一次性提示）
   ipcMain.handle('library:getSeedInfo', (): { justApplied: boolean; count: number } => {
     return { justApplied: seedAppliedThisRun, count: seedImportedCount }
+  })
+
+  // 把文档归入 / 移出分类文件夹（category 冗余副本同步）
+  ipcMain.handle('library:setDocumentGroup', (_e, documentId: number, groupId: number | null): void => {
+    const db = getDb()
+    const doc = db.prepare('SELECT id FROM documents WHERE id=?').get(Number(documentId))
+    if (doc === undefined) throw new Error('文档不存在')
+    if (groupId === null) {
+      db.prepare("UPDATE documents SET group_id=NULL, category='' WHERE id=?").run(Number(documentId))
+      return
+    }
+    const group = db.prepare('SELECT id, name FROM doc_groups WHERE id=?').get(Number(groupId)) as
+      | { id: number; name: string }
+      | undefined
+    if (!group) throw new Error('分类文件夹不存在')
+    db.prepare('UPDATE documents SET group_id=?, category=? WHERE id=?').run(
+      Number(groupId),
+      String(group.name),
+      Number(documentId)
+    )
   })
 
   // 法条详情：条文全文 + 文档名/分类 + 同文档前后条（阅读器翻页用）
