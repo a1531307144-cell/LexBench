@@ -57,6 +57,9 @@ const api = {
   },
   library: {
     listDocuments: (): Promise<DocumentRow[]> => invoke('library:listDocuments'),
+    /** 本次启动是否刚预置了随包法条（首次启动显示一次性提示用） */
+    getSeedInfo: (): Promise<{ justApplied: boolean; count: number }> =>
+      invoke('library:getSeedInfo'),
     getDocument: (id: number): Promise<DocumentDetail> =>
       invoke('library:getDocument', id),
     deleteDocument: (id: number): Promise<void> => invoke('library:deleteDocument', id),

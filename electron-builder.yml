@@ -11,6 +11,13 @@ files:
   - out/**
   - "!**/.DS_Store"
 
+# 随包附带的预置法条（首次启动自动导入；仅公开法条文本，元数据已清洗）
+extraResources:
+  - from: seed
+    to: seed
+    filter:
+      - "**/*.docx"
+
 win:
   icon: build/icon.ico
   target:

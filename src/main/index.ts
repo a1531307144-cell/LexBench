@@ -7,6 +7,7 @@ import { registerWorkspaceIpc } from './workspace'
 import { registerExportIpc } from './exporter'
 import { registerReadingIpc } from './reading'
 import { registerBackupIpc } from './backup'
+import { applySeedIfNeeded } from './seed'
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
 function createWindow(): void {
@@ -55,13 +56,15 @@ ipcMain.handle('app:relaunch', () => {
   app.exit(0)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerLibraryIpc()
   registerSearchIpc()
   registerWorkspaceIpc()
   registerExportIpc()
   registerReadingIpc()
   registerBackupIpc()
+  // 首次启动预置常用法条（仅首跑执行一次；失败不阻断启动）
+  await applySeedIfNeeded()
   createWindow()
   setupUpdater()
 
@@ -73,6 +76,11 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+// 仅开发模式：允许用环境变量指定数据目录（自测「首次启动预置法条」用，不影响正常开发）
+if (!app.isPackaged && process.env.LEXBENCH_USERDATA) {
+  app.setPath('userData', process.env.LEXBENCH_USERDATA)
+}
 
 // 开发模式开放调试端口（自测/排查用；必须在 app ready 前注册；打包版不开启）
 if (!app.isPackaged) {

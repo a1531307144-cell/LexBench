@@ -444,6 +444,15 @@ onMounted(() => {
       version.value = v
     })
     .catch(() => {})
+  // 首次启动预置了随包法条 → 提示一次，便于新用户直接上手检索
+  void window.lexbench.library
+    .getSeedInfo()
+    .then((info) => {
+      if (info.justApplied && info.count > 0) {
+        setNotice(`已为你预置 ${info.count} 部常用法律与司法解释，直接检索即可使用`, 'success')
+      }
+    })
+    .catch(() => {})
 })
 
 onBeforeUnmount(() => {

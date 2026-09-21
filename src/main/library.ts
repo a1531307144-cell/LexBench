@@ -352,6 +352,30 @@ function getFilesDir(): string {
   return join(app.getPath('userData'), 'files')
 }
 
+/** 批量导入（IPC 与预置种子共用）：逐文件顺序处理，单文件失败不阻断 */
+export async function importFiles(
+  paths: string[],
+  category: string,
+  typeChoice: ImportTypeChoice
+): Promise<ImportResultItem[]> {
+  const filesDir = getFilesDir()
+  const results: ImportResultItem[] = []
+  for (const p of paths) {
+    results.push(await importOne(String(p), filesDir, category, typeChoice))
+  }
+  return results
+}
+
+/** 本次启动是否刚预置了法条（渲染层显示一次性提示用） */
+let seedAppliedThisRun = false
+let seedImportedCount = 0
+
+/** 由 seed.ts 在预置完成后调用，供 library:getSeedInfo 回报 */
+export function markSeedApplied(count: number): void {
+  seedAppliedThisRun = true
+  seedImportedCount = count
+}
+
 // ---------- IPC 注册 ----------
 
 export function registerLibraryIpc(): void {
@@ -431,20 +455,20 @@ export function registerLibraryIpc(): void {
       typeChoice: ImportTypeChoice
     ): Promise<ImportResultItem[]> => {
       const list = Array.isArray(paths) ? paths : []
-      const filesDir = getFilesDir()
       const cat = typeof category === 'string' ? category : ''
       const choice: ImportTypeChoice = (
         ['auto', 'statute', 'case', 'book', 'other'] as const
       ).includes(typeChoice)
         ? typeChoice
         : 'auto'
-      const results: ImportResultItem[] = []
-      for (const p of list) {
-        results.push(await importOne(String(p), filesDir, cat, choice))
-      }
-      return results
+      return importFiles(list, cat, choice)
     }
   )
+
+  // 首次启动预置法条的结果查询（渲染层用于展示一次性提示）
+  ipcMain.handle('library:getSeedInfo', (): { justApplied: boolean; count: number } => {
+    return { justApplied: seedAppliedThisRun, count: seedImportedCount }
+  })
 
   // 法条详情：条文全文 + 文档名/分类 + 同文档前后条（阅读器翻页用）
   ipcMain.handle('library:getArticle', (_e, id: number): ArticleDetail => {

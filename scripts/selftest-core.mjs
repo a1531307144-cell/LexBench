@@ -1,10 +1,8 @@
 // v0.3.0 核心链路 CDP 自测：导入 → 建库 → 法条定位 → 全文检索 → 阅读器翻页
 // 前提：npm run dev 已启动（开发模式开放 9222）。用法：node scripts/selftest-core.mjs
-import { readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 const errors = []
 
 function getJSON(url) {
@@ -66,10 +64,35 @@ if (!mounted) {
 }
 console.log('=== 1. UI 挂载 OK ===')
 
-// 收集示例文件
-const samplesDir = join(ROOT, 'samples')
-const files = readdirSync(samplesDir).filter((f) => f.endsWith('.txt')).map((f) => join(samplesDir, f).replace(/\//g, '\\'))
-console.log('示例文件:', files.map((f) => f.split('\\').pop()).join(', '))
+// 自造测试语料（不依赖仓库样例；每次运行内容唯一以避开哈希去重）
+const corpusTmp = mkdtempSync(join(tmpdir(), 'lexbench-core-'))
+const nonce = String(Date.now())
+const statuteTxt = join(corpusTmp, `自测法规_${nonce}.txt`).replace(/\//g, '\\')
+const caseTxt = join(corpusTmp, `自测案例_${nonce}.txt`).replace(/\//g, '\\')
+writeFileSync(
+  statuteTxt,
+  [
+    '第一章　总则',
+    '第一千零七十六条　夫妻双方自愿离婚的，应当签订书面离婚协议，并亲自到婚姻登记机关申请离婚登记。',
+    '第一千零七十七条　自婚姻登记机关收到离婚登记申请之日起三十日内，任何一方不愿意离婚的，可以向婚姻登记机关撤回离婚登记申请。',
+    '第一千零七十八条　婚姻登记机关查明双方确实是自愿离婚，并已经对子女抚养、财产以及债务处理等事项协商一致的，予以登记，发给离婚证。',
+    '第一千零七十九条　夫妻一方要求离婚的，可以由有关组织进行调解或者直接向人民法院提起离婚诉讼。'
+  ].join('\n'),
+  'utf-8'
+)
+writeFileSync(
+  caseTxt,
+  [
+    '北京市海淀区人民法院',
+    '民事判决书',
+    '（2026）京0108民初8888号',
+    '原告：张某。被告：李某。',
+    '本院认为，双方感情确已破裂，准予离婚。'
+  ].join('\n'),
+  'utf-8'
+)
+const files = [statuteTxt, caseTxt]
+console.log('自造语料:', files.map((f) => f.split('\\').pop()).join(', '))
 
 // 导入（走真实主进程：mammoth/pdfjs 分词建库）
 const imported = await evalJs(`window.lexbench.library.importDocuments(${JSON.stringify(files)}, '测试分类')`)
@@ -144,4 +167,5 @@ for (const [name, ok] of checks) {
   if (!ok) pass = false
 }
 if (errors.length) console.log('\n控制台错误详情:\n' + errors.join('\n'))
+rmSync(corpusTmp, { recursive: true, force: true })
 process.exit(pass ? 0 : 1)
