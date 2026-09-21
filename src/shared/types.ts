@@ -191,3 +191,43 @@ export interface ReadingProgress {
   paraIndex: number
   updatedAt: string
 }
+
+// ---------- AI 研究助手（v0.7.0） ----------
+
+/** AI 任务：解读本条 / 找案例 / 追问 */
+export type AiTask = 'explain' | 'cases' | 'followup'
+
+/** AI 模型档案（界面视图，密钥只回掩码） */
+export interface AiProfileRow {
+  id: number
+  name: string
+  base_url: string
+  model: string
+  /** 1=当前启用 */
+  is_active: number
+  created_at: string
+  /** 掩码后的密钥（未配置为空串） */
+  api_key_masked: string
+  api_key_set: boolean
+}
+
+/** 回答中的引用：articleId 为空表示库内未收录该条文（不可点击） */
+export interface AiCitation {
+  articleId: number | null
+  title: string
+  label: string
+  citeText: string
+}
+
+/** AI 问答归档（按条文/专题分组） */
+export interface AiMessageRow {
+  id: number
+  article_id: number | null
+  topic_id: number | null
+  action: AiTask
+  question: string
+  answer_md: string
+  /** JSON 序列化的 AiCitation[] */
+  citations: string
+  created_at: string
+}

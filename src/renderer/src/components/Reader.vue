@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import AiPanel from './AiPanel.vue'
 import type { ArticleDetail, DocumentDetail } from '@shared/types'
 
 /** 阅读器状态：法条 / 文档 / 书籍沉浸阅读（书籍由 ReadingView 渲染，这里仅为类型对齐与兜底） */
@@ -24,6 +25,10 @@ const emit = defineEmits<{
   /** ★ 收藏：App 打开 FavoriteDialog */
   favorite: []
   error: [message: string]
+  /** AI 面板正向提示（走 App 消息条） */
+  notice: [message: string]
+  /** AI 面板「去设置」→ App 打开 AI 设置对话框 */
+  'open-settings': []
 }>()
 
 const editing = ref(false)
@@ -170,6 +175,15 @@ const typeNames: Record<string, string> = {
           {{ pager.next.label }} →
         </button>
       </div>
+
+      <!-- AI 研究助手：正文下方按条文归档问答；引用可点击跳转 -->
+      <AiPanel
+        :article-id="state.data.article.id"
+        @open-article="emit('open-article', $event)"
+        @error="emit('error', $event)"
+        @notice="emit('notice', $event)"
+        @open-settings="emit('open-settings')"
+      />
     </article>
 
     <!-- 文档模式 -->

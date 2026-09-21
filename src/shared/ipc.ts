@@ -1,6 +1,8 @@
 // IPC 契约类型：三进程共用的判别联合与结果类型
 // 通道命名规则「域:动作」（myresume 模式）；自测专用通道带 __test 前缀且仅开发模式注册
 
+import type { AiTask } from './types'
+
 export type UpdateStatus =
   | { type: 'checking' }
   | { type: 'available'; version: string }
@@ -55,6 +57,36 @@ export interface BackupImportOutcome {
   canceled: boolean
   /** 暂存写入完成、需重启软件生效 */
   needsRestart: boolean
+}
+
+// ---------- AI 研究助手（v0.7.0） ----------
+
+/** 保存模型档案：id 缺省=新建；apiKey 留空=保留原值 */
+export interface AiProfilePatch {
+  id?: number
+  name: string
+  baseUrl: string
+  model: string
+  apiKey?: string
+}
+
+/** 发起一次 AI 任务；taskId 用于并行任务互不串台 */
+export interface AiRunRequest {
+  taskId: string
+  task: AiTask
+  articleId?: number
+  question?: string
+  /** 指定档案（缺省用当前启用档案） */
+  profileId?: number
+}
+
+/** 流式进度：delta 为增量文本；done 时携带归档后的消息 id */
+export interface AiProgress {
+  taskId: string
+  delta: string
+  done: boolean
+  error?: string
+  messageId?: number
 }
 
 // ---------- 检索（阶段1） ----------

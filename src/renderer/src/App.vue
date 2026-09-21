@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AiSettingsDialog from './components/AiSettingsDialog.vue'
 import BackupDialog from './components/BackupDialog.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DocLibrary from './components/DocLibrary.vue'
@@ -57,6 +58,8 @@ const preReaderTab = ref<'results' | 'topics' | 'library'>('results')
 const showImport = ref(false)
 /** 数据备份/恢复对话框（v0.5.0 数据包） */
 const showBackup = ref(false)
+/** AI 模型档案设置对话框（v0.7.0） */
+const showAiSettings = ref(false)
 const dropFiles = ref<ImportFileEntry[]>([])
 const dragging = ref(false)
 const error = ref('')
@@ -517,6 +520,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <button class="top-btn" @click="showImport = true">导入文档</button>
+      <button class="top-btn" title="配置 AI 模型档案（解读法条 / 找案例 / 追问）" @click="showAiSettings = true">
+        AI 设置
+      </button>
       <button class="top-btn" title="导出/导入数据包（换电脑与备份）" @click="showBackup = true">
         数据
       </button>
@@ -609,6 +615,8 @@ onBeforeUnmount(() => {
           @saved="onArticleSaved"
           @favorite="openFavorite"
           @error="showError"
+          @notice="setNotice"
+          @open-settings="showAiSettings = true"
         />
       </section>
 
@@ -643,6 +651,12 @@ onBeforeUnmount(() => {
 
     <BackupDialog
       v-model:visible="showBackup"
+      @error="showError"
+      @notice="setNotice"
+    />
+
+    <AiSettingsDialog
+      v-model:visible="showAiSettings"
       @error="showError"
       @notice="setNotice"
     />

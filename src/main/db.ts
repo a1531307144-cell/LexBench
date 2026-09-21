@@ -192,6 +192,20 @@ ALTER TABLE doc_groups ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
 UPDATE doc_groups SET sort_order = id;
 `
 
+const MIGRATION_009_AI_PROFILES = `-- 009_ai_profiles: 多个 AI 模型档案（接口地址 / 模型 / API Key），可切换
+-- 密钥只存本机数据库（数据包迁移时会随包带走，属用户自己的凭据）；界面只显示掩码
+
+CREATE TABLE IF NOT EXISTS ai_profiles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    base_url   TEXT NOT NULL DEFAULT '',
+    api_key    TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
+    is_active  INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -201,7 +215,8 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 5, sql: MIGRATION_005_READING_V2 },
   { version: 6, sql: MIGRATION_006_FILE_EXT },
   { version: 7, sql: MIGRATION_007_DOC_GROUPS },
-  { version: 8, sql: MIGRATION_008_GROUP_ORDER }
+  { version: 8, sql: MIGRATION_008_GROUP_ORDER },
+  { version: 9, sql: MIGRATION_009_AI_PROFILES }
 ]
 
 /** 全局唯一连接（单例） */

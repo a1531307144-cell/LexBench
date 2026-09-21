@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AddItemResult,
+  AiProfilePatch,
+  AiProgress,
+  AiRunRequest,
   BackupImportOutcome,
   BookNoteInput,
   ItemMoveDirection,
@@ -9,6 +12,8 @@ import type {
   UpdateStatus
 } from '../shared/ipc'
 import type {
+  AiMessageRow,
+  AiProfileRow,
   ArticleDetail,
   BookNoteRow,
   DocGroupRow,
@@ -82,6 +87,37 @@ const api = {
   search: {
     run: (q: string, mode: SearchMode): Promise<SearchOutcome> =>
       invoke('search:run', q, mode)
+  },
+  ai: {
+    /** 全部模型档案（密钥只回掩码） */
+    listProfiles: (): Promise<AiProfileRow[]> => invoke('ai:listProfiles'),
+    /** 新建 / 更新档案；apiKey 留空=保留原值 */
+    saveProfile: (
+      patch: AiProfilePatch
+    ): Promise<{ ok: boolean; error?: string; id?: number }> => invoke('ai:saveProfile', patch),
+    deleteProfile: (id: number): Promise<void> => invoke('ai:deleteProfile', id),
+    setActive: (id: number): Promise<void> => invoke('ai:setActive', id),
+    /** 测试连接（可传未保存的表单；apiKey 留空用已存密钥） */
+    test: (probe: {
+      id?: number
+      baseUrl?: string
+      model?: string
+      apiKey?: string
+    }): Promise<{ ok: boolean; error?: string; reply?: string }> => invoke('ai:test', probe),
+    /** 发起 AI 任务（解读 / 找案例 / 追问），流式增量经 onProgress 回来 */
+    run: (req: AiRunRequest): Promise<{ ok: boolean; error?: string }> => invoke('ai:run', req),
+    cancel: (taskId: string): Promise<void> => invoke('ai:cancel', taskId),
+    /** 订阅流式进度；返回取消订阅函数（组件卸载时必须调用，避免监听器泄漏） */
+    onProgress: (cb: (p: AiProgress) => void): (() => void) => {
+      const handler = (_e: unknown, p: AiProgress): void => cb(p)
+      ipcRenderer.on('ai:progress', handler)
+      return () => {
+        ipcRenderer.removeListener('ai:progress', handler)
+      }
+    },
+    /** 某条文的历史问答（升序） */
+    history: (articleId: number): Promise<AiMessageRow[]> => invoke('ai:history', articleId),
+    deleteMessage: (id: number): Promise<void> => invoke('ai:deleteMessage', id)
   },
   groups: {
     /** 某类型下的分类文件夹（含文档数）；不传类型则返回全部 */
