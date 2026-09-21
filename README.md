@@ -52,5 +52,4 @@
 ## 开发
 
 - `backend` 不存在了——v0.3.0 起是纯 Electron 工程：`src/main`（主进程）/ `src/preload`（白名单 API）/ `src/renderer`（Vue 3 界面）/ `src/shared`（三进程共享纯函数，vitest 覆盖）
-- 旧 Python 版完整保留在 `legacy/` 目录，仅作移植参考
 - 发布：推 `v*` 标签 → GitHub Actions 自动测试 → 隐私扫描 → 构建安装包 → 发布 Release

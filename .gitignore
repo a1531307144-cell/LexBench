@@ -14,8 +14,3 @@ scripts/.privacy-terms
 *.db
 *.db-wal
 *.db-shm
-
-# 旧 Python 工程遗留的运行产物（legacy/ 源码本身保留）
-legacy/.venv/
-legacy/**/__pycache__/
-legacy/.pytest_cache/
