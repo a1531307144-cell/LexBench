@@ -151,6 +151,25 @@ for (let i = 0; i < 20; i++) {
 }
 console.log('=== 7. UI 真实渲染结果列表 ===', uiHasResults ? 'OK' : 'FAIL（点检索后列表为空）')
 
+// 清理：删掉本脚本导入的测试文档（含此前版本遗留的同名文档）。
+// 只删临时文件是不够的——文档进了库就一直躺在那儿，跑几次开发库就多几份垃圾。
+const junkIds = JSON.parse(
+  (await evalJs(
+    `window.lexbench.library.listDocuments().then((d) => JSON.stringify(d.filter((x) => /^自测(法规|案例)_/.test(x.title)).map((x) => x.id)))`
+  )) || '[]'
+)
+for (const docId of junkIds) {
+  await evalJs(`window.lexbench.library.deleteDocument(${docId}).catch(() => null)`)
+}
+const junkLeft = JSON.parse(
+  (await evalJs(
+    `window.lexbench.library.listDocuments().then((d) => JSON.stringify(d.filter((x) => /^自测(法规|案例)_/.test(x.title)).map((x) => x.id)))`
+  )) || '[]'
+).length
+// 破坏性收尾后重载：刚打开过被删的文档，不重载会留下僵尸视图连累后续断言
+await evalJs('(() => { location.reload(); return true })()')
+await new Promise((r) => setTimeout(r, 1500))
+
 console.log('\n=== 结论 ===')
 const checks = [
   ['全部文件导入成功', allImported],
@@ -159,6 +178,7 @@ const checks = [
   ['阅读器 prev/next', !!detail && (detail.prev !== undefined)],
   ['全文检索有结果', fulltext?.mode === 'fulltext' && fulltext.results.length > 0],
   ['UI 渲染结果列表', uiHasResults],
+  ['测试文档已清理（不留垃圾在库里）', junkLeft === 0],
   ['零控制台错误', errors.length === 0]
 ]
 let pass = true

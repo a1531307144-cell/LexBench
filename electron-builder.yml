@@ -12,11 +12,14 @@ files:
   - "!**/.DS_Store"
 
 # 随包附带的预置法条（首次启动自动导入；仅公开法条文本，元数据已清洗）
+# 注意 order.json 必须一起打进去：它是分类文件夹的展示顺序，缺了会退回按目录名的
+# 字母序（公司法/劳动法/民事诉讼法/民法典及相关/涉外…），与用户排定的顺序不一致
 extraResources:
   - from: seed
     to: seed
     filter:
       - "**/*.docx"
+      - "order.json"
 
 win:
   icon: build/icon.ico
