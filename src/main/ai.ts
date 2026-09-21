@@ -11,7 +11,16 @@ import { ipcMain } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import type { DatabaseSync } from 'node:sqlite'
 import type { AiProfilePatch, AiProgress, AiRunRequest } from '../shared/ipc'
-import type { AiCitation, AiMessageRow, AiProfileRow, AiTask } from '../shared/types'
+import type { AiCitation, AiMessageRow, AiProfileRow, AiProtocol, AiTask } from '../shared/types'
+import {
+  chatUrl,
+  authHeaders,
+  buildBody,
+  pickReply,
+  parseSseLine,
+  endpointHint,
+  type ChatMessage
+} from '@shared/aiProtocol'
 import {
   HISTORY_LIMIT,
   SYSTEM_PROMPT,
@@ -60,6 +69,11 @@ function maskKey(key: string): string {
   return key.length > 8 ? `${key.slice(0, 3)}****${key.slice(-3)}` : '****'
 }
 
+/** 协议白名单归一：未知值一律按 OpenAI 兼容处理 */
+function normalizeProtocol(v: unknown): AiProtocol {
+  return v === 'anthropic' ? 'anthropic' : 'openai'
+}
+
 /** 行 → AiProfileRow：密钥只以掩码出主进程（明文绝不回渲染层） */
 function toProfileRow(row: DbRow): AiProfileRow {
   const key = String(row['api_key'] ?? '')
@@ -68,6 +82,7 @@ function toProfileRow(row: DbRow): AiProfileRow {
     name: String(row['name']),
     base_url: String(row['base_url'] ?? ''),
     model: String(row['model'] ?? ''),
+    protocol: normalizeProtocol(row['protocol']),
     is_active: Number(row['is_active']) ? 1 : 0,
     created_at: String(row['created_at']),
     api_key_masked: maskKey(key),
@@ -103,11 +118,12 @@ function getActiveProfileRow(db: DatabaseSync): DbRow | undefined {
     | undefined
 }
 
-/** 一次调用真正用到的三项配置（已 trim，去掉了「选哪份档案」的过程） */
+/** 一次调用真正用到的配置（已 trim，去掉了「选哪份档案」的过程） */
 interface ResolvedConfig {
   baseUrl: string
   model: string
   apiKey: string
+  protocol: AiProtocol
 }
 
 /** 显式配置（测试连接可传未保存的表单；空串/缺省一律视为未提供） */
@@ -115,6 +131,7 @@ interface AiProbe {
   id?: number
   baseUrl?: string
   model?: string
+  protocol?: AiProtocol
   apiKey?: string
 }
 
@@ -143,10 +160,18 @@ function resolveConfig(db: DatabaseSync, probe: AiProbe): ResolvedConfig {
     if (e) return e
     return String(scoped?.['api_key'] ?? '').trim() || String(active?.['api_key'] ?? '').trim()
   }
+  const protocol: AiProtocol =
+    probe.protocol ??
+    (scoped?.['protocol'] !== undefined
+      ? normalizeProtocol(scoped['protocol'])
+      : active?.['protocol'] !== undefined
+        ? normalizeProtocol(active['protocol'])
+        : 'openai')
   return {
     baseUrl: pick(probe.baseUrl, 'baseUrl'),
     model: pick(probe.model, 'model'),
-    apiKey: pick(probe.apiKey, 'apiKey')
+    apiKey: pick(probe.apiKey, 'apiKey'),
+    protocol
   }
 }
 
@@ -157,21 +182,8 @@ function isConfigured(cfg: ResolvedConfig): boolean {
 
 // ---------- HTTP（OpenAI 兼容协议） ----------
 
-/** 接口地址：baseUrl 去尾斜杠后拼 /chat/completions */
-function chatUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/chat/completions`
-}
-
-/** 请求头：Bearer 密钥 + JSON（密钥不进日志、不进错误文案） */
-function authHeaders(apiKey: string): Record<string, string> {
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }
-}
-
-/** 单条对话消息（system / user / assistant 三态，与 OpenAI 兼容协议一致） */
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
+// 请求地址 / 请求头 / 请求体 / 取文 / SSE 解析已抽到 @shared/aiProtocol.ts：
+// 两套协议走同一入口，纯函数层可被 vitest 直接覆盖（主进程代码此前是测试盲区）
 
 /** 网络异常原因：取消（正常中止）与超时给中文说明，其余取原始 message */
 function networkReason(err: unknown): string {
@@ -183,14 +195,34 @@ function networkReason(err: unknown): string {
 async function httpError(res: Response): Promise<Error> {
   if (res.status === 401) return new Error('接口认证失败（401）：请检查 API Key 是否正确')
   const text = await res.text().catch(() => '')
-  return new Error(`接口返回 ${res.status}：${text.slice(0, ERROR_BODY_CLIP)}`)
+  // 两套协议的错误体都是 {"error":{"message":"…"}}：优先只透出那句话，别把整坨 JSON 糊给用户
+  let detail = ''
+  try {
+    detail = embeddedError(JSON.parse(text)) ?? ''
+  } catch {
+    detail = ''
+  }
+  return new Error(`接口返回 ${res.status}：${(detail || text).slice(0, ERROR_BODY_CLIP)}`)
 }
 
-/** 读 choices[0].message.content；结构不符返回 null（不抛，交给调用方给中文提示） */
-function pickReply(data: unknown): string | null {
-  const choices = (data as { choices?: Array<{ message?: { content?: unknown } }> } | null)?.choices
-  const content = choices?.[0]?.message?.content
-  return typeof content === 'string' ? content : null
+/**
+ * 从 200 响应体里提取内嵌错误信息。
+ * 部分兼容网关失败时仍回 200，把错误放在体内（如 {"code":500,"msg":"404 NOT_FOUND"} 或
+ * {"error":{"code":"1001","message":"…"}}）——这类情况要把体内的原因透给用户。
+ */
+function embeddedError(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const d = data as { msg?: unknown; message?: unknown; code?: unknown; success?: unknown; error?: unknown }
+  if (d.error && typeof d.error === 'object') {
+    const e = d.error as { message?: unknown }
+    if (typeof e.message === 'string' && e.message) return e.message
+  }
+  const text = typeof d.msg === 'string' ? d.msg : typeof d.message === 'string' ? d.message : ''
+  const flagged =
+    d.success === false ||
+    (typeof d.code === 'number' && d.code !== 0) ||
+    (typeof d.code === 'string' && d.code !== '0' && d.code !== '')
+  return flagged && text ? text : null
 }
 
 /** 测试连接：非流式 POST，30 秒超时；一切失败都以 {ok:false,error} 返回（不抛） */
@@ -199,14 +231,12 @@ async function probeConnection(cfg: ResolvedConfig): Promise<{ ok: boolean; erro
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS)
   try {
-    const res = await fetch(chatUrl(cfg.baseUrl), {
+    const res = await fetch(chatUrl(cfg.protocol, cfg.baseUrl), {
       method: 'POST',
-      headers: authHeaders(cfg.apiKey),
-      body: JSON.stringify({
-        model: cfg.model,
-        messages: [{ role: 'user', content: '请回复：连接正常' }],
-        stream: false
-      }),
+      headers: authHeaders(cfg.protocol, cfg.apiKey),
+      body: JSON.stringify(
+        buildBody(cfg.protocol, cfg.model, [{ role: 'user', content: '请回复：连接正常' }], false)
+      ),
       signal: controller.signal
     })
     if (!res.ok) return { ok: false, error: (await httpError(res)).message }
@@ -217,35 +247,21 @@ async function probeConnection(cfg: ResolvedConfig): Promise<{ ok: boolean; erro
     } catch {
       return { ok: false, error: '接口响应格式异常：返回内容不是合法 JSON' }
     }
-    const reply = pickReply(data)
+    const reply = pickReply(cfg.protocol, data)
     if (reply === null) {
-      return { ok: false, error: '接口响应格式异常：未取到 choices[0].message.content' }
+      // 有些网关会用「HTTP 200 + 错误体」表达失败（如协议选错时回 {"code":500,"msg":"404 NOT_FOUND"}），
+      // 此时报「格式异常」会让人一头雾水——直接把体内错误抛出来，并按当前协议给出正确样例
+      const embedded = embeddedError(data)
+      if (embedded) {
+        return { ok: false, error: `接口返回：${embedded}（${endpointHint(cfg.protocol)}）` }
+      }
+      return { ok: false, error: `接口响应格式异常：未取到回答内容（${endpointHint(cfg.protocol)}）` }
     }
     return { ok: true, reply: reply.trim().slice(0, TEST_REPLY_CLIP) }
   } catch (err) {
     return { ok: false, error: `网络请求失败：${networkReason(err)}` }
   } finally {
     clearTimeout(timer)
-  }
-}
-
-/** 一行 SSE 的解析结果：增量文本 / 结束标记 / 忽略 */
-type SseLine = { kind: 'delta'; text: string } | { kind: 'done' } | { kind: 'skip' }
-
-/** 解析一行 SSE：以 'data: ' 开头才是数据行，'[DONE]' 结束，取 choices[0].delta.content */
-function parseSseLine(line: string): SseLine {
-  if (!line.startsWith('data:')) return { kind: 'skip' }
-  const payload = line.slice('data:'.length).trim()
-  if (!payload) return { kind: 'skip' }
-  if (payload === '[DONE]') return { kind: 'done' }
-  try {
-    const data = JSON.parse(payload) as {
-      choices?: Array<{ delta?: { content?: unknown } }>
-    }
-    const text = data.choices?.[0]?.delta?.content
-    return typeof text === 'string' && text ? { kind: 'delta', text } : { kind: 'skip' }
-  } catch {
-    return { kind: 'skip' } // 半截/非标准行一律忽略，不打断整段回答
   }
 }
 
@@ -262,10 +278,10 @@ async function streamChat(
   state: TaskState,
   onDelta: (delta: string) => void
 ): Promise<string> {
-  const res = await fetch(chatUrl(cfg.baseUrl), {
+  const res = await fetch(chatUrl(cfg.protocol, cfg.baseUrl), {
     method: 'POST',
-    headers: authHeaders(cfg.apiKey),
-    body: JSON.stringify({ model: cfg.model, messages, temperature: 0.3, stream: true }),
+    headers: authHeaders(cfg.protocol, cfg.apiKey),
+    body: JSON.stringify(buildBody(cfg.protocol, cfg.model, messages, true)),
     signal: state.controller.signal
   })
   if (!res.ok) throw await httpError(res)
@@ -283,8 +299,9 @@ async function streamChat(
     while (at >= 0) {
       const line = buffer.slice(0, at).replace(/\r$/, '')
       buffer = buffer.slice(at + 1)
-      const parsed = parseSseLine(line)
+      const parsed = parseSseLine(cfg.protocol, line)
       if (parsed.kind === 'done') return answer
+      if (parsed.kind === 'error') throw new Error(`接口返回：${parsed.message}`)
       if (parsed.kind === 'delta') {
         answer += parsed.text
         onDelta(parsed.text)
@@ -295,11 +312,26 @@ async function streamChat(
   // 流结束时缓冲区可能还剩最后一行（无尾随换行的实现）：按同一规则再解一次，避免丢尾段
   const tail = buffer.replace(/\r$/, '')
   if (tail.trim()) {
-    const parsed = parseSseLine(tail)
+    const parsed = parseSseLine(cfg.protocol, tail)
     if (parsed.kind === 'delta') {
       answer += parsed.text
       onDelta(parsed.text)
     }
+    if (parsed.kind === 'error') throw new Error(`接口返回：${parsed.message}`)
+  }
+  if (!answer.trim()) {
+    // 一个增量都没收到：多半是「200 + 错误体」（协议选错 / 端点填错）——
+    // 把体内的原因解析出来，别让用户面对一个空回答
+    let embedded: string | null = null
+    try {
+      embedded = embeddedError(JSON.parse(buffer.trim() || 'null'))
+    } catch {
+      embedded = null
+    }
+    if (embedded) {
+      throw new Error(`接口返回：${embedded}（${endpointHint(cfg.protocol)}）`)
+    }
+    throw new Error('接口没有返回任何内容，请检查接口地址与模型名是否正确')
   }
   return answer
 }
@@ -493,30 +525,25 @@ export function registerAiIpc(): void {
       const apiKey = String(p.apiKey ?? '').trim()
       if (p.id != null) {
         const id = Number(p.id)
-        if (getProfileRow(db, id) === undefined) return { ok: false, error: '档案不存在' }
-        if (apiKey) {
-          db.prepare('UPDATE ai_profiles SET name=?, base_url=?, model=?, api_key=? WHERE id=?').run(
-            name,
-            baseUrl,
-            model,
-            apiKey,
-            id
-          )
-        } else {
-          db.prepare('UPDATE ai_profiles SET name=?, base_url=?, model=? WHERE id=?').run(
-            name,
-            baseUrl,
-            model,
-            id
-          )
-        }
+        const existing = getProfileRow(db, id)
+        if (existing === undefined) return { ok: false, error: '档案不存在' }
+        // 未提供协议时保留原值（老档案、老调用方不会被打回 openai）
+        const protocol =
+          p.protocol === undefined ? normalizeProtocol(existing['protocol']) : normalizeProtocol(p.protocol)
+        // apiKey 留空 = 保留原值
+        const nextKey = apiKey || String(existing['api_key'] ?? '')
+        db.prepare(
+          'UPDATE ai_profiles SET name=?, base_url=?, model=?, protocol=?, api_key=? WHERE id=?'
+        ).run(name, baseUrl, model, protocol, nextKey, id)
         return { ok: true, id }
       }
       const count = db.prepare('SELECT COUNT(*) AS n FROM ai_profiles').get() as DbRow
       const isFirst = Number(count['n']) === 0
       const info = db
-        .prepare('INSERT INTO ai_profiles(name, base_url, model, api_key, is_active) VALUES(?,?,?,?,?)')
-        .run(name, baseUrl, model, apiKey, isFirst ? 1 : 0)
+        .prepare(
+          'INSERT INTO ai_profiles(name, base_url, model, protocol, api_key, is_active) VALUES(?,?,?,?,?,?)'
+        )
+        .run(name, baseUrl, model, normalizeProtocol(p.protocol), apiKey, isFirst ? 1 : 0)
       return { ok: true, id: Number(info.lastInsertRowid) }
     }
   )

@@ -206,6 +206,21 @@ CREATE TABLE IF NOT EXISTS ai_profiles (
 );
 `
 
+const MIGRATION_010_AI_PROTOCOL = `-- 010_ai_protocol: 每个 AI 档案可选接口协议（openai = /chat/completions；anthropic = /v1/messages）
+
+ALTER TABLE ai_profiles ADD COLUMN protocol TEXT NOT NULL DEFAULT 'openai';
+`
+
+// 011_ai_protocol_guess：把地址明显指向 Anthropic 入口的档案改判为 anthropic 协议。
+// 在只有一种协议时，用户照样会把 …/api/anthropic 填进「接口地址」，结果被按 OpenAI 调用，
+// 收到的是「200 + {"code":500,"msg":"404 NOT_FOUND"}」这种看不懂的报错。迁移里一次纠正，
+// 用户升级后无需自己去点一下协议开关。
+const MIGRATION_011_AI_PROTOCOL_GUESS = `-- 011_ai_protocol_guess
+
+UPDATE ai_profiles SET protocol = 'anthropic'
+  WHERE protocol = 'openai' AND lower(base_url) LIKE '%/anthropic%';
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -216,7 +231,9 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 6, sql: MIGRATION_006_FILE_EXT },
   { version: 7, sql: MIGRATION_007_DOC_GROUPS },
   { version: 8, sql: MIGRATION_008_GROUP_ORDER },
-  { version: 9, sql: MIGRATION_009_AI_PROFILES }
+  { version: 9, sql: MIGRATION_009_AI_PROFILES },
+  { version: 10, sql: MIGRATION_010_AI_PROTOCOL },
+  { version: 11, sql: MIGRATION_011_AI_PROTOCOL_GUESS }
 ]
 
 /** 全局唯一连接（单例） */

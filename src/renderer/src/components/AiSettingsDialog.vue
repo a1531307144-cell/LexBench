@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
-import type { AiProfileRow } from '@shared/types'
+import type { AiProfileRow, AiProtocol } from '@shared/types'
 
 const props = defineProps<{
   visible: boolean
@@ -19,6 +19,7 @@ const profiles = ref<AiProfileRow[]>([])
 /** null = 新建档案；否则为被编辑档案 id */
 const editingId = ref<number | null>(null)
 const fName = ref('')
+const fProtocol = ref<AiProtocol>('openai')
 const fBaseUrl = ref('')
 const fModel = ref('')
 const fApiKey = ref('')
@@ -32,6 +33,22 @@ const testOk = ref('')
 const pendingDel = ref<AiProfileRow | null>(null)
 
 const editing = computed(() => editingId.value !== null)
+
+/** 两种协议的选项（分段控件用） */
+const PROTOCOLS: Array<{ value: AiProtocol; label: string }> = [
+  { value: 'openai', label: 'OpenAI 兼容' },
+  { value: 'anthropic', label: 'Anthropic 兼容' }
+]
+
+/** 地址与模型名示例随协议走——替代原先那段常驻长说明，不占版面 */
+const urlPlaceholder = computed(() =>
+  fProtocol.value === 'anthropic'
+    ? 'https://open.bigmodel.cn/api/anthropic'
+    : 'https://api.deepseek.com/v1'
+)
+const modelPlaceholder = computed(() =>
+  fProtocol.value === 'anthropic' ? '该网关提供的模型名' : 'deepseek-chat'
+)
 const delMessage = computed(() =>
   pendingDel.value ? `确定删除档案「${pendingDel.value.name}」？此操作不可撤销。` : ''
 )
@@ -71,6 +88,7 @@ async function load(): Promise<void> {
 function resetForm(): void {
   editingId.value = null
   fName.value = ''
+  fProtocol.value = 'openai'
   fBaseUrl.value = ''
   fModel.value = ''
   fApiKey.value = ''
@@ -81,6 +99,7 @@ function resetForm(): void {
 function editProfile(p: AiProfileRow): void {
   editingId.value = p.id
   fName.value = p.name
+  fProtocol.value = p.protocol
   fBaseUrl.value = p.base_url
   fModel.value = p.model
   // 编辑时留空 = 保留原密钥（主进程按此约定处理）
@@ -118,6 +137,7 @@ async function testConn(): Promise<void> {
       id: editingId.value ?? undefined,
       baseUrl: fBaseUrl.value.trim(),
       model: fModel.value.trim(),
+      protocol: fProtocol.value,
       apiKey: fApiKey.value.trim() || undefined
     })
     if (r.ok) testOk.value = r.reply || '（模型已响应）'
@@ -146,6 +166,7 @@ async function save(): Promise<void> {
       name: fName.value.trim(),
       baseUrl: fBaseUrl.value.trim(),
       model: fModel.value.trim(),
+      protocol: fProtocol.value,
       apiKey: fApiKey.value.trim() || undefined
     })
     if (!r.ok) {
@@ -216,7 +237,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
         <div class="as-body">
           <div class="as-info">
-            <p>支持 OpenAI 兼容接口（DeepSeek / 智谱 / 通义 / Kimi 等），填服务商给出的接口地址与模型名即可。</p>
+            <p>支持 OpenAI 兼容与 Anthropic 兼容两种接口（DeepSeek / 智谱 / 通义 / Kimi 等），按服务商给出的地址与模型名填写即可。</p>
             <p>API Key 只存本机数据库，界面仅显示掩码，不会随检索结果外发。</p>
           </div>
 
@@ -232,7 +253,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <span class="as-row-model">{{ p.model }}</span>
               </div>
               <div class="as-row-sub">
-                {{ p.base_url }} · {{ p.api_key_set ? p.api_key_masked : '未设置密钥' }}
+                {{ p.base_url }} · {{ p.protocol === 'anthropic' ? 'Anthropic 协议' : 'OpenAI 协议' }} ·
+                {{ p.api_key_set ? p.api_key_masked : '未设置密钥' }}
               </div>
             </div>
             <div class="as-row-ops">
@@ -255,19 +277,43 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <span class="as-label">档案名称</span>
             <input v-model="fName" class="as-input" type="text" placeholder="如：DeepSeek" :disabled="busy" />
           </label>
+          <div class="as-field">
+            <span class="as-label">接口协议</span>
+            <div class="as-seg" role="radiogroup" aria-label="接口协议">
+              <button
+                v-for="opt in PROTOCOLS"
+                :key="opt.value"
+                type="button"
+                class="as-seg-btn"
+                :class="{ on: fProtocol === opt.value }"
+                role="radio"
+                :aria-checked="fProtocol === opt.value"
+                :disabled="busy"
+                @click="fProtocol = opt.value"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+          </div>
           <label class="as-field">
             <span class="as-label">接口地址</span>
             <input
               v-model="fBaseUrl"
               class="as-input"
               type="text"
-              placeholder="https://api.deepseek.com/v1"
+              :placeholder="urlPlaceholder"
               :disabled="busy"
             />
           </label>
           <label class="as-field">
             <span class="as-label">模型名</span>
-            <input v-model="fModel" class="as-input" type="text" placeholder="deepseek-chat" :disabled="busy" />
+            <input
+              v-model="fModel"
+              class="as-input"
+              type="text"
+              :placeholder="modelPlaceholder"
+              :disabled="busy"
+            />
           </label>
           <label class="as-field">
             <span class="as-label">API Key</span>
@@ -523,6 +569,43 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-size: 12px;
   color: var(--lb-muted);
   text-align: right;
+}
+
+.as-seg {
+  flex: 1;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--lb-border-strong);
+  border-radius: var(--lb-radius-s);
+  background: #fbfbfe;
+}
+
+.as-seg-btn {
+  flex: 1;
+  height: 26px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lb-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.as-seg-btn.on {
+  background: #fff;
+  color: var(--lb-text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.as-seg-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .as-input {

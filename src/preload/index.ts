@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AddItemResult,
+  AiProbePayload,
   AiProfilePatch,
   AiProgress,
   AiRunRequest,
@@ -104,12 +105,8 @@ const api = {
     deleteProfile: (id: number): Promise<void> => invoke('ai:deleteProfile', id),
     setActive: (id: number): Promise<void> => invoke('ai:setActive', id),
     /** 测试连接（可传未保存的表单；apiKey 留空用已存密钥） */
-    test: (probe: {
-      id?: number
-      baseUrl?: string
-      model?: string
-      apiKey?: string
-    }): Promise<{ ok: boolean; error?: string; reply?: string }> => invoke('ai:test', probe),
+    test: (probe: AiProbePayload): Promise<{ ok: boolean; error?: string; reply?: string }> =>
+      invoke('ai:test', probe),
     /** 发起 AI 任务（解读 / 找案例 / 追问），流式增量经 onProgress 回来 */
     run: (req: AiRunRequest): Promise<{ ok: boolean; error?: string }> => invoke('ai:run', req),
     cancel: (taskId: string): Promise<void> => invoke('ai:cancel', taskId),

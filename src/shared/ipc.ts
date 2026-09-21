@@ -1,7 +1,7 @@
 // IPC 契约类型：三进程共用的判别联合与结果类型
 // 通道命名规则「域:动作」（myresume 模式）；自测专用通道带 __test 前缀且仅开发模式注册
 
-import type { AiTask } from './types'
+import type { AiProtocol, AiTask } from './types'
 
 export type UpdateStatus =
   | { type: 'checking' }
@@ -69,6 +69,19 @@ export interface AiProfilePatch {
   name: string
   baseUrl: string
   model: string
+  protocol?: AiProtocol
+  apiKey?: string
+}
+
+/**
+ * 测试连接用的表单快照：可传未保存的值；缺省字段回落到已存档案。
+ * 主进程与预加载共用同一份契约，避免两边各写一遍并慢慢漂移。
+ */
+export interface AiProbePayload {
+  id?: number
+  baseUrl?: string
+  model?: string
+  protocol?: AiProtocol
   apiKey?: string
 }
 

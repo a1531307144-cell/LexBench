@@ -197,12 +197,16 @@ export interface ReadingProgress {
 /** AI 任务：解读本条 / 找案例 / 追问 */
 export type AiTask = 'explain' | 'cases' | 'followup'
 
+/** 接口协议：OpenAI 兼容（/chat/completions）或 Anthropic 兼容（/v1/messages） */
+export type AiProtocol = 'openai' | 'anthropic'
+
 /** AI 模型档案（界面视图，密钥只回掩码） */
 export interface AiProfileRow {
   id: number
   name: string
   base_url: string
   model: string
+  protocol: AiProtocol
   /** 1=当前启用 */
   is_active: number
   created_at: string
