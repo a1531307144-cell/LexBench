@@ -20,8 +20,9 @@ function createWindow(): void {
     minHeight: 640,
     show: false,
     title: '法研台',
-    backgroundColor: '#f7f7fb',
-    autoHideMenuBar: true,
+    backgroundColor: '#f5f5f7',
+    // 无边框窗口：去掉系统标题栏，控制按钮由顶栏自绘（ VS Code / Notion 方案）
+    frame: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -35,6 +36,14 @@ function createWindow(): void {
   win.on('ready-to-show', () => {
     win.show()
   })
+
+  // 自绘标题栏的窗口控制（渲染进程按钮 → IPC）
+  ipcMain.on('win:minimize', () => win.minimize())
+  ipcMain.on('win:maximize', () => {
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.on('win:close', () => win.close())
 
   // 外部链接一律交给系统默认浏览器，不在应用内开新窗口
   win.webContents.setWindowOpenHandler((details) => {

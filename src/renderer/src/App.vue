@@ -42,6 +42,36 @@ interface ImportFileEntry {
 
 const query = ref('')
 const modeSel = ref<SearchMode>('auto') // 检索模式三选，默认自动（修复旧版 #13）
+/** 检索模式下拉（自定义菜单，替代原生 select 的系统样式） */
+const modeMenuOpen = ref(false)
+const modeNames: Record<SearchMode, string> = {
+  auto: '自动',
+  locate: '法条定位',
+  fulltext: '全文搜索'
+}
+
+function pickMode(m: SearchMode): void {
+  modeSel.value = m
+  modeMenuOpen.value = false
+}
+
+/** 点击菜单外部时收起下拉 */
+function onDocClickForMode(e: MouseEvent): void {
+  if (!(e.target as HTMLElement).closest('.mode-menu')) modeMenuOpen.value = false
+}
+
+// ---------- 无边框窗口控制（自绘 ──□✕） ----------
+function winMinimize(): void {
+  window.lexbench.win.minimize()
+}
+
+function winToggleMax(): void {
+  window.lexbench.win.toggleMaximize()
+}
+
+function winClose(): void {
+  window.lexbench.win.close()
+}
 const searching = ref(false)
 const searched = ref(false)
 const lastQuery = ref('') // 最近一次检索实际使用的词（展示用，不随输入框实时变化）
@@ -295,10 +325,6 @@ async function doSearch(): Promise<void> {
   }
 }
 
-function onModeChange(e: Event): void {
-  modeSel.value = (e.target as HTMLSelectElement).value as SearchMode
-}
-
 async function openArticle(id: number): Promise<void> {
   readerLoading.value = true
   try {
@@ -463,6 +489,7 @@ onMounted(() => {
   window.addEventListener('dragleave', onDragLeave)
   window.addEventListener('dragover', onDragOver)
   window.addEventListener('drop', onDrop)
+  document.addEventListener('click', onDocClickForMode)
   void refreshDocs()
   void refreshGroups()
   void refreshTopics()
@@ -488,6 +515,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragleave', onDragLeave)
   window.removeEventListener('dragover', onDragOver)
   window.removeEventListener('drop', onDrop)
+  document.removeEventListener('click', onDocClickForMode)
   clearTimeout(noticeTimer)
 })
 </script>
@@ -502,11 +530,39 @@ onBeforeUnmount(() => {
       </div>
       <div class="search-area">
         <div class="search-group">
-          <select class="mode-select" :value="modeSel" title="检索模式" @change="onModeChange">
-            <option value="auto">自动</option>
-            <option value="locate">法条定位</option>
-            <option value="fulltext">全文搜索</option>
-          </select>
+          <div class="mode-menu">
+            <button class="mode-trigger" title="检索模式" @click="modeMenuOpen = !modeMenuOpen">
+              <span>{{ modeNames[modeSel] }}</span>
+              <svg
+                class="mode-caret"
+                :class="{ open: modeMenuOpen }"
+                width="10"
+                height="10"
+                viewBox="0 0 10 10"
+                aria-hidden="true"
+              >
+                <path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <Transition name="menu-pop">
+              <div v-if="modeMenuOpen" class="mode-pop" role="listbox">
+                <button
+                  v-for="(name, m) in modeNames"
+                  :key="m"
+                  class="mode-opt"
+                  :class="{ on: modeSel === m }"
+                  role="option"
+                  :aria-selected="String(modeSel === m)"
+                  @click="pickMode(m as SearchMode)"
+                >
+                  <span>{{ name }}</span>
+                  <svg v-if="modeSel === m" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M2.5 6.5l2.5 2.5 4.5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </div>
+            </Transition>
+          </div>
           <input
             v-model="query"
             class="search-input"
@@ -515,7 +571,8 @@ onBeforeUnmount(() => {
             @keydown.enter="doSearch"
           />
           <button class="search-btn" :disabled="searching" @click="doSearch">
-            {{ searching ? '检索中…' : '检 索' }}
+            <span v-if="searching" class="spinner" aria-label="检索中"></span>
+            <span v-else>检 索</span>
           </button>
         </div>
       </div>
@@ -526,18 +583,35 @@ onBeforeUnmount(() => {
       <button class="top-btn" title="导出/导入数据包（换电脑与备份）" @click="showBackup = true">
         数据
       </button>
+
+      <!-- 无边框窗口自绘控制按钮（──□✕） -->
+      <div class="win-controls">
+        <button class="wc" title="最小化" aria-label="最小化" @click="winMinimize">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="1" y="4.6" width="8" height="0.9" fill="currentColor" /></svg>
+        </button>
+        <button class="wc" title="最大化 / 还原" aria-label="最大化或还原" @click="winToggleMax">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.2" y="1.2" width="7.6" height="7.6" fill="none" stroke="currentColor" stroke-width="1.1" /></svg>
+        </button>
+        <button class="wc wc-close" title="关闭" aria-label="关闭" @click="winClose">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" /></svg>
+        </button>
+      </div>
     </header>
 
-    <div v-if="error" class="error-bar">
-      <span class="error-text">{{ error }}</span>
-      <button class="error-close" title="关闭" @click="error = ''">✕</button>
-    </div>
+    <Transition name="bar-slide">
+      <div v-if="error" class="error-bar">
+        <span class="error-text">{{ error }}</span>
+        <button class="error-close" title="关闭" @click="error = ''">✕</button>
+      </div>
+    </Transition>
 
     <!-- 全局消息条：成功/提示反馈（导出、收藏等），6 秒自动消失，也可手动关闭 -->
-    <div v-if="notice" class="error-bar notice" :data-kind="notice.kind">
-      <span class="error-text">{{ notice.text }}</span>
-      <button class="error-close" title="关闭" @click="notice = null">✕</button>
-    </div>
+    <Transition name="bar-slide">
+      <div v-if="notice" class="error-bar notice" :data-kind="notice.kind">
+        <span class="error-text">{{ notice.text }}</span>
+        <button class="error-close" title="关闭" @click="notice = null">✕</button>
+      </div>
+    </Transition>
 
     <!-- 书籍沉浸阅读：整区替换工作台三栏（返回时恢复原 Tab） -->
     <main v-if="reader?.type === 'book'" class="reading-full">
@@ -553,14 +627,15 @@ onBeforeUnmount(() => {
 
     <main v-else class="main">
       <aside class="side">
-        <div class="tabs">
-          <button class="tab" :class="{ active: tab === 'results' }" @click="tab = 'results'">
+        <div class="tabs" role="tablist">
+          <div class="tab-slider" :class="tab === 'results' ? 'pos-0' : tab === 'topics' ? 'pos-1' : 'pos-2'"></div>
+          <button class="tab" role="tab" :aria-selected="String(tab === 'results')" :class="{ active: tab === 'results' }" @click="tab = 'results'">
             检索<span v-if="searched" class="count">{{ results.length }}</span>
           </button>
-          <button class="tab" :class="{ active: tab === 'topics' }" @click="tab = 'topics'">
+          <button class="tab" role="tab" :aria-selected="String(tab === 'topics')" :class="{ active: tab === 'topics' }" @click="tab = 'topics'">
             专题<span class="count">{{ topics.length }}</span>
           </button>
-          <button class="tab" :class="{ active: tab === 'library' }" @click="tab = 'library'">
+          <button class="tab" role="tab" :aria-selected="String(tab === 'library')" :class="{ active: tab === 'library' }" @click="tab = 'library'">
             文档库<span class="count">{{ documents.length }}</span>
           </button>
         </div>
@@ -680,28 +755,28 @@ onBeforeUnmount(() => {
 </template>
 
 <style>
-/* 视觉令牌：全应用共用，组件内一律引用这些变量 */
+/* 视觉令牌：全应用共用，组件内一律引用这些变量（Apple 风格：墨黑/银灰/苹果蓝/云雾灰） */
 :root {
-  --lb-bg: #f7f7fb;
+  --lb-bg: #f5f5f7;
   --lb-panel: #ffffff;
-  --lb-text: #24242e;
-  --lb-muted: #7c7c92;
-  --lb-border: #e6e6ef;
-  --lb-border-strong: #dcdce8;
-  --lb-accent: #9c3428;
-  --lb-accent-2: #c0483a;
-  --lb-grad: linear-gradient(135deg, #9c3428, #c0483a);
-  --lb-accent-soft: #f7ecea;
-  --lb-chip: #f0f0f6;
+  --lb-text: #1d1d1f;
+  --lb-muted: #86868b;
+  --lb-border: rgba(0, 0, 0, 0.07);
+  --lb-border-strong: rgba(0, 0, 0, 0.12);
+  --lb-accent: #0071e3;
+  --lb-accent-2: #0077ed;
+  --lb-grad: #0071e3; /* Apple 主按钮为纯色，不再使用渐变 */
+  --lb-accent-soft: rgba(0, 113, 227, 0.1);
+  --lb-chip: #e8e8ed;
   --lb-warn-bg: #fdf3e3;
   --lb-warn-fg: #9a6a15;
   --lb-err-bg: #fdecea;
   --lb-err-fg: #8c2b23;
   --lb-ok-bg: #e8f5ec;
   --lb-ok-fg: #22763a;
-  --lb-radius-s: 7px;
-  --lb-radius-l: 12px;
-  --lb-serif: 'Songti SC', 'STSong', 'SimSun', Georgia, 'Times New Roman', serif;
+  --lb-radius-s: 10px;
+  --lb-radius-l: 14px;
+  --lb-serif: 'LXGW WenKai', 'Songti SC', 'STSong', 'SimSun', Georgia, 'Times New Roman', serif;
 }
 </style>
 
@@ -713,16 +788,63 @@ onBeforeUnmount(() => {
   background: var(--lb-bg);
 }
 
-/* ---------- 顶栏 ---------- */
+/* ---------- 顶栏（Apple 浅色导航：与无边框窗口融合） ---------- */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
-  height: 58px;
-  padding: 0 20px;
-  background: var(--lb-panel);
-  border-bottom: 1px solid var(--lb-border);
+  gap: 18px;
+  height: 54px;
+  padding: 0 8px 0 20px;
+  background: #fbfbfd;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   flex-shrink: 0;
+  -webkit-app-region: drag; /* 顶栏空白处可拖动窗口 */
+}
+
+/* 顶栏内可交互元素必须排除拖拽，否则无法点击 */
+.topbar button,
+.topbar input,
+.topbar select {
+  -webkit-app-region: no-drag;
+}
+
+/* ---------- 自绘窗口控制按钮（─□✕） ---------- */
+.win-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.wc {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  border: none;
+  background: transparent;
+  color: var(--lb-muted);
+}
+
+.wc:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--lb-text);
+}
+
+.wc:active {
+  background: rgba(0, 0, 0, 0.1);
+  transform: none; /* 窗口控制按钮不缩放，保持系统感 */
+}
+
+.wc.wc-close:hover {
+  background: #ff3b30;
+  color: #fff;
+}
+
+.wc.wc-close:active {
+  background: #e03027;
+  color: #fff;
 }
 
 .brand {
@@ -750,6 +872,7 @@ onBeforeUnmount(() => {
   font-size: 16px;
   font-weight: 600;
   color: var(--lb-text);
+  letter-spacing: -0.01em;
 }
 
 .brand-en {
@@ -777,51 +900,134 @@ onBeforeUnmount(() => {
 
 .search-group {
   display: flex;
+  align-items: center;
   width: 100%;
   max-width: 720px;
+  background: var(--lb-panel);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 980px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.25s, box-shadow 0.25s;
 }
 
-.mode-select {
-  height: 38px;
-  padding: 0 4px 0 10px;
-  border: 1px solid var(--lb-border-strong);
-  border-right: none;
-  border-radius: var(--lb-radius-s) 0 0 var(--lb-radius-s);
-  background: #fbfbfe;
+/* ---------- 检索模式下拉（Apple 风格弹出菜单） ---------- */
+.mode-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.mode-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 40px;
+  padding: 0 10px 0 16px;
+  border: none;
+  border-radius: 980px;
+  background: transparent;
   color: var(--lb-muted);
   font-size: 13px;
-  outline: none;
-  flex-shrink: 0;
+}
+
+.mode-trigger:hover {
+  background: var(--lb-chip);
+  color: var(--lb-text);
+}
+
+.mode-caret {
+  transition: transform 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.mode-caret.open {
+  transform: rotate(180deg);
+}
+
+.mode-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 148px;
+  padding: 5px;
+  background: var(--lb-panel);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: var(--lb-radius-l);
+  box-shadow:
+    0 4px 18px rgba(0, 0, 0, 0.1),
+    0 12px 40px rgba(0, 0, 0, 0.08);
+  z-index: 300;
+}
+
+.mode-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--lb-radius-s);
+  background: transparent;
+  color: var(--lb-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.mode-opt:hover {
+  background: var(--lb-chip);
+}
+
+.mode-opt.on {
+  color: var(--lb-accent);
+  font-weight: 600;
+}
+
+/* 弹出/收起动画：从触发器上方缩放浮现 */
+@media (prefers-reduced-motion: no-preference) {
+  .menu-pop-enter-active {
+    transition:
+      transform 0.18s cubic-bezier(0.25, 0.1, 0.25, 1),
+      opacity 0.18s ease;
+  }
+  .menu-pop-leave-active {
+    transition: transform 0.12s ease, opacity 0.12s ease;
+  }
+}
+
+.menu-pop-enter-from,
+.menu-pop-leave-to {
+  transform: scale(0.95) translateY(-4px);
+  transform-origin: top left;
+  opacity: 0;
 }
 
 .search-input {
   flex: 1;
-  height: 38px;
-  padding: 0 14px;
-  border: 1px solid var(--lb-border-strong);
-  border-right: none;
-  background: #fbfbfe;
+  height: 40px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
   font-size: 14px;
   color: var(--lb-text);
   outline: none;
   min-width: 0;
 }
 
-.search-group:focus-within .mode-select,
-.search-group:focus-within .search-input {
-  border-color: var(--lb-accent-2);
-  background: #fff;
+.search-group:focus-within {
+  border-color: rgba(0, 113, 227, 0.55);
+  box-shadow: 0 2px 10px rgba(0, 113, 227, 0.16);
 }
 
 .search-btn {
-  height: 38px;
-  padding: 0 22px;
+  height: 32px;
+  margin-right: 4px;
+  padding: 0 20px;
   border: none;
-  border-radius: 0 var(--lb-radius-s) var(--lb-radius-s) 0;
-  background: var(--lb-grad);
+  border-radius: 980px;
+  background: var(--lb-accent);
   color: #fff;
-  font-size: 14px;
+  font-size: 13px;
   flex-shrink: 0;
+  transition: background 0.2s;
 }
 
 .search-btn:hover {
@@ -834,14 +1040,15 @@ onBeforeUnmount(() => {
 }
 
 .top-btn {
-  height: 38px;
-  padding: 0 18px;
+  height: 34px;
+  padding: 0 16px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: var(--lb-radius-s);
+  border-radius: 980px;
   background: var(--lb-panel);
   color: var(--lb-text);
-  font-size: 14px;
+  font-size: 13px;
   flex-shrink: 0;
+  transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
 }
 
 .top-btn:hover {
@@ -892,6 +1099,52 @@ onBeforeUnmount(() => {
   color: var(--lb-warn-fg);
 }
 
+/* ---------- 消息条滑入滑出（Apple：顶部推入而非突然出现） ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  .bar-slide-enter-active,
+  .bar-slide-leave-active {
+    transition:
+      transform 0.24s cubic-bezier(0.25, 0.1, 0.25, 1),
+      opacity 0.24s ease;
+  }
+}
+
+.bar-slide-enter-from,
+.bar-slide-leave-to {
+  transform: translateY(-100%);
+  opacity: 0;
+}
+
+/* ---------- 检索按钮加载转圈 ---------- */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: lb-spin 0.7s linear infinite;
+}
+
+@keyframes lb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border: none;
+    border-radius: 0;
+    width: auto;
+    height: auto;
+  }
+  .spinner::before {
+    content: '检索中…';
+  }
+}
+
 /* ---------- 主区布局 ---------- */
 .main {
   display: flex;
@@ -917,25 +1170,65 @@ onBeforeUnmount(() => {
   border-right: 1px solid var(--lb-border);
 }
 
+/* ---------- 分段控件（Apple segmented control） ---------- */
 .tabs {
+  position: relative;
   display: flex;
-  border-bottom: 1px solid var(--lb-border);
+  margin: 12px 12px 0;
+  padding: 3px;
+  background: var(--lb-chip);
+  border-radius: var(--lb-radius-s);
   flex-shrink: 0;
 }
 
+/* 白色滑块在三个选项间平滑滑动 */
+.tab-slider {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 3);
+  height: calc(100% - 6px);
+  background: var(--lb-panel);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tab-slider {
+    transition: transform 0.22s cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+}
+
+.tab-slider.pos-0 {
+  transform: translateX(0);
+}
+
+.tab-slider.pos-1 {
+  transform: translateX(100%);
+}
+
+.tab-slider.pos-2 {
+  transform: translateX(200%);
+}
+
 .tab {
+  position: relative;
+  z-index: 1;
   flex: 1;
-  padding: 11px 0;
+  padding: 8px 0;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
-  font-size: 14px;
+  border-radius: 8px;
+  font-size: 13px;
   color: var(--lb-muted);
 }
 
+.tab:hover {
+  color: var(--lb-text);
+}
+
 .tab.active {
-  color: var(--lb-accent);
-  border-bottom-color: var(--lb-accent);
+  color: var(--lb-text);
   font-weight: 600;
 }
 

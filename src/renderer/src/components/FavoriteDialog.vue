@@ -114,8 +114,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="fd-mask" @click.self="close">
-      <div class="fd-dialog">
+    <Transition name="dlg-fade">
+      <div v-if="visible" class="fd-mask" @click.self="close">
+        <div class="fd-dialog">
         <div class="fd-head">
           <span class="fd-title">收藏 {{ articleLabel }}</span>
           <button class="fd-close" :disabled="busy" @click="close">✕</button>
@@ -160,7 +161,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -168,7 +170,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .fd-mask {
   position: fixed;
   inset: 0;
-  background: rgba(30, 28, 40, 0.4);
+  background: rgba(0, 0, 0, 0.32);
   display: flex;
   align-items: center;
   justify-content: center;

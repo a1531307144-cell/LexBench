@@ -55,6 +55,12 @@ const api = {
     /** 数据包导入后重启软件使新数据生效 */
     relaunch: (): Promise<void> => invoke('app:relaunch')
   },
+  win: {
+    /** 无边框窗口自绘控制按钮（─ □ ✕） */
+    minimize: (): void => ipcRenderer.send('win:minimize'),
+    toggleMaximize: (): void => ipcRenderer.send('win:maximize'),
+    close: (): void => ipcRenderer.send('win:close')
+  },
   dialog: {
     /** 选择要导入的文档文件（多选），取消返回 canceled:true */
     pickImportFiles: (): Promise<{ canceled: boolean; paths: string[] }> =>

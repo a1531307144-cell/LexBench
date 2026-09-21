@@ -90,6 +90,11 @@ const groupDeleteMessage = computed(() =>
     : ''
 )
 
+/** 点击文件夹行的 ✕：填入待删除目标，弹出确认框（此前缺失该函数导致删除入口无响应） */
+function askRemoveGroup(g: DocGroupRow): void {
+  pendingGroupDelete.value = g
+}
+
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? '')
 }
@@ -565,7 +570,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 }
 
 .filter-chip:hover {
-  border-color: var(--lb-accent-2, #c0483a);
+  border-color: var(--lb-accent-2, #0077ed);
   color: var(--lb-text);
 }
 
@@ -599,7 +604,43 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-s);
   cursor: pointer;
-  background: #fbfbfe;
+  background: var(--lb-panel);
+}
+
+/* 悬停上浮 + 渐次进入（Apple 手感） */
+@media (prefers-reduced-motion: no-preference) {
+  .doc-card {
+    transition:
+      border-color 0.12s ease,
+      transform 0.12s ease,
+      box-shadow 0.12s ease;
+    animation: lb-doc-in 0.16s ease both;
+  }
+
+  .doc-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+  }
+
+  .doc-card:nth-child(1) { animation-delay: 0ms; }
+  .doc-card:nth-child(2) { animation-delay: 30ms; }
+  .doc-card:nth-child(3) { animation-delay: 60ms; }
+  .doc-card:nth-child(4) { animation-delay: 90ms; }
+  .doc-card:nth-child(5) { animation-delay: 120ms; }
+  .doc-card:nth-child(6) { animation-delay: 150ms; }
+  .doc-card:nth-child(7) { animation-delay: 180ms; }
+  .doc-card:nth-child(8) { animation-delay: 210ms; }
+}
+
+@keyframes lb-doc-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .doc-card:hover {

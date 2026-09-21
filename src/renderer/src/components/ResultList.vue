@@ -134,7 +134,44 @@ const typeNames: Record<string, string> = {
   border-radius: var(--lb-radius-s);
   margin-bottom: 8px;
   cursor: pointer;
-  background: #fbfbfe;
+  background: var(--lb-panel);
+}
+
+/* 悬停上浮：轻微抬起 + 阴影，暗示可点击 */
+@media (prefers-reduced-motion: no-preference) {
+  .item {
+    transition:
+      border-color 0.12s ease,
+      transform 0.12s ease,
+      box-shadow 0.12s ease;
+    animation: lb-item-in 0.18s ease both;
+  }
+
+  .item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+  }
+
+  /* 渐次进入：前 8 项依次浮现（间隔 40ms），之后不再延迟 */
+  .item:nth-child(1) { animation-delay: 0ms; }
+  .item:nth-child(2) { animation-delay: 40ms; }
+  .item:nth-child(3) { animation-delay: 80ms; }
+  .item:nth-child(4) { animation-delay: 120ms; }
+  .item:nth-child(5) { animation-delay: 160ms; }
+  .item:nth-child(6) { animation-delay: 200ms; }
+  .item:nth-child(7) { animation-delay: 240ms; }
+  .item:nth-child(8) { animation-delay: 280ms; }
+}
+
+@keyframes lb-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .item:hover {

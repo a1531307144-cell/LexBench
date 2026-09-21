@@ -145,8 +145,9 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="bd-mask" @click.self="close">
-      <div class="bd-dialog">
+    <Transition name="dlg-fade">
+      <div v-if="visible" class="bd-mask" @click.self="close">
+        <div class="bd-dialog">
         <div class="bd-head">
           <span class="bd-title">数据备份</span>
           <button class="bd-close" :disabled="busy || locked" @click="close">✕</button>
@@ -184,7 +185,8 @@ onBeforeUnmount(() => {
           </template>
         </div>
       </div>
-    </div>
+      </div>
+    </Transition>
 
     <ConfirmModal
       :visible="confirmImport"
@@ -202,7 +204,7 @@ onBeforeUnmount(() => {
 .bd-mask {
   position: fixed;
   inset: 0;
-  background: rgba(30, 28, 40, 0.4);
+  background: rgba(0, 0, 0, 0.32);
   display: flex;
   align-items: center;
   justify-content: center;

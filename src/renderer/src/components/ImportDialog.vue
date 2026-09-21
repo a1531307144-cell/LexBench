@@ -204,8 +204,9 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="mask" @click.self="close">
-      <div class="dialog">
+    <Transition name="dlg-fade">
+      <div v-if="visible" class="mask" @click.self="close">
+        <div class="dialog">
         <div class="dialog-head">
           <span>导入法律文档</span>
           <button class="close-btn" :disabled="importing" @click="close">✕</button>
@@ -300,7 +301,8 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -308,7 +310,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
 .mask {
   position: fixed;
   inset: 0;
-  background: rgba(30, 28, 40, 0.4);
+  background: rgba(0, 0, 0, 0.32);
   display: flex;
   align-items: center;
   justify-content: center;

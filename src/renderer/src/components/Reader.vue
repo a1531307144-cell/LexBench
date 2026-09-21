@@ -247,29 +247,31 @@ const typeNames: Record<string, string> = {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
   background: var(--lb-grad);
   color: #fff;
   font-family: var(--lb-serif);
-  font-size: 30px;
+  font-size: 28px;
   margin-bottom: 16px;
+  box-shadow: 0 6px 16px rgba(0, 113, 227, 0.22);
 }
 
 .welcome-title {
   font-family: var(--lb-serif);
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 600;
   color: var(--lb-text);
   margin: 0 0 6px;
+  letter-spacing: 0.02em;
 }
 
 .welcome-sub {
   color: var(--lb-muted);
   margin: 0 0 28px;
   font-size: 13px;
-  letter-spacing: 2px;
+  letter-spacing: 0.4px;
 }
 
 .welcome-tips {
@@ -309,11 +311,11 @@ const typeNames: Record<string, string> = {
 
 .article-label {
   font-family: var(--lb-serif);
-  font-size: 26px;
-  font-weight: 700;
+  font-size: 24px;
+  font-weight: 600;
   color: var(--lb-text);
   margin: 0;
-  letter-spacing: 1px;
+  letter-spacing: 0.01em;
 }
 
 .ghost-btn {
@@ -456,9 +458,10 @@ const typeNames: Record<string, string> = {
 .doc-title {
   font-family: var(--lb-serif);
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--lb-text);
   margin: 0 0 12px;
+  letter-spacing: 0.01em;
 }
 
 .doc-meta {

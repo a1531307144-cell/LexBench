@@ -463,6 +463,32 @@ function confirmDelItem(): void {
   cursor: pointer;
 }
 
+/* Apple 手感：悬停底色平滑 + 列表渐次进入 */
+@media (prefers-reduced-motion: no-preference) {
+  .tp-row {
+    transition: background 0.12s ease;
+    animation: lb-tp-in 0.16s ease both;
+  }
+
+  .tp-row:nth-child(1) { animation-delay: 0ms; }
+  .tp-row:nth-child(2) { animation-delay: 30ms; }
+  .tp-row:nth-child(3) { animation-delay: 60ms; }
+  .tp-row:nth-child(4) { animation-delay: 90ms; }
+  .tp-row:nth-child(5) { animation-delay: 120ms; }
+  .tp-row:nth-child(6) { animation-delay: 150ms; }
+}
+
+@keyframes lb-tp-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .tp-row:hover {
   background: var(--lb-accent-soft);
 }

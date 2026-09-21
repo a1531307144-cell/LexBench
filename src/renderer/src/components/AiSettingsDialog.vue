@@ -206,8 +206,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="as-mask" @click.self="close">
-      <div class="as-dialog">
+    <Transition name="dlg-fade">
+      <div v-if="visible" class="as-mask" @click.self="close">
+        <div class="as-dialog">
         <div class="as-head">
           <span class="as-title">AI 设置</span>
           <button class="as-close" :disabled="busy" @click="close">✕</button>
@@ -295,7 +296,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </Transition>
 
     <ConfirmModal
       :visible="pendingDel !== null"
@@ -313,7 +315,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .as-mask {
   position: fixed;
   inset: 0;
-  background: rgba(30, 28, 40, 0.4);
+  background: rgba(0, 0, 0, 0.32);
   display: flex;
   align-items: center;
   justify-content: center;

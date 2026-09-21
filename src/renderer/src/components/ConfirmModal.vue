@@ -63,7 +63,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .cm-mask {
   position: fixed;
   inset: 0;
-  background: rgba(30, 28, 40, 0.4);
+  background: rgba(0, 0, 0, 0.32);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -76,7 +76,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   background: var(--lb-panel);
   border-radius: var(--lb-radius-l);
   padding: 20px 22px;
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
 }
 
 .cm-title {
@@ -123,20 +123,41 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   filter: brightness(1.06);
 }
 
-/* 危险操作：更深的红色确认键 */
+/* 危险操作：Apple 红确认键（仅删除等破坏性操作使用） */
 .cm-btn.confirm.danger {
-  border-color: #a52f21;
-  background: #b3352a;
+  border-color: #d70015;
+  background: #ff3b30;
 }
 
 .cm-btn.confirm.danger:hover {
-  background: #9c2f24;
+  background: #e03027;
   filter: none;
 }
 
-.cm-fade-enter-active,
-.cm-fade-leave-active {
-  transition: opacity 0.18s ease;
+/* Apple 弹窗动效：遮罩淡入 + 对话框缩放浮现 */
+@media (prefers-reduced-motion: no-preference) {
+  .cm-fade-enter-active {
+    transition: opacity 0.2s ease;
+  }
+  .cm-fade-leave-active {
+    transition: opacity 0.16s ease;
+  }
+  .cm-fade-enter-active .cm-dialog {
+    transition:
+      transform 0.24s cubic-bezier(0.25, 0.1, 0.25, 1),
+      opacity 0.24s ease;
+  }
+  .cm-fade-leave-active .cm-dialog {
+    transition: transform 0.16s ease, opacity 0.16s ease;
+  }
+  .cm-fade-enter-from .cm-dialog {
+    transform: scale(0.94) translateY(8px);
+    opacity: 0;
+  }
+  .cm-fade-leave-to .cm-dialog {
+    transform: scale(0.96);
+    opacity: 0;
+  }
 }
 
 .cm-fade-enter-from,

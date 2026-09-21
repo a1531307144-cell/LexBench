@@ -13,20 +13,36 @@ body,
 
 body {
   font-family:
-    'Microsoft YaHei',
-    'PingFang SC',
-    system-ui,
+    'MiSans VF',
+    'MiSans',
     -apple-system,
+    'SF Pro Text',
+    system-ui,
+    'PingFang SC',
+    'HarmonyOS Sans SC',
+    'Microsoft YaHei',
     sans-serif;
   font-size: 14px;
-  color: #24242e;
-  background: #f7f7fb;
+  color: #1d1d1f;
+  background: #f5f5f7;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button {
   font-family: inherit;
   cursor: pointer;
+}
+
+/* Apple 手感：按钮颜色/位移平滑过渡，按下轻微缩小 */
+button {
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease,
+    opacity 0.12s ease;
 }
 
 input,
@@ -35,17 +51,68 @@ select {
   font-family: inherit;
 }
 
+/* 键盘导航聚焦环（无障碍） */
+:focus-visible {
+  outline: 2px solid var(--lb-accent, #0071e3);
+  outline-offset: 2px;
+}
+
+/* 尊重系统"减弱动态效果"设置：关闭按钮过渡 */
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}
+
+/* 按压缩放仅在系统允许动效时启用 */
+@media (prefers-reduced-motion: no-preference) {
+  button:active {
+    transform: scale(0.96);
+  }
+}
+
+/* Apple 弹窗动效：遮罩淡入 + 对话框缩放浮现（mask 的直接子元素即对话框本体） */
+.dlg-fade-enter-from,
+.dlg-fade-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dlg-fade-enter-active {
+    transition: opacity 0.2s ease;
+  }
+  .dlg-fade-leave-active {
+    transition: opacity 0.16s ease;
+  }
+  .dlg-fade-enter-active > div {
+    transition:
+      transform 0.24s cubic-bezier(0.25, 0.1, 0.25, 1),
+      opacity 0.24s ease;
+  }
+  .dlg-fade-leave-active > div {
+    transition: transform 0.16s ease, opacity 0.16s ease;
+  }
+  .dlg-fade-enter-from > div {
+    transform: scale(0.94) translateY(8px);
+    opacity: 0;
+  }
+  .dlg-fade-leave-to > div {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+}
+
+/* Apple 风格滚动条：细、半透明、悬浮加深 */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d4d4de;
-  border-radius: 5px;
-  border: 2px solid #f7f7fb;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #bcbcc8;
+  background: rgba(0, 0, 0, 0.32);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
