@@ -213,8 +213,13 @@ const api = {
     /** 仅开发模式存在：置位/复位「自动检查失败」标志（自测用） */
     __testSetCheckFailed: (v: boolean): Promise<void> =>
       invoke('update:__testSetCheckFailed', v),
-    onStatus: (cb: (status: UpdateStatus) => void): void => {
-      ipcRenderer.on('update:status', (_e, status: UpdateStatus) => cb(status))
+    /** 订阅更新状态；返回取消订阅函数（组件卸载时必须调用，避免监听器泄漏） */
+    onStatus: (cb: (status: UpdateStatus) => void): (() => void) => {
+      const handler = (_e: unknown, status: UpdateStatus): void => cb(status)
+      ipcRenderer.on('update:status', handler)
+      return () => {
+        ipcRenderer.removeListener('update:status', handler)
+      }
     }
   }
 }

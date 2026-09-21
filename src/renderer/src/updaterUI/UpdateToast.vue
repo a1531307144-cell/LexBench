@@ -39,6 +39,10 @@ function onStatus(s: {
   } else if (s.type === 'not-available') {
     if (s.manual) showTransient('当前已是最新版本')
     if (state.phase === 'checking') state.phase = 'idle'
+  } else if (s.type === 'dev-mode') {
+    // 开发版不做真实更新检查（见主进程 updater.ts），给一条明确说明
+    showTransient('开发版不检查更新，安装版会自动检查')
+    if (state.phase === 'checking') state.phase = 'idle'
   } else if (s.type === 'error') {
     if (state.phase === 'checking') state.phase = 'idle'
     if (state.phase === 'downloading') {
@@ -115,8 +119,8 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
   bottom: 22px;
   width: 320px;
   background: #fff;
-  border: 1px solid #e6e6ef;
-  border-radius: 12px;
+  border: 1px solid var(--lb-border, rgba(0, 0, 0, 0.08));
+  border-radius: var(--lb-radius-l, 14px);
   box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
   padding: 16px 18px;
   z-index: 90;
@@ -131,14 +135,14 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
 .update-title {
   font-size: 14px;
   font-weight: 600;
-  color: #24242e;
+  color: var(--lb-text, #1d1d1f);
 }
 
 .update-text {
   margin: 6px 0 12px;
   font-size: 12px;
   line-height: 1.6;
-  color: #7c7c92;
+  color: var(--lb-muted, #86868b);
 }
 
 .update-btns {
@@ -164,7 +168,7 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
 }
 
 .ub.primary {
-  background: linear-gradient(135deg, #9c3428, #c0483a);
+  background: var(--lb-grad, #0071e3);
   color: #fff;
 }
 
@@ -184,7 +188,7 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
 .dl-fill {
   height: 100%;
   border-radius: 2px;
-  background: linear-gradient(90deg, #9c3428, #c0483a);
+  background: var(--lb-accent, #0071e3);
   transition: width 0.3s ease;
 }
 

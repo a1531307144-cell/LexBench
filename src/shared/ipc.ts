@@ -10,6 +10,8 @@ export type UpdateStatus =
   | { type: 'downloading'; percent: number }
   | { type: 'downloaded'; version: string }
   | { type: 'error'; manual: boolean }
+  /** 开发版不检查更新（手动检查时回这条，便于开发窗口验证交互） */
+  | { type: 'dev-mode' }
 
 export interface UpdateCheckInfo {
   /** 上次自动检查更新是否失败（失败时「关于」里提示是网络问题，避免误以为没有新版） */

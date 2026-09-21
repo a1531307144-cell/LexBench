@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AboutDialog from './components/AboutDialog.vue'
 import AiSettingsDialog from './components/AiSettingsDialog.vue'
 import BackupDialog from './components/BackupDialog.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
@@ -90,6 +91,8 @@ const showImport = ref(false)
 const showBackup = ref(false)
 /** AI 模型档案设置对话框（v0.7.0） */
 const showAiSettings = ref(false)
+/** 「关于」对话框：版本信息 + 手动检查更新（v0.8.1） */
+const showAbout = ref(false)
 const dropFiles = ref<ImportFileEntry[]>([])
 const dragging = ref(false)
 const error = ref('')
@@ -583,6 +586,7 @@ onBeforeUnmount(() => {
       <button class="top-btn" title="导出/导入数据包（换电脑与备份）" @click="showBackup = true">
         数据
       </button>
+      <button class="top-btn" title="版本信息与检查更新" @click="showAbout = true">关于</button>
 
       <!-- 无边框窗口自绘控制按钮（──□✕） -->
       <div class="win-controls">
@@ -735,6 +739,8 @@ onBeforeUnmount(() => {
       @error="showError"
       @notice="setNotice"
     />
+
+    <AboutDialog v-model:visible="showAbout" @error="showError" />
 
     <ConfirmModal
       :visible="pendingDelete !== null"

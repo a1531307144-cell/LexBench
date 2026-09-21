@@ -30,7 +30,33 @@ export function setupUpdater(): void {
     })
   }
 
-  // 仅打包版启用更新检查（开发版无 app-update.yml，检查必然失败且无意义）
+  // 手动「检查更新」/ 下载 / 安装：开发版也要注册（否则界面调用直接报错）；
+  // 开发版不做真实检查，回一条明确状态，便于在开发窗口里验证「关于」的交互
+  ipcMain.handle('update:check', () => {
+    if (!app.isPackaged) {
+      broadcast({ type: 'dev-mode' })
+      return
+    }
+    manualCheck = true
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.warn('手动检查更新失败', err)
+    })
+  })
+
+  ipcMain.handle('update:download', () => {
+    if (!app.isPackaged) return
+    autoUpdater.downloadUpdate().catch((err) => {
+      console.warn('下载更新失败', err)
+    })
+  })
+
+  ipcMain.handle('update:install', () => {
+    if (!app.isPackaged) return
+    // 静默安装并重启（per-user 安装无需管理员权限）
+    autoUpdater.quitAndInstall(true, true)
+  })
+
+  // 仅打包版启用更新检查与事件广播（开发版无 app-update.yml，检查必然失败且无意义）
   if (!app.isPackaged) return
 
   autoUpdater.autoDownload = false
@@ -62,26 +88,6 @@ export function setupUpdater(): void {
     if (!manual) lastAutoCheckFailed = true
     console.warn('更新失败（不影响使用）', err)
     broadcast({ type: 'error', manual })
-  })
-
-  // 手动「检查更新」入口
-  ipcMain.handle('update:check', () => {
-    manualCheck = true
-    autoUpdater.checkForUpdates().catch((err) => {
-      console.warn('手动检查更新失败', err)
-    })
-  })
-
-  // 用户在提示框点「下载安装」后才开始下载
-  ipcMain.handle('update:download', () => {
-    autoUpdater.downloadUpdate().catch((err) => {
-      console.warn('下载更新失败', err)
-    })
-  })
-
-  // 静默安装并重启（per-user 安装无需管理员权限）
-  ipcMain.handle('update:install', () => {
-    autoUpdater.quitAndInstall(true, true)
   })
 
   setTimeout(() => {
