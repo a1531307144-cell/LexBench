@@ -100,9 +100,14 @@ const topicDelMessage = computed(() =>
     : ''
 )
 
-const itemDelMessage = computed(() =>
-  pendingDelItem.value ? `确定将「${pendingDelItem.value.article_label}」移出本专题？` : ''
-)
+const itemDelMessage = computed(() => {
+  const it = pendingDelItem.value
+  if (!it) return ''
+  // 移出会连同该条下的笔记一起删，必须说清楚，别让用户以为笔记还在
+  return it.note_count > 0
+    ? `「${it.article_label}」下有 ${it.note_count} 则笔记，移出专题会连同这些笔记一并删除，此操作不可撤销。`
+    : `确定将「${it.article_label}」移出本专题？`
+})
 
 function confirmDelTopic(): void {
   const row = pendingDelTopic.value

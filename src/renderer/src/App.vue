@@ -229,9 +229,10 @@ async function deleteTopic(id: number): Promise<void> {
 
 async function removeTopicItem(topicId: number, articleId: number): Promise<void> {
   try {
-    await window.lexbench.workspace.removeTopicItem(topicId, articleId)
+    const r = await window.lexbench.workspace.removeTopicItem(topicId, articleId)
     await refreshTopics()
     if (activeTopic.value?.id === topicId) await refreshActiveTopic()
+    setNotice(r.removedNotes > 0 ? `已移出本专题，并删除该条下的 ${r.removedNotes} 则笔记` : '已移出本专题')
   } catch (e) {
     showError(e)
   }

@@ -233,16 +233,28 @@ export function registerWorkspaceIpc(): void {
     }))
   })
 
-  // 移出收藏：按 (topic_id, article_id) 定位，删后 touch
-  ipcMain.handle('workspace:removeTopicItem', (_e, topicId: number, articleId: number): void => {
-    const db = getDb()
-    requireTopic(db, topicId)
-    const info = db
-      .prepare('DELETE FROM topic_items WHERE topic_id=? AND article_id=?')
-      .run(topicId, articleId)
-    if (Number(info.changes) === 0) throw new Error('该法条不在此专题中')
-    touchTopic(db, topicId)
-  })
+  // 移出收藏：按 (topic_id, article_id) 定位，连同该条下的笔记一并删除，删后 touch。
+  // 笔记挂在哪条法条上，那条法条就得在本专题里（写笔记时会自动收进来）——移出法条若不带走
+  // 笔记，就会留下「专题里有笔记、却没有对应法条」的孤儿笔记，界面上表现为
+  // 「左边删掉了法条，右边笔记还在」。返回删掉的笔记数，供界面提示。
+  ipcMain.handle(
+    'workspace:removeTopicItem',
+    (_e, topicId: number, articleId: number): { removedNotes: number } => {
+      const db = getDb()
+      requireTopic(db, topicId)
+      return withTransaction(db, () => {
+        const info = db
+          .prepare('DELETE FROM topic_items WHERE topic_id=? AND article_id=?')
+          .run(topicId, articleId)
+        if (Number(info.changes) === 0) throw new Error('该法条不在此专题中')
+        const notes = db
+          .prepare('DELETE FROM notes WHERE topic_id=? AND article_id=?')
+          .run(topicId, articleId)
+        touchTopic(db, topicId)
+        return { removedNotes: Number(notes.changes) }
+      })
+    }
+  )
 
   // 收藏条目上移/下移：事务内与相邻条互换 order_index；order_index 无唯一约束，直接两次 UPDATE 即可；
   // 已到顶/底时原样返回（未发生任何变更，不 touch，避免无操作把专题顶到列表最前）

@@ -145,7 +145,8 @@ const api = {
     /** 收藏法条进专题；重复收藏幂等返回 duplicate */
     addTopicItem: (topicId: number, articleId: number): Promise<AddItemResult> =>
       invoke('workspace:addTopicItem', topicId, articleId),
-    removeTopicItem: (topicId: number, articleId: number): Promise<void> =>
+    /** 移出法条：连同该条下的笔记一并删除，removedNotes 为删掉的笔记数 */
+    removeTopicItem: (topicId: number, articleId: number): Promise<{ removedNotes: number }> =>
       invoke('workspace:removeTopicItem', topicId, articleId),
     /** 专题内收藏条目上移/下移（重排 order_index） */
     moveTopicItem: (topicId: number, articleId: number, direction: ItemMoveDirection): Promise<void> =>
