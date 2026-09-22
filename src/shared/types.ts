@@ -131,6 +131,8 @@ export interface TopicItemRow {
   title: string
   category: string
   content: string
+  /** 该条法条在本专题下的笔记条数（专题列表上显示「N 记」） */
+  note_count: number
 }
 
 export interface NoteRow {

@@ -221,6 +221,27 @@ UPDATE ai_profiles SET protocol = 'anthropic'
   WHERE protocol = 'openai' AND lower(base_url) LIKE '%/anthropic%';
 `
 
+// 012_backfill_topic_items_from_notes：把「有笔记、但法条没收藏进该专题」的缺口补上。
+//
+// 在这一版之前，笔记可以挂到一条并未收藏进本专题的法条上（前端在未收藏时会把关联悄悄
+// 丢掉，后端则从不校验），于是专题显示成「0 条 · 1 记」——笔记悬在一条列表里不存在的
+// 法条上，导出处也只能掉到文末。这里按笔记把缺失的收藏条目按时间顺序补进 topic_items。
+// 只增不删：order_index 接在该专题现有最大值之后，用 ROW_NUMBER 保证同批不重号。
+const MIGRATION_012_TOPIC_ITEMS_FROM_NOTES = `-- 012_backfill_topic_items_from_notes
+
+INSERT INTO topic_items(topic_id, article_id, order_index, added_at)
+SELECT topic_id, article_id, base + ROW_NUMBER() OVER (PARTITION BY topic_id ORDER BY created_at, id), created_at
+  FROM (
+    SELECT n.id, n.topic_id, n.article_id, n.created_at,
+           COALESCE((SELECT MAX(ti.order_index) + 1 FROM topic_items ti WHERE ti.topic_id = n.topic_id), 0) AS base
+      FROM notes n
+     WHERE n.article_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM topic_items ti WHERE ti.topic_id = n.topic_id AND ti.article_id = n.article_id
+       )
+  );
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -233,7 +254,8 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 8, sql: MIGRATION_008_GROUP_ORDER },
   { version: 9, sql: MIGRATION_009_AI_PROFILES },
   { version: 10, sql: MIGRATION_010_AI_PROTOCOL },
-  { version: 11, sql: MIGRATION_011_AI_PROTOCOL_GUESS }
+  { version: 11, sql: MIGRATION_011_AI_PROTOCOL_GUESS },
+  { version: 12, sql: MIGRATION_012_TOPIC_ITEMS_FROM_NOTES }
 ]
 
 /** 全局唯一连接（单例） */

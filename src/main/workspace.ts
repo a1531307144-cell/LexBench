@@ -40,7 +40,8 @@ function toTopicItemRow(row: DbRow): TopicItemRow {
     article_label: String(row['article_label']),
     title: String(row['title']),
     category: String(row['category']),
-    content: String(row['content'])
+    content: String(row['content']),
+    note_count: Number(row['note_count'] ?? 0)
   }
 }
 
@@ -82,6 +83,22 @@ function withTransaction<T>(db: DatabaseSync, fn: () => T): T {
 /** 任何条目/笔记变动后刷新专题 updated_at（对应 legacy _touch） */
 function touchTopic(db: DatabaseSync, topicId: number): void {
   db.prepare("UPDATE topics SET updated_at=datetime('now','localtime') WHERE id=?").run(topicId)
+}
+
+/**
+ * 把法条收藏进专题，返回新条目 id（调用方负责事务与外层的重复判定）。
+ * 「显式收藏」与「写笔记时自动收进来」共用这一段，避免两处各写一遍顺序号逻辑。
+ */
+function insertTopicItem(db: DatabaseSync, topicId: number, articleId: number): number {
+  // COALESCE(MAX,-1)+1：空专题从 0 起（与 legacy 逐字同义）
+  const next = db
+    .prepare('SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order FROM topic_items WHERE topic_id=?')
+    .get(topicId) as DbRow
+  const info = db
+    .prepare('INSERT INTO topic_items(topic_id, article_id, order_index) VALUES(?,?,?)')
+    .run(topicId, articleId, Number(next['next_order']))
+  touchTopic(db, topicId)
+  return Number(info.lastInsertRowid)
 }
 
 /** 名称校验：trim 后为空抛错；返回 trim 后的名称 */
@@ -177,7 +194,9 @@ export function registerWorkspaceIpc(): void {
     const items = db
       .prepare(
         'SELECT ti.id, ti.topic_id, ti.article_id, ti.order_index, ti.added_at,' +
-          ' a.article_label, a.content, d.title, d.category' +
+          ' a.article_label, a.content, d.title, d.category,' +
+          ' (SELECT COUNT(*) FROM notes n WHERE n.topic_id=ti.topic_id AND n.article_id=ti.article_id)' +
+          ' AS note_count' +
           ' FROM topic_items ti JOIN articles a ON a.id = ti.article_id' +
           ' JOIN documents d ON d.id = a.document_id' +
           ' WHERE ti.topic_id=? ORDER BY ti.order_index'
@@ -208,19 +227,10 @@ export function registerWorkspaceIpc(): void {
       .prepare('SELECT id FROM topic_items WHERE topic_id=? AND article_id=?')
       .get(topicId, articleId) as DbRow | undefined
     if (existing) return { status: 'duplicate', itemId: Number(existing['id']) }
-    return withTransaction(db, () => {
-      // COALESCE(MAX,-1)+1：空专题从 0 起（与 legacy 逐字同义）
-      const next = db
-        .prepare(
-          'SELECT COALESCE(MAX(order_index), -1) + 1 AS next_order FROM topic_items WHERE topic_id=?'
-        )
-        .get(topicId) as DbRow
-      const info = db
-        .prepare('INSERT INTO topic_items(topic_id, article_id, order_index) VALUES(?,?,?)')
-        .run(topicId, articleId, Number(next['next_order']))
-      touchTopic(db, topicId)
-      return { status: 'added', itemId: Number(info.lastInsertRowid) }
-    })
+    return withTransaction(db, (): AddItemResult => ({
+      status: 'added',
+      itemId: insertTopicItem(db, topicId, articleId)
+    }))
   })
 
   // 移出收藏：按 (topic_id, article_id) 定位，删后 touch
@@ -285,16 +295,28 @@ export function registerWorkspaceIpc(): void {
       if (aid !== null) requireArticle(db, aid)
       const content = String(contentMd ?? '').trim()
       if (!content) throw new Error('笔记内容为空')
-      const info = db
-        .prepare('INSERT INTO notes(topic_id, article_id, content_md) VALUES(?,?,?)')
-        .run(topicId, aid, content)
-      touchTopic(db, topicId)
+      // 笔记挂在哪条法条上，那条法条就必须在专题里——否则笔记会悬在一条列表里并不
+      // 存在的法条上（专题显示「0 条 · 1 记」，导出时掉到文末），历史上就是这么坏的。
+      // 这里在同一事务内补齐，界面不可能再出现这种孤儿笔记。
+      const noteId = withTransaction(db, () => {
+        if (aid !== null) {
+          const inTopic = db
+            .prepare('SELECT 1 FROM topic_items WHERE topic_id=? AND article_id=?')
+            .get(topicId, aid)
+          if (!inTopic) insertTopicItem(db, topicId, aid)
+        }
+        const info = db
+          .prepare('INSERT INTO notes(topic_id, article_id, content_md) VALUES(?,?,?)')
+          .run(topicId, aid, content)
+        touchTopic(db, topicId)
+        return Number(info.lastInsertRowid)
+      })
       const row = db
         .prepare(
           'SELECT n.id, n.topic_id, n.article_id, n.content_md, n.created_at, n.updated_at,' +
             ' a.article_label FROM notes n LEFT JOIN articles a ON a.id = n.article_id WHERE n.id=?'
         )
-        .get(Number(info.lastInsertRowid)) as DbRow
+        .get(noteId) as DbRow
       return toNoteRow(row)
     }
   )
