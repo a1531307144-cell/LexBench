@@ -129,6 +129,65 @@ const topics = await api('workspace.listTopics()')
 const self = topics.find((t) => t.id === topic.id)
 check('列表计数与描述（2 条 · 2 记）', self?.item_count === 2 && self?.note_count === 2 && self.description === '描述已更新')
 
+// 6.5 笔记与法条的绑定：写笔记自动收进专题，移出法条连带带走笔记
+//     （此前两头都能漏：未收藏时前端会把 article_id 悄悄写成 null；移出法条又不删笔记，
+//      都会留下「专题里有笔记、却没有对应法条」的孤儿状态）
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const bindTopic = await api(`workspace.createTopic('自测绑定_' + Date.now())`)
+const loc3 = await api(`search.run('民法典 1075', 'auto')`)
+const a3 = loc3?.results?.[0]?.id
+check('前置：1075 可定位', !!a3)
+const n3 = await api(`workspace.createNote(${bindTopic.id}, ${a3}, '未收藏就先记的笔记')`)
+check('笔记建成功且带条文标签', !!n3?.id && n3.article_label === '第一千零七十五条')
+let bind = await api(`workspace.getTopic(${bindTopic.id})`)
+check('写笔记时未收藏的法条被自动收进专题', bind.items.some((i) => i.article_id === a3))
+check('专题条目带回笔记数 note_count', bind.items.find((i) => i.article_id === a3)?.note_count === 1)
+await api(`workspace.removeTopicItem(${bindTopic.id}, ${a3})`)
+bind = await api(`workspace.getTopic(${bindTopic.id})`)
+check('移出法条时连带删除其笔记（不留孤儿）', bind.items.length === 0 && bind.notes.length === 0)
+
+// 6.6 界面：中栏常驻检索条只在打开专题时出现（看文档库时仍是左右两栏）
+//      api() 直接调 IPC、绕过 App 的状态刷新，所以建完专题要刷新页面再驱动界面；
+//      另外得先放一条法条进去，条目行才有得验。
+const uiTopic = await api(`workspace.createTopic('自测界面_' + Date.now())`)
+await api(`workspace.addTopicItem(${uiTopic.id}, ${articleId})`)
+await evalJs(`location.reload(); true`)
+await sleep(2500)
+await evalJs(`(() => { const x=[...document.querySelectorAll('.tab')].find(e=>e.textContent.includes('专题')); x && x.click(); return true })()`)
+await sleep(600)
+check('没打开专题时不出现中栏检索条（停在专题列表）', (await evalJs(`!!document.querySelector('.mid-search')`)) === false)
+const opened = await evalJs(`(() => {
+  const rows = [...document.querySelectorAll('.tp-row-name')]
+  const r = rows.find((e) => e.textContent.includes('自测界面_'))
+  if (!r) return false
+  r.click()
+  return true
+})()`)
+await sleep(800)
+check('打开专题后中栏出现常驻检索条', opened === true && (await evalJs(`!!document.querySelector('.mid-search .search-input')`)) === true)
+await evalJs(`(() => { const x=[...document.querySelectorAll('.tab')].find(e=>e.textContent.includes('文档库')); x && x.click(); return true })()`)
+await sleep(600)
+check('看文档库时中栏检索条消失', (await evalJs(`!!document.querySelector('.mid-search')`)) === false)
+check('看文档库时右栏笔记面板也不出现（保持左右两栏）', (await evalJs(`!!document.querySelector('.np')`)) === false)
+await evalJs(`(() => { const x=[...document.querySelectorAll('.tab')].find(e=>e.textContent.includes('专题')); x && x.click(); return true })()`)
+await sleep(700)
+
+// 6.7 界面：专题条目显示法规简称，全名走悬停
+const shortShown = await evalJs(`(() => {
+  const el = document.querySelector('.tp-item-doc')
+  if (!el) return 'NO-EL'
+  return JSON.stringify({ text: el.textContent.trim(), title: el.getAttribute('title') || '' })
+})()`)
+let shortInfo = null
+try { shortInfo = JSON.parse(shortShown) } catch { /* 断言失败 */ }
+check(
+  '专题条目的法规名用简称显示、悬停给全名',
+  !!shortInfo && shortInfo.text.length > 0 && shortInfo.title.length > shortInfo.text.length
+)
+
+await api(`workspace.deleteTopic(${bindTopic.id})`)
+await api(`workspace.deleteTopic(${uiTopic.id})`)
+
 // 7. 清理（删笔记/移出/删专题）
 await api(`workspace.deleteNote(${note1.id})`)
 await api(`workspace.deleteNote(${note2.id})`)

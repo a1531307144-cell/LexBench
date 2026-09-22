@@ -171,6 +171,30 @@ await new Promise((r) => setTimeout(r, 500))
 const openedDoc = await evalJs(`!document.querySelector('.welcome')`)
 check('点下拉框体不会误打开文档', stillOpen === true && !openedDoc)
 
+// 9.5 老版 Word（.doc）：不再被文件类型白名单拦掉，而是交给解析器。
+//     真实 .doc 是二进制 OLE 容器，仓库里不放二进制夹具，所以这里用「后缀是 .doc 的坏文件」
+//     验证路由——若仍被白名单拦截，报的会是「不支持的文件类型」，而不是「解析失败」。
+const bogusDoc = join(tmp, `自测老格式_${nonce}.doc`).replace(/\//g, '\\')
+writeFileSync(bogusDoc, 'this is not a real ole compound file', 'utf-8')
+const docRes = await api(`library.importDocuments([${JSON.stringify(bogusDoc)}], '自动识别', 'statute')`)
+const docMsg = docRes?.[0]?.message ?? ''
+check('.doc 已放行（报解析失败，而非「不支持的文件类型」）', docRes?.[0]?.status === 'failed' && docMsg.startsWith('解析失败'))
+
+// 9.6 文档库拖动排序：按传入顺序重排并落库（测完还原，不给用户库里留痕）
+const beforeIds = ((await api('library.listDocuments()')) ?? []).map((d) => d.id)
+if (beforeIds.length >= 2) {
+  const swapped = [...beforeIds]
+  swapped.unshift(swapped.splice(1, 1)[0]) // 把第 2 条挪到最前
+  await api(`library.reorder(${JSON.stringify(swapped)})`)
+  const afterIds = ((await api('library.listDocuments()')) ?? []).map((d) => d.id)
+  check('拖动排序后顺序按传入顺序落库', afterIds[0] === swapped[0] && afterIds[1] === swapped[1])
+  await api(`library.reorder(${JSON.stringify(beforeIds)})`)
+  const restored = ((await api('library.listDocuments()')) ?? []).map((d) => d.id)
+  check('顺序已还原（自测不留痕）', restored.join(',') === beforeIds.join(','))
+} else {
+  check('拖动排序（库里文档不足 2 篇，无法验证）', false)
+}
+
 // 9. 清理测试文档
 await api(`library.deleteDocument(${docId})`)
 const finalDocs = await api('library.listDocuments()')
