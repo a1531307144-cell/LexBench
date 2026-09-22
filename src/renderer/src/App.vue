@@ -415,6 +415,15 @@ function closeMidPop(): void {
   midPopOpen.value = false
 }
 
+/** 点回中栏检索框：重新弹出上次的候选（同上，focus 与 click 都要接） */
+function onMidFocus(): void {
+  if (midResults.value.length) {
+    midPopOpen.value = true
+  } else if (midQuery.value.trim()) {
+    void runMidSearch()
+  }
+}
+
 /** 回车 = 确认选中的那条（正文已随高亮呈现，这里把候选收起） */
 function confirmMid(): void {
   if (!midPopOpen.value) return
@@ -516,6 +525,15 @@ function openResult(hit: SearchHit): void {
 function onPopPick(hit: SearchHit): void {
   searchPopOpen.value = false
   openResult(hit)
+}
+
+/**
+ * 点回检索框就把上次的结果重新弹出来——选中一条之后候选会收起，
+ * 若只能靠重新打字才能再看，用起来很别扭。
+ * 注意：确认后输入框仍是聚焦态，focus 不会再触发，所以 click 也要接。
+ */
+function onTopFocus(): void {
+  if (results.value.length) searchPopOpen.value = true
 }
 
 /** ↑↓ 在顶栏候选中移动 */
@@ -736,6 +754,8 @@ onBeforeUnmount(() => {
             class="search-input"
             type="text"
             placeholder="法条定位（如：民法典 1077）或关键词检索（如：离婚 冷静期）"
+            @focus="onTopFocus"
+            @click="onTopFocus"
             @keydown.down.prevent="moveTop(1)"
             @keydown.up.prevent="moveTop(-1)"
             @keydown.enter="submitTop"
@@ -896,6 +916,8 @@ onBeforeUnmount(() => {
               type="text"
               placeholder="在本专题里搜法条：如「民法典 1077」或「离婚 冷静期」"
               @input="onMidInput"
+              @focus="onMidFocus"
+              @click="onMidFocus"
               @keydown.down.prevent="moveMid(1)"
               @keydown.up.prevent="moveMid(-1)"
               @keydown.enter.prevent="confirmMid()"

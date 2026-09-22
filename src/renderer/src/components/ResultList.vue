@@ -21,6 +21,17 @@ withDefaults(
 
 defineEmits<{ select: [hit: SearchHit]; add: [hit: SearchHit] }>()
 
+/**
+ * 法条定位（如「民法典 1077」）返回的是条文全文、没有高亮摘要字段，
+ * 只渲染 snippet 的话候选行就只剩「法规名 + 条号」，看不到内容。
+ * 这里给没有摘要的结果补一段正文预览。
+ */
+const PREVIEW_CLIP = 96
+function previewOf(content: string): string {
+  const t = content.replace(/\s+/g, ' ').trim()
+  return t.length > PREVIEW_CLIP ? t.slice(0, PREVIEW_CLIP) + '…' : t
+}
+
 const typeNames: Record<string, string> = {
   statute: '法规',
   case: '案例',
@@ -80,6 +91,8 @@ const typeNames: Record<string, string> = {
         <div class="item-label">{{ r.label }}</div>
         <!-- snippet 由主进程 HTML 转义后生成（来源可信），em 为关键词高亮 -->
         <div v-if="r.snippet" class="item-snippet" v-html="r.snippet"></div>
+        <!-- 定位结果没有 snippet，退回用正文预览（纯文本，走转义渲染） -->
+        <div v-else-if="r.content" class="item-snippet plain">{{ previewOf(r.content) }}</div>
       </div>
     </template>
   </div>
@@ -260,6 +273,12 @@ const typeNames: Record<string, string> = {
 .item-add:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 没有高亮摘要时的纯文本正文预览 */
+.item-snippet.plain {
+  color: var(--lb-muted);
+  opacity: 0.85;
 }
 
 .item-snippet {
