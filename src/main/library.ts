@@ -408,9 +408,30 @@ export function registerLibraryIpc(): void {
     return { canceled: result.canceled, paths: result.filePaths }
   })
 
-  // 文档列表（最新在前）
+  // 文档列表（默认最新在前；用户拖过顺序后按 sort_order，同分再按 id 倒序）
   ipcMain.handle('library:listDocuments', (): DocumentRow[] => {
-    return getDb().prepare('SELECT * FROM documents ORDER BY id DESC').all() as unknown as DocumentRow[]
+    return getDb()
+      .prepare('SELECT * FROM documents ORDER BY sort_order ASC, id DESC')
+      .all() as unknown as DocumentRow[]
+  })
+
+  // 文档库拖动排序：按传入的 id 顺序整体重排（界面只传当前文件夹里的那批）。
+  // 跨文件夹出现相同的 sort_order 不影响显示——顺序只在同一文件夹内部比较。
+  ipcMain.handle('library:reorder', (_e, ids: number[]): void => {
+    const db = getDb()
+    const list = Array.isArray(ids)
+      ? ids.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+      : []
+    if (list.length === 0) return
+    const stmt = db.prepare('UPDATE documents SET sort_order=? WHERE id=?')
+    db.exec('BEGIN')
+    try {
+      list.forEach((id, index) => stmt.run(index, id))
+      db.exec('COMMIT')
+    } catch (e) {
+      db.exec('ROLLBACK')
+      throw e
+    }
   })
 
   // 文档详情：文档全字段 + 法条（按 order_index）+ 段落（按 seq）

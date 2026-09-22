@@ -242,6 +242,15 @@ SELECT topic_id, article_id, base + ROW_NUMBER() OVER (PARTITION BY topic_id ORD
   );
 `
 
+// 013_document_order：文档库支持拖动排序（sort_order 越小越靠前）。
+// 回填保持原有观感（此前按 id DESC，即最新导入的在最前）：最新一篇拿 0，越老越大。
+// 之后新导入的文档用默认 0，与当前最前的那篇同分，再由 id DESC 决出胜负——仍在最前。
+const MIGRATION_013_DOC_ORDER = `-- 013_document_order
+
+ALTER TABLE documents ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+UPDATE documents SET sort_order = (SELECT MAX(id) FROM documents) - id;
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -255,7 +264,8 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 9, sql: MIGRATION_009_AI_PROFILES },
   { version: 10, sql: MIGRATION_010_AI_PROTOCOL },
   { version: 11, sql: MIGRATION_011_AI_PROTOCOL_GUESS },
-  { version: 12, sql: MIGRATION_012_TOPIC_ITEMS_FROM_NOTES }
+  { version: 12, sql: MIGRATION_012_TOPIC_ITEMS_FROM_NOTES },
+  { version: 13, sql: MIGRATION_013_DOC_ORDER }
 ]
 
 /** 全局唯一连接（单例） */

@@ -878,6 +878,7 @@ onBeforeUnmount(() => {
           @remove="askDelete"
           @mark-reviewed="markReviewed"
           @groups-changed="onGroupsChanged"
+          @docs-changed="refreshDocs"
           @error="showError"
         />
       </aside>

@@ -71,6 +71,8 @@ const api = {
   },
   library: {
     listDocuments: (): Promise<DocumentRow[]> => invoke('library:listDocuments'),
+    /** 拖动排序：按传入的 id 顺序整体重排（传当前文件夹里的那批） */
+    reorder: (ids: number[]): Promise<void> => invoke('library:reorder', ids),
     /** 本次启动是否刚预置了随包法条（首次启动显示一次性提示用） */
     getSeedInfo: (): Promise<{ justApplied: boolean; count: number }> =>
       invoke('library:getSeedInfo'),

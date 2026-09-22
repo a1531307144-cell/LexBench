@@ -13,6 +13,8 @@ const emit = defineEmits<{
   'mark-reviewed': [id: number]
   /** 分类文件夹增删改 / 文档改归属后：App 据此重取分组与文档 */
   'groups-changed': []
+  /** 拖动排序后：App 据此重取文档列表（新的 sort_order 在库里） */
+  'docs-changed': []
   error: [message: string]
 }>()
 
@@ -186,6 +188,57 @@ function onMoveChange(d: DocumentRow, e: Event): void {
 const draggingGroupId = ref<number | null>(null)
 const dragOverId = ref<number | null>(null)
 const dragOverAfter = ref(false)
+
+// ---------- 文档拖动排序（同一套手感，作用在右侧的文档卡片上）----------
+const draggingDocId = ref<number | null>(null)
+const dragOverDocId = ref<number | null>(null)
+const dragOverDocAfter = ref(false)
+
+function onDocDragStart(d: DocumentRow, e: DragEvent): void {
+  draggingDocId.value = d.id
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(d.id))
+  }
+}
+
+function onDocDragOver(d: DocumentRow, e: DragEvent): void {
+  if (draggingDocId.value === null || draggingDocId.value === d.id) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  dragOverDocId.value = d.id
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  dragOverDocAfter.value = e.clientY > rect.top + rect.height / 2
+}
+
+function onDocDragEnd(): void {
+  draggingDocId.value = null
+  dragOverDocId.value = null
+  dragOverDocAfter.value = false
+}
+
+/** 放下：把被拖的文档插到目标卡片前/后，按本文件夹内的新顺序整体重排 */
+async function onDocDrop(d: DocumentRow): Promise<void> {
+  const dragged = draggingDocId.value
+  const after = dragOverDocAfter.value
+  onDocDragEnd()
+  if (dragged === null || dragged === d.id) return
+  const before = filtered.value.map((x) => x.id)
+  const ids = [...before]
+  const from = ids.indexOf(dragged)
+  if (from < 0) return
+  ids.splice(from, 1)
+  const targetIdx = ids.indexOf(d.id)
+  if (targetIdx < 0) return
+  ids.splice(after ? targetIdx + 1 : targetIdx, 0, dragged)
+  if (ids.join(',') === before.join(',')) return
+  try {
+    await window.lexbench.library.reorder(ids)
+    emit('docs-changed')
+  } catch (e) {
+    emit('error', errText(e))
+  }
+}
 
 function onGroupDragStart(g: DocGroupRow, e: DragEvent): void {
   draggingGroupId.value = g.id
@@ -364,7 +417,21 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
       <div class="doc-col">
         <p v-if="filtered.length === 0" class="doc-empty">该文件夹下暂无文档</p>
 
-        <div v-for="d in filtered" :key="d.id" class="doc-card" @click="$emit('open', d.id)">
+        <div
+          v-for="d in filtered"
+          :key="d.id"
+          class="doc-card"
+          draggable="true"
+          :class="{
+            'drop-before': dragOverDocId === d.id && !dragOverDocAfter,
+            'drop-after': dragOverDocId === d.id && dragOverDocAfter
+          }"
+          @click="$emit('open', d.id)"
+          @dragstart="onDocDragStart(d, $event)"
+          @dragover="onDocDragOver(d, $event)"
+          @drop.prevent="onDocDrop(d)"
+          @dragend="onDocDragEnd"
+        >
           <div class="doc-title">
             {{ d.title }}
             <span v-if="d.status === 'needs_review'" class="warn-chip">需复查</span>
@@ -669,6 +736,15 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* 拖动排序时的插入位置指示（与左侧文件夹同一套视觉） */
+.doc-card.drop-before {
+  box-shadow: inset 0 2px 0 var(--lb-accent);
+}
+
+.doc-card.drop-after {
+  box-shadow: inset 0 -2px 0 var(--lb-accent);
 }
 
 .doc-card:hover {
