@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
 import type { ExportFormat, TopicDetail, TopicItemRow, TopicRow } from '@shared/types'
 import type { ItemMoveDirection, TopicPatch } from '@shared/ipc'
+import { shortLawName } from '@shared/lawName'
 
 const props = defineProps<{
   /** 专题列表（App 维护，带 item_count/note_count 计数） */
@@ -25,6 +26,8 @@ const emit = defineEmits<{
   move: [topicId: number, articleId: number, dir: ItemMoveDirection]
   openArticle: [id: number]
   exportTopic: [format: ExportFormat]
+  /** 请求把焦点送到中栏的专题检索条（左栏「＋ 添加法条」用） */
+  focusSearch: []
 }>()
 
 // ---------- 列表态：内联新建表单 ----------
@@ -204,17 +207,22 @@ function confirmDelItem(): void {
         <span class="tp-row-meta">{{ active.items.length }} 条 · {{ active.notes.length }} 记</span>
         <span class="tp-flex"></span>
         <button class="tp-mini" title="导出 Markdown 报告" @click="emit('exportTopic', 'md')">
-          导出 .md
+          .md
         </button>
         <button class="tp-mini" title="导出 Word 报告" @click="emit('exportTopic', 'docx')">
-          导出 .docx
+          .docx
+        </button>
+        <button class="tp-mini primary" title="去中栏的检索条搜索法条" @click="emit('focusSearch')">
+          ＋ 添加法条
         </button>
       </div>
 
       <div class="tp-list">
         <div v-if="!sortedItems.length" class="tp-empty small">
           <p class="tp-empty-title">尚未收藏条文</p>
-          <p class="tp-empty-sub">阅读法条时点「★ 收藏」加入本专题</p>
+          <p class="tp-empty-sub">
+            在中栏的检索条里搜法条，点「＋」加入本专题；读法条时也可以点「★ 收藏」
+          </p>
         </div>
         <div
           v-for="(it, i) in sortedItems"
@@ -227,8 +235,12 @@ function confirmDelItem(): void {
           <div class="tp-item-main">
             <div class="tp-item-l1">
               <span class="tp-item-label">{{ it.article_label }}</span>
-              <span class="tp-item-doc">{{ it.title }}</span>
+              <span v-if="it.note_count > 0" class="tp-item-notes">{{ it.note_count }} 记</span>
             </div>
+            <!-- 法规名单独占一行：库里最长 40 字，跟条号挤一行只会被截成
+                 「最高人民法院关于适用《…」，「（一）」「（二）」根本分不出来。
+                 这里显示智能简称，悬停给出全名 -->
+            <p class="tp-item-doc" :title="it.title">{{ shortLawName(it.title) }}</p>
             <p class="tp-item-sum">{{ brief(it.content) }}</p>
           </div>
           <div class="tp-item-ops" @click.stop>
@@ -575,10 +587,17 @@ function confirmDelItem(): void {
 .tp-ops {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 16px 10px;
   border-bottom: 1px solid var(--lb-border);
   flex-shrink: 0;
+}
+
+/* 左栏只有 340px：计数与按钮谁都不许折行，挤不下就整行下沉 */
+.tp-ops .tp-row-meta,
+.tp-ops .tp-mini {
+  white-space: nowrap;
 }
 
 .tp-mini {
@@ -593,6 +612,11 @@ function confirmDelItem(): void {
 
 .tp-mini:hover {
   border-color: var(--lb-accent-2);
+  color: var(--lb-accent);
+}
+
+.tp-mini.primary {
+  border-color: var(--lb-accent);
   color: var(--lb-accent);
 }
 
@@ -655,13 +679,28 @@ function confirmDelItem(): void {
   flex-shrink: 0;
 }
 
+/* 法规名独占一行：跟条号挤一行时，40 字的名字只会被截成「最高人民法院关于适用《…」，
+   同一部法规的（一）（二）根本分不出来。这里显示简称，全名走 title 悬停 */
 .tp-item-doc {
+  display: block;
+  margin: 2px 0 0;
   font-size: 12px;
   color: var(--lb-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* 该条法条在本专题下的笔记条数 */
+.tp-item-notes {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--lb-accent-soft);
+  color: var(--lb-accent);
+  font-size: 10.5px;
+  line-height: 15px;
 }
 
 .tp-item-sum {

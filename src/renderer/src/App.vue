@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AboutDialog from './components/AboutDialog.vue'
 import AiSettingsDialog from './components/AiSettingsDialog.vue'
 import BackupDialog from './components/BackupDialog.vue'
@@ -56,9 +56,17 @@ function pickMode(m: SearchMode): void {
   modeMenuOpen.value = false
 }
 
-/** 点击菜单外部时收起下拉 */
+/** 点击菜单外部时收起下拉（顶栏与专题中栏各有一个模式菜单，共用 .mode-menu 标记） */
 function onDocClickForMode(e: MouseEvent): void {
-  if (!(e.target as HTMLElement).closest('.mode-menu')) modeMenuOpen.value = false
+  const el = e.target as HTMLElement
+  if (!el.closest('.mode-menu')) {
+    modeMenuOpen.value = false
+    midModeMenuOpen.value = false
+  }
+  // 顶栏检索结果浮层：点到它自己和检索区之外就收起
+  if (!el.closest('.search-area') && !el.closest('.search-pop')) searchPopOpen.value = false
+  // 中栏候选浮层同理
+  if (!el.closest('.mid-search') && !el.closest('.mid-pop')) midPopOpen.value = false
 }
 
 // ---------- 无边框窗口控制（自绘 ──□✕） ----------
@@ -78,14 +86,31 @@ const searched = ref(false)
 const lastQuery = ref('') // 最近一次检索实际使用的词（展示用，不随输入框实时变化）
 const lastMode = ref<SearchOutcome['mode']>('none')
 const results = ref<SearchHit[]>([])
-const tab = ref<'results' | 'topics' | 'library'>('results')
+/** 顶栏快捷检索的结果浮层：结果只在这个小窗里呈现，不占主区域、不切页面 */
+const searchPopOpen = ref(false)
+
+// ---------- 专题内常驻检索（只在中栏、且打开专题时出现）----------
+const midQuery = ref('')
+const midMode = ref<SearchMode>('auto')
+const midModeMenuOpen = ref(false)
+const midSearching = ref(false)
+const midResults = ref<SearchHit[]>([])
+const midModeUsed = ref<SearchOutcome['mode']>('none')
+/** 候选高亮下标；↑↓ 移动时会即时把该条呈现在下方正文区（随检随显） */
+const midActive = ref(0)
+const midPopOpen = ref(false)
+/** 正在加入专题的那条命中 id（−1 = 空闲），防连点 */
+const addingId = ref(-1)
+
+/** 导航只剩两栏：专题是工作台，文档库只看库里有什么。检索融进了专题与顶栏浮窗 */
+const tab = ref<'topics' | 'library'>('topics')
 const documents = ref<DocumentRow[]>([])
 /** 用户自建分类文件夹（全类型，DocLibrary / ImportDialog 各自按类型过滤） */
 const groups = ref<DocGroupRow[]>([])
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
 /** 进入书籍阅读模式前的 Tab（返回时恢复） */
-const preReaderTab = ref<'results' | 'topics' | 'library'>('results')
+const preReaderTab = ref<'topics' | 'library'>('topics')
 const showImport = ref(false)
 /** 数据备份/恢复对话框（v0.5.0 数据包） */
 const showBackup = ref(false)
@@ -310,14 +335,15 @@ async function doSearch(): Promise<void> {
   const q = query.value.trim()
   if (!q || searching.value) return
   searching.value = true
-  tab.value = 'results'
   try {
     const out = await window.lexbench.search.run(q, modeSel.value)
     lastQuery.value = out.query
     lastMode.value = out.mode
     results.value = out.results
     searched.value = true
-    // 法条定位命中 → 直接打开第一条法条进阅读器
+    // 结果落进小浮窗：不切页面、不占主区域，用户随手查一条就走
+    searchPopOpen.value = true
+    // 法条定位命中 → 直接在中栏打开第一条（同样不切 Tab）
     if (out.mode === 'locate' && out.results[0]?.kind === 'article') {
       await openArticle(out.results[0].id)
     }
@@ -325,6 +351,89 @@ async function doSearch(): Promise<void> {
     showError(e)
   } finally {
     searching.value = false
+  }
+}
+
+// ---------- 专题内常驻检索（中栏）----------
+
+/** 输入停顿多久才发检索——本地 SQLite 很快，稍等一点免得每敲一个字就查一次 */
+const MID_SEARCH_MS = 300
+let midTimer: ReturnType<typeof setTimeout> | undefined
+const midInputEl = ref<HTMLInputElement | null>(null)
+
+function onMidInput(): void {
+  clearTimeout(midTimer)
+  midTimer = setTimeout(() => void runMidSearch(), MID_SEARCH_MS)
+}
+
+async function runMidSearch(): Promise<void> {
+  const q = midQuery.value.trim()
+  if (!q) {
+    midResults.value = []
+    midPopOpen.value = false
+    return
+  }
+  midSearching.value = true
+  try {
+    const out = await window.lexbench.search.run(q, midMode.value)
+    midResults.value = out.results
+    midModeUsed.value = out.mode
+    midActive.value = 0
+    midPopOpen.value = out.results.length > 0
+    await previewMidHit()
+  } catch (e) {
+    showError(e)
+  } finally {
+    midSearching.value = false
+  }
+}
+
+/** 把高亮的那条候选呈现在中栏正文区——「随检随显」，全程不切 Tab、不动左栏 */
+async function previewMidHit(): Promise<void> {
+  const hit = midResults.value[midActive.value]
+  if (!hit) return
+  if (hit.kind === 'article') await openArticle(hit.id)
+  else if (hit.doc_type === 'book') await openBook(hit.document_id, { hitId: hit.id })
+  else await openDocument(hit.document_id)
+}
+
+/** ↑↓ 在候选间移动，并即时换正文 */
+function moveMid(delta: number): void {
+  const n = midResults.value.length
+  if (!n) return
+  midActive.value = (midActive.value + delta + n) % n
+  void previewMidHit()
+}
+
+function closeMidPop(): void {
+  midPopOpen.value = false
+}
+
+/** 左栏「＋ 添加法条」→ 把焦点送到中栏检索条 */
+function focusMidSearch(): void {
+  tab.value = 'topics'
+  midPopOpen.value = false
+  void nextTick(() => midInputEl.value?.focus())
+}
+
+/** 把候选里的法条加入当前专题（重复收藏由主进程幂等处理） */
+async function addHitToTopic(hit: SearchHit): Promise<void> {
+  const topic = activeTopic.value
+  if (!topic || addingId.value !== -1) return
+  if (hit.kind !== 'article') {
+    setNotice('只有法条能收进专题；案例与书籍请在「文档库」里查阅')
+    return
+  }
+  addingId.value = hit.id
+  try {
+    const r = await window.lexbench.workspace.addTopicItem(topic.id, hit.id)
+    await refreshTopics()
+    await refreshActiveTopic()
+    setNotice(r.status === 'duplicate' ? '这条法条已经在本专题里了' : '已加入本专题')
+  } catch (e) {
+    showError(e)
+  } finally {
+    addingId.value = -1
   }
 }
 
@@ -389,6 +498,26 @@ function openResult(hit: SearchHit): void {
   else if (hit.doc_type === 'book') void openBook(hit.document_id, { hitId: hit.id })
   else void openDocument(hit.document_id)
 }
+
+/** 顶栏浮窗里选中一条：打开它，并收起浮窗（用户看完即走，不占版面） */
+function onPopPick(hit: SearchHit): void {
+  searchPopOpen.value = false
+  openResult(hit)
+}
+
+/** 中栏候选里点了一条：正文其实已随高亮呈现过了，这里只是把高亮对齐并收起候选 */
+function onMidPick(hit: SearchHit): void {
+  const i = midResults.value.findIndex((r) => r.kind === hit.kind && r.id === hit.id)
+  if (i >= 0) midActive.value = i
+  midPopOpen.value = false
+  void previewMidHit()
+}
+
+/** 中栏候选的高亮项（法条才有 id 可高亮） */
+const midSelectedId = computed(() => {
+  const h = midResults.value[midActive.value]
+  return h && h.kind === 'article' ? h.id : -1
+})
 
 /** 条文修正保存完成（Reader 已重取详情）：同步阅读器状态；若该条在激活专题内则刷新专题摘要 */
 function onArticleSaved(detail: ArticleDetail): void {
@@ -520,6 +649,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('drop', onDrop)
   document.removeEventListener('click', onDocClickForMode)
   clearTimeout(noticeTimer)
+  clearTimeout(midTimer)
 })
 </script>
 
@@ -577,6 +707,25 @@ onBeforeUnmount(() => {
             <span v-if="searching" class="spinner" aria-label="检索中"></span>
             <span v-else>检 索</span>
           </button>
+
+          <!-- 快捷检索结果：就地一个小浮窗，不切页面、不占主区域，随手查一条就走 -->
+          <Transition name="menu-pop">
+            <div v-if="searchPopOpen" class="search-pop">
+              <ResultList
+                :results="results"
+                :mode="lastMode"
+                :searched="searched"
+                :searching="searching"
+                :query="lastQuery"
+                :selected-id="selectedId"
+                :has-docs="documents.length > 0"
+                :addable="!!activeTopic"
+                :adding-id="addingId"
+                @select="onPopPick"
+                @add="addHitToTopic"
+              />
+            </div>
+          </Transition>
         </div>
       </div>
       <button class="top-btn" @click="showImport = true">导入文档</button>
@@ -632,10 +781,7 @@ onBeforeUnmount(() => {
     <main v-else class="main">
       <aside class="side">
         <div class="tabs" role="tablist">
-          <div class="tab-slider" :class="tab === 'results' ? 'pos-0' : tab === 'topics' ? 'pos-1' : 'pos-2'"></div>
-          <button class="tab" role="tab" :aria-selected="String(tab === 'results')" :class="{ active: tab === 'results' }" @click="tab = 'results'">
-            检索<span v-if="searched" class="count">{{ results.length }}</span>
-          </button>
+          <div class="tab-slider" :class="tab === 'topics' ? 'pos-0' : 'pos-1'"></div>
           <button class="tab" role="tab" :aria-selected="String(tab === 'topics')" :class="{ active: tab === 'topics' }" @click="tab = 'topics'">
             专题<span class="count">{{ topics.length }}</span>
           </button>
@@ -643,18 +789,6 @@ onBeforeUnmount(() => {
             文档库<span class="count">{{ documents.length }}</span>
           </button>
         </div>
-
-        <ResultList
-          v-show="tab === 'results'"
-          :results="results"
-          :mode="lastMode"
-          :searched="searched"
-          :searching="searching"
-          :query="lastQuery"
-          :selected-id="selectedId"
-          :has-docs="documents.length > 0"
-          @select="openResult"
-        />
 
         <TopicPanel
           v-show="tab === 'topics'"
@@ -670,6 +804,7 @@ onBeforeUnmount(() => {
           @move="moveTopicItem"
           @open-article="openArticle"
           @export-topic="exportTopic"
+          @focus-search="focusMidSearch"
         />
 
         <DocLibrary
@@ -685,6 +820,69 @@ onBeforeUnmount(() => {
       </aside>
 
       <section class="reader-pane">
+        <!-- 专题内常驻检索：只在打开专题时出现（看文档库时仍是左右两栏）。
+             随输入出候选，并把高亮的那条即时呈现在下方正文区——不必跳去别处找法条 -->
+        <div v-if="tab === 'topics' && activeTopic" class="mid-search">
+          <div class="search-group">
+            <div class="mode-menu">
+              <button class="mode-trigger" title="检索模式" @click="midModeMenuOpen = !midModeMenuOpen">
+                <span>{{ modeNames[midMode] }}</span>
+                <svg class="mode-caret" :class="{ open: midModeMenuOpen }" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                  <path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <Transition name="menu-pop">
+                <div v-if="midModeMenuOpen" class="mode-pop" role="listbox">
+                  <button
+                    v-for="(name, m) in modeNames"
+                    :key="m"
+                    class="mode-opt"
+                    :class="{ on: midMode === m }"
+                    role="option"
+                    :aria-selected="String(midMode === m)"
+                    @click="midMode = m as SearchMode; midModeMenuOpen = false"
+                  >
+                    <span>{{ name }}</span>
+                  </button>
+                </div>
+              </Transition>
+            </div>
+            <input
+              ref="midInputEl"
+              v-model="midQuery"
+              class="search-input"
+              type="text"
+              placeholder="在本专题里搜法条：如「民法典 1077」或「离婚 冷静期」"
+              @input="onMidInput"
+              @keydown.down.prevent="moveMid(1)"
+              @keydown.up.prevent="moveMid(-1)"
+              @keydown.enter.prevent="closeMidPop()"
+              @keydown.esc="closeMidPop"
+            />
+            <button v-if="midSearching" class="search-btn" disabled>
+              <span class="spinner" aria-label="检索中"></span>
+            </button>
+          </div>
+
+          <Transition name="menu-pop">
+            <div v-if="midPopOpen" class="mid-pop">
+              <ResultList
+                :results="midResults"
+                :mode="midModeUsed"
+                searched
+                :searching="midSearching"
+                :query="midQuery"
+                :selected-id="midSelectedId"
+                :has-docs="true"
+                addable
+                :adding-id="addingId"
+                @select="onMidPick"
+                @add="addHitToTopic"
+              />
+            </div>
+          </Transition>
+        </div>
+
         <Reader
           :state="reader"
           :loading="readerLoading"
@@ -699,9 +897,10 @@ onBeforeUnmount(() => {
         />
       </section>
 
-      <!-- 右栏笔记：仅打开专题且阅读器为法条模式时出现（与旧版一致的动态三栏） -->
+      <!-- 右栏笔记：只有「在专题里读法条」时才出现。
+           看文档库时不出现——那时保持左右两栏，笔记属于专题，不属于文档库 -->
       <NotePanel
-        v-if="activeTopic && reader?.type === 'article'"
+        v-if="tab === 'topics' && activeTopic && reader?.type === 'article'"
         :topic="activeTopic"
         :current-article-id="reader.data.article.id"
         :current-article-label="reader.data.article.article_label"
@@ -902,6 +1101,51 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   min-width: 0;
+}
+
+/* 检索框是结果浮窗的定位锚点 */
+.search-group {
+  position: relative;
+}
+
+/* ---------- 顶栏快捷检索的结果浮窗 ---------- */
+.search-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 60vh;
+  overflow-y: auto;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-l);
+  background: var(--lb-panel);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+}
+
+/* ---------- 专题中栏的常驻检索条 ---------- */
+/* 只在打开专题时出现（模板里有 v-if）；看文档库时中栏仍是纯阅读区 */
+.mid-search {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  padding: 10px 16px;
+  background: var(--lb-bg);
+  border-bottom: 1px solid var(--lb-border);
+}
+
+.mid-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 9;
+  max-height: 48vh;
+  overflow-y: auto;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-l);
+  background: var(--lb-panel);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
 }
 
 .search-group {
@@ -1187,12 +1431,12 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-/* 白色滑块在三个选项间平滑滑动 */
+/* 白色滑块在两个选项间平滑滑动 */
 .tab-slider {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: calc((100% - 6px) / 3);
+  width: calc((100% - 6px) / 2);
   height: calc(100% - 6px);
   background: var(--lb-panel);
   border-radius: 8px;
@@ -1213,9 +1457,6 @@ onBeforeUnmount(() => {
   transform: translateX(100%);
 }
 
-.tab-slider.pos-2 {
-  transform: translateX(200%);
-}
 
 .tab {
   position: relative;

@@ -1,17 +1,25 @@
 <script setup lang="ts">
 import type { SearchHit, SearchOutcome } from '@shared/types'
+import { shortLawName } from '@shared/lawName'
 
-defineProps<{
-  results: SearchHit[]
-  mode: SearchOutcome['mode']
-  searched: boolean
-  searching: boolean
-  query: string
-  selectedId: number
-  hasDocs: boolean
-}>()
+withDefaults(
+  defineProps<{
+    results: SearchHit[]
+    mode: SearchOutcome['mode']
+    searched: boolean
+    searching: boolean
+    query: string
+    selectedId: number
+    hasDocs: boolean
+    /** 打开着专题时，法条类结果右侧给一个「＋」直接收进专题 */
+    addable?: boolean
+    /** 正在加入的那条命中 id（−1 = 空闲），用来禁用按钮防连点 */
+    addingId?: number
+  }>(),
+  { addable: false, addingId: -1 }
+)
 
-defineEmits<{ select: [hit: SearchHit] }>()
+defineEmits<{ select: [hit: SearchHit]; add: [hit: SearchHit] }>()
 
 const typeNames: Record<string, string> = {
   statute: '法规',
@@ -55,8 +63,19 @@ const typeNames: Record<string, string> = {
         @click="$emit('select', r)"
       >
         <div class="item-head">
-          <span class="item-title">{{ r.title }}</span>
+          <!-- 法规名用智能简称：小窗里全名（最长 40 字）只会被截成
+               「最高人民法院关于适用《…」，同部法规的（一）（二）分不出来 -->
+          <span class="item-title" :title="r.title">{{ shortLawName(r.title) }}</span>
           <span class="item-type" :data-type="r.doc_type">{{ typeNames[r.doc_type] || r.doc_type }}</span>
+          <button
+            v-if="addable && r.kind === 'article'"
+            class="item-add"
+            title="加入当前专题"
+            :disabled="addingId === r.id"
+            @click.stop="$emit('add', r)"
+          >
+            ＋
+          </button>
         </div>
         <div class="item-label">{{ r.label }}</div>
         <!-- snippet 由主进程 HTML 转义后生成（来源可信），em 为关键词高亮 -->
@@ -218,6 +237,29 @@ const typeNames: Record<string, string> = {
   font-family: var(--lb-serif);
   font-size: 14px;
   color: var(--lb-text);
+}
+
+.item-add {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  border: 1px solid var(--lb-border-strong);
+  border-radius: 6px;
+  background: var(--lb-panel);
+  color: var(--lb-accent);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.item-add:hover {
+  border-color: var(--lb-accent);
+}
+
+.item-add:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .item-snippet {
