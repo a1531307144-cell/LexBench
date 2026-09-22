@@ -130,7 +130,7 @@ function onZoneDrop(e: DragEvent): void {
     files.value.push({ path, name: f.name, size: f.size })
   }
   if (rejected > 0) {
-    setNote(`已忽略 ${rejected} 个无法导入的文件（仅支持 .docx / .pdf / .txt）`)
+    setNote(`已忽略 ${rejected} 个无法导入的文件（仅支持 .docx / .doc / .pdf / .txt）`)
   }
 }
 
@@ -222,7 +222,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
             @click="pickFiles"
           >
             <p class="drop-main">点击选择文件，或拖拽到此处</p>
-            <p class="drop-sub">支持 .docx / .pdf / .txt，可多选；.doc 老格式请先转为 .docx</p>
+            <p class="drop-sub">支持 .docx / .doc / .pdf / .txt，可多选</p>
           </div>
 
           <p v-if="note" class="note">{{ note }}</p>

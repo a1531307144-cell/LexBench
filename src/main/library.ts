@@ -9,6 +9,7 @@ import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import mammoth from 'mammoth'
+import WordExtractor from 'word-extractor'
 import type { PickFilesResult } from '../shared/ipc'
 import type {
   ArticleDetail,
@@ -56,6 +57,20 @@ function sha256File(filePath: string): string {
 async function extractDocxParagraphs(filePath: string): Promise<string[]> {
   const { value } = await mammoth.extractRawText({ path: filePath })
   return value
+    .split(/\r\n|\n|\r/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 老版 Word（.doc，Word 97-2003 的二进制格式）：word-extractor 是纯 JS 实现，
+ * 直接解 OLE 容器，不依赖本机装没装 Word（旧版靠 Word COM 转换，本机 COM 一坏就全废）。
+ * 只取正文——页眉页脚多是文号与页码，对法条切分是噪声。
+ */
+async function extractDocParagraphs(filePath: string): Promise<string[]> {
+  const doc = await new WordExtractor().extract(filePath)
+  return doc
+    .getBody()
     .split(/\r\n|\n|\r/)
     .map((s) => s.trim())
     .filter(Boolean)
@@ -246,14 +261,13 @@ async function importOne(
     message
   })
 
-  // ①② 解析阶段（.doc 拒绝 / 未知后缀 / 空文档）
+  // ①② 解析阶段（未知后缀 / 空文档）
   // PDF 先轻探测（页数 + 前 3 页文本量）：书籍型 PDF 走快路径——不逐页提取文字
   // （真实书籍逐页提取可达分钟级且无进度反馈）；页面模式按需渲染，文字提取留给 OCR 阶段
   let pages: string[][] | null = null // 每页的行（docx/txt 视为单页）；PDF 快路径为 null
   let pdfFast: { numPages: number; scanned: boolean } | null = null
   try {
-    if (suffix === '.doc') return fail('不支持 .doc 老格式，请先转换为 .docx')
-    if (suffix !== '.docx' && suffix !== '.pdf' && suffix !== '.txt') {
+    if (suffix !== '.docx' && suffix !== '.doc' && suffix !== '.pdf' && suffix !== '.txt') {
       return fail(`不支持的文件类型 ${suffix || '(无后缀)'}`)
     }
     if (suffix === '.pdf') {
@@ -263,6 +277,8 @@ async function importOne(
       else pages = await extractPdfPages(filePath)
     } else if (suffix === '.docx') {
       pages = [await extractDocxParagraphs(filePath)]
+    } else if (suffix === '.doc') {
+      pages = [await extractDocParagraphs(filePath)]
     } else {
       pages = [extractTxtParagraphs(filePath)]
     }
@@ -394,7 +410,7 @@ export function registerLibraryIpc(): void {
   // 启动建库/迁移（连接、迁移策略都在 ./db 内）
   initDb()
 
-  // 选择导入文件：多选；.doc 也放行（选中后给出可感知的转换提示，而非灰掉选不了）
+  // 选择导入文件：多选（.doc 老格式现已支持直接解析）
   ipcMain.handle('dialog:pickImportFiles', async (): Promise<PickFilesResult> => {
     const options = {
       title: '选择要导入的文档',

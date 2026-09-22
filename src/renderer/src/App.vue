@@ -649,7 +649,7 @@ function onDrop(e: DragEvent): void {
   if (!ok.length) {
     // 拖入不支持的类型给出可感知反馈，而非静默（修复旧版 #14）
     if (all.length) {
-      error.value = '不支持的文件类型：目前仅支持 .docx / .pdf / .txt（.doc 老格式请先转换）'
+      error.value = '不支持的文件类型：目前仅支持 .docx / .doc / .pdf / .txt'
     }
     return
   }
