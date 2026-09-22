@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
--- 全文索引表：content 列存 jieba 切词后的文本（空格分隔），检索时查询词同样切词
+-- 全文索引表：content 列存切词后文本（空格分隔；分词用运行时 Intl.Segmenter，
+-- 公式见 @shared/ftsContent——标题/条标/条号/编章节并入；查询侧同实现 + NFKC 归一）
 CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
     article_id UNINDEXED,
     content

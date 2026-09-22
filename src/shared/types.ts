@@ -106,6 +106,12 @@ export interface SearchOutcome {
   mode: 'none' | 'locate' | 'fulltext'
   query: string
   results: SearchHit[]
+  /** 定位先行且为空，本响应来自全文兜底 */
+  fallback?: boolean
+  /** auto 第三段：非空 hint 零命中后按条号全库救援成功 */
+  rescued?: boolean
+  /** 零结果是因为查询切不出任何 token（而非有 token 但无命中） */
+  emptyReason?: 'no_tokens'
 }
 
 // ---------- 研究工作台（阶段2） ----------

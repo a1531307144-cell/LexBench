@@ -11,8 +11,10 @@ import NotePanel from './components/NotePanel.vue'
 import Reader from './components/Reader.vue'
 import ReadingView from './components/ReadingView.vue'
 import ResultList from './components/ResultList.vue'
+import StatuteReadingView from './components/StatuteReadingView.vue'
 import TopicPanel from './components/TopicPanel.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
+import { MID_HINTS, TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
 import type { ItemMoveDirection, TopicPatch } from '@shared/ipc'
 import type {
   ArticleDetail,
@@ -27,11 +29,12 @@ import type {
   TopicRow
 } from '@shared/types'
 
-/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读（与 Reader.vue 内声明保持同一形状） */
+/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读 / 法规全页阅读（与 Reader.vue 内声明保持同一形状） */
 type ReaderState =
   | { type: 'article'; data: ArticleDetail }
   | { type: 'document'; data: DocumentDetail }
   | { type: 'book'; data: DocumentDetail; focusPara?: number }
+  | { type: 'statute-full'; data: DocumentDetail }
   | null
 
 /** 交给 ImportDialog 的待导入文件（路径经 webUtils 解析，仅用于交回主进程读取） */
@@ -54,6 +57,11 @@ const modeNames: Record<SearchMode, string> = {
 function pickMode(m: SearchMode): void {
   modeSel.value = m
   modeMenuOpen.value = false
+  // 切模式立即按新模式重搜（旧版只改值不重搜，浮层留着旧模式的结果）
+  if (query.value.trim()) {
+    clearTimeout(topTimer)
+    void runTopSearch({ pick: false })
+  }
 }
 
 /** 点击菜单外部时收起下拉（顶栏与专题中栏各有一个模式菜单，共用 .mode-menu 标记） */
@@ -85,6 +93,10 @@ const searching = ref(false)
 const searched = ref(false)
 const lastQuery = ref('') // 最近一次检索实际使用的词（展示用，不随输入框实时变化）
 const lastMode = ref<SearchOutcome['mode']>('none')
+/** 本次结果的来源注记（ResultList 空态/结果态都要显示降级过程） */
+const lastFallback = ref(false)
+const lastRescued = ref(false)
+const lastEmptyReason = ref<SearchOutcome['emptyReason']>(undefined)
 const results = ref<SearchHit[]>([])
 /** 顶栏快捷检索的结果浮层：结果只在这个小窗里呈现，不占主区域、不切页面 */
 const searchPopOpen = ref(false)
@@ -99,6 +111,9 @@ const midModeMenuOpen = ref(false)
 const midSearching = ref(false)
 const midResults = ref<SearchHit[]>([])
 const midModeUsed = ref<SearchOutcome['mode']>('none')
+const midFallback = ref(false)
+const midRescued = ref(false)
+const midEmptyReason = ref<SearchOutcome['emptyReason']>(undefined)
 /** 候选高亮下标；↑↓ 移动时会即时把该条呈现在下方正文区（随检随显） */
 const midActive = ref(0)
 const midPopOpen = ref(false)
@@ -107,6 +122,9 @@ const addingId = ref(-1)
 
 /** 导航只剩两栏：专题是工作台，文档库只看库里有什么。检索融进了专题与顶栏浮窗 */
 const tab = ref<'topics' | 'library'>('topics')
+/** 搜索示例占位：本次启动从池里随机取，别常年只显示同一组（输入后不影响） */
+const topHint = pickDistinct(TOPBAR_HINTS, 1)[0] ?? TOPBAR_HINTS[0]
+const midHint = pickDistinct(MID_HINTS, 1)[0] ?? MID_HINTS[0]
 const documents = ref<DocumentRow[]>([])
 /** 用户自建分类文件夹（全类型，DocLibrary / ImportDialog 各自按类型过滤） */
 const groups = ref<DocGroupRow[]>([])
@@ -335,38 +353,79 @@ async function onImported(): Promise<void> {
   await refreshGroups()
 }
 
-async function doSearch(): Promise<void> {
+// ---------- 顶栏实时检索（输入即搜；150ms 防抖 + 请求序号丢弃过期响应） ----------
+
+const TOP_SEARCH_MS = 150
+let topTimer: ReturnType<typeof setTimeout> | undefined
+let topSeq = 0
+/** IME 组合态：组合中不搜不跳（选字回车也不触发），上屏后补搜 */
+const topComposing = ref(false)
+const midComposing = ref(false)
+
+/**
+ * 顶栏检索唯一执行体。pick=true 仅用于显式提交（回车/检索按钮）：
+ * 法条定位命中时自动打开第一条；实时路径必须 pick=false——
+ * 否则打字过程中「民法典 10」这种瞬时可定位态会把阅读器跳走。
+ */
+async function runTopSearch(opts: { pick: boolean }): Promise<void> {
   const q = query.value.trim()
-  if (!q || searching.value) return
+  if (!q) return
+  const seq = ++topSeq
   searching.value = true
   try {
     const out = await window.lexbench.search.run(q, modeSel.value)
+    if (seq !== topSeq) return // 过期响应：期间又敲了新查询，直接丢弃
     lastQuery.value = out.query
     lastMode.value = out.mode
+    lastFallback.value = out.fallback ?? false
+    lastRescued.value = out.rescued ?? false
+    lastEmptyReason.value = out.emptyReason
     results.value = out.results
     searched.value = true
     topActive.value = 0
     // 结果落进小浮窗：不切页面、不占主区域，用户随手查一条就走
     searchPopOpen.value = true
-    // 法条定位命中 → 直接在中栏打开第一条（同样不切 Tab）
-    if (out.mode === 'locate' && out.results[0]?.kind === 'article') {
+    // 法条定位命中 → 直接在中栏打开第一条（仅显式提交；同样不切 Tab）
+    if (opts.pick && out.mode === 'locate' && out.results[0]?.kind === 'article') {
       await openArticle(out.results[0].id)
     }
   } catch (e) {
-    showError(e)
+    if (seq === topSeq) showError(e)
   } finally {
-    searching.value = false
+    if (seq === topSeq) searching.value = false
   }
+}
+
+/** 显式提交（检索按钮 / 回车兜底）：定位命中即打开第一条 */
+function doSearch(): void {
+  clearTimeout(topTimer) // 收掉挂起的实时防抖，显式提交不被 pick:false 的实时请求反超
+  void runTopSearch({ pick: true })
+}
+
+/** 顶栏键入：随输入实时出候选（清空则收起） */
+function onTopInput(): void {
+  if (topComposing.value) return // 拼音未上屏，不发半截查询
+  clearTimeout(topTimer)
+  const q = query.value.trim()
+  if (!q) {
+    searchPopOpen.value = false
+    return
+  }
+  searchPopOpen.value = true
+  topTimer = setTimeout(() => void runTopSearch({ pick: false }), TOP_SEARCH_MS)
 }
 
 // ---------- 专题内常驻检索（中栏）----------
 
-/** 输入停顿多久才发检索——本地 SQLite 很快，稍等一点免得每敲一个字就查一次 */
-const MID_SEARCH_MS = 300
+/** 输入停顿多久才发检索——本地 SQLite 很快，稍等一点免得每敲一个字就查一次；
+ *  2026-09 从 300ms 收紧到 200ms（实时建议），乱序由请求序号兜底 */
+const MID_SEARCH_MS = 200
 let midTimer: ReturnType<typeof setTimeout> | undefined
+let midSeq = 0
 const midInputEl = ref<HTMLInputElement | null>(null)
 
 function onMidInput(): void {
+  if (midComposing.value) return // 拼音未上屏，不发半截查询
   clearTimeout(midTimer)
   midTimer = setTimeout(() => void runMidSearch(), MID_SEARCH_MS)
 }
@@ -378,20 +437,25 @@ async function runMidSearch(): Promise<void> {
     midPopOpen.value = false
     return
   }
+  const seq = ++midSeq
   midSearching.value = true
   try {
     const out = await window.lexbench.search.run(q, midMode.value)
+    if (seq !== midSeq) return // 过期响应丢弃（连打时旧结果不得覆盖新结果）
     midResults.value = out.results
     midModeUsed.value = out.mode
+    midFallback.value = out.fallback ?? false
+    midRescued.value = out.rescued ?? false
+    midEmptyReason.value = out.emptyReason
     midActive.value = 0
     // 没命中也要把浮层打开，让「没有找到相关条文」显示出来——
     // 否则搜索一次毫无反馈，用户会以为输入框坏了
     midPopOpen.value = true
     await previewMidHit()
   } catch (e) {
-    showError(e)
+    if (seq === midSeq) showError(e)
   } finally {
-    midSearching.value = false
+    if (seq === midSeq) midSearching.value = false
   }
 }
 
@@ -425,11 +489,23 @@ function onMidFocus(): void {
   }
 }
 
-/** 回车 = 确认选中的那条（正文已随高亮呈现，这里把候选收起） */
-function confirmMid(): void {
+/** 回车 = 确认选中的那条（正文已随高亮呈现，这里把候选收起）；
+ *  IME 选字回车不算确认（会把拼音中途的浮层收掉） */
+function confirmMid(e?: KeyboardEvent): void {
+  if (e && (midComposing.value || e.isComposing || e.keyCode === 229)) return
   if (!midPopOpen.value) return
   void previewMidHit()
   midPopOpen.value = false
+}
+
+/** 中栏模式切换：立即按新模式重搜（同顶栏 pickMode） */
+function setMidMode(m: SearchMode): void {
+  midMode.value = m
+  midModeMenuOpen.value = false
+  if (midQuery.value.trim()) {
+    clearTimeout(midTimer)
+    void runMidSearch()
+  }
 }
 
 /** 左栏「＋ 添加法条」→ 把焦点送到中栏检索条 */
@@ -505,6 +581,27 @@ async function openBook(id: number, opts?: { hitId?: number; focusPara?: number 
   }
 }
 
+/** 法规全页阅读（文档库入口专用）：与 openBook 同型——存 Tab、取详情、整区替换 */
+async function openStatuteFull(id: number): Promise<void> {
+  preReaderTab.value = tab.value
+  readerLoading.value = true
+  try {
+    reader.value = { type: 'statute-full', data: await window.lexbench.library.getDocument(id) }
+  } catch (e) {
+    showError(e)
+  } finally {
+    readerLoading.value = false
+  }
+}
+
+/** 文档库卡片入口三分流：book→沉浸书 / statute→全页法规 / 其余→中栏（检索预览仍走 openDocument） */
+async function openFromLibrary(id: number): Promise<void> {
+  const doc = documents.value.find((d) => d.id === id)
+  if (doc?.doc_type === 'book') return openBook(id)
+  if (doc?.doc_type === 'statute') return openStatuteFull(id)
+  return openDocument(id)
+}
+
 /** 退出阅读模式：恢复进入前的 Tab */
 function closeReading(): void {
   reader.value = null
@@ -534,7 +631,10 @@ function onPopPick(hit: SearchHit): void {
  * 注意：确认后输入框仍是聚焦态，focus 不会再触发，所以 click 也要接。
  */
 function onTopFocus(): void {
-  if (results.value.length) searchPopOpen.value = true
+  // 只有结果确实对应当前输入才重开（否则会把上一个查询的旧结果弹出来）
+  if (results.value.length && query.value.trim() === lastQuery.value) {
+    searchPopOpen.value = true
+  }
 }
 
 /** ↑↓ 在顶栏候选中移动 */
@@ -544,13 +644,24 @@ function moveTop(delta: number): void {
   topActive.value = (topActive.value + delta + n) % n
 }
 
-/** 回车：浮窗开着就选中高亮那条，否则按当前输入检索 */
-function submitTop(): void {
-  if (searchPopOpen.value && results.value.length) {
+/** 回车：
+ *  ① IME 选字回车忽略；② 空查询给提示（不再静默吞）；
+ *  ③ 结果对应当前查询（lastQuery 一致）→ 选中高亮那条；
+ *  ④ 否则（改了词还没搜过）→ 立即对新查询执行检索——
+ *     根治「改词回车却选中上一次旧结果」的头号搜不到 bug */
+async function submitTop(e: KeyboardEvent): Promise<void> {
+  if (topComposing.value || e.isComposing || e.keyCode === 229) return
+  clearTimeout(topTimer)
+  const q = query.value.trim()
+  if (!q) {
+    setNotice('先输入检索词，再回车检索', 'warn')
+    return
+  }
+  if (searchPopOpen.value && results.value.length && q === lastQuery.value) {
     onPopPick(results.value[topActive.value])
     return
   }
-  void doSearch()
+  await runTopSearch({ pick: true })
 }
 
 /** 顶栏候选中高亮的那条（给列表加选中文案） */
@@ -754,12 +865,15 @@ onBeforeUnmount(() => {
             v-model="query"
             class="search-input"
             type="text"
-            placeholder="法条定位（如：民法典 1077）或关键词检索（如：离婚 冷静期）"
+            :placeholder="topHint"
+            @input="onTopInput"
             @focus="onTopFocus"
+            @compositionstart="topComposing = true"
+            @compositionend="topComposing = false; onTopInput()"
             @click="onTopFocus"
             @keydown.down.prevent="moveTop(1)"
             @keydown.up.prevent="moveTop(-1)"
-            @keydown.enter="submitTop"
+            @keydown.enter="submitTop($event)"
             @keydown.esc="searchPopOpen = false"
           />
           <button class="search-btn" :disabled="searching" @click="doSearch">
@@ -784,6 +898,9 @@ onBeforeUnmount(() => {
                 :has-docs="documents.length > 0"
                 :addable="!!activeTopic"
                 :adding-id="addingId"
+                :fallback="lastFallback"
+                :rescued="lastRescued"
+                :empty-reason="lastEmptyReason"
                 @select="onPopPick"
                 @add="addHitToTopic"
               />
@@ -841,6 +958,16 @@ onBeforeUnmount(() => {
       />
     </main>
 
+    <!-- 法规全页阅读：文档库点法规卡片进入，目录+连续正文 -->
+    <main v-else-if="reader?.type === 'statute-full'" class="reading-full">
+      <StatuteReadingView
+        :key="reader.data.id"
+        :doc="reader.data"
+        @back="closeReading"
+        @error="showError"
+      />
+    </main>
+
     <main v-else class="main">
       <aside class="side">
         <div class="tabs" role="tablist">
@@ -874,7 +1001,7 @@ onBeforeUnmount(() => {
           v-show="tab === 'library'"
           :documents="documents"
           :groups="groups"
-          @open="openDocument"
+          @open="openFromLibrary"
           @remove="askDelete"
           @mark-reviewed="markReviewed"
           @groups-changed="onGroupsChanged"
@@ -904,7 +1031,7 @@ onBeforeUnmount(() => {
                     :class="{ on: midMode === m }"
                     role="option"
                     :aria-selected="String(midMode === m)"
-                    @click="midMode = m as SearchMode; midModeMenuOpen = false"
+                    @click="setMidMode(m as SearchMode)"
                   >
                     <span>{{ name }}</span>
                   </button>
@@ -916,13 +1043,15 @@ onBeforeUnmount(() => {
               v-model="midQuery"
               class="search-input"
               type="text"
-              placeholder="在本专题里搜法条：如「民法典 1077」或「离婚 冷静期」"
+              :placeholder="midHint"
               @input="onMidInput"
               @focus="onMidFocus"
               @click="onMidFocus"
+              @compositionstart="midComposing = true"
+              @compositionend="midComposing = false; onMidInput()"
               @keydown.down.prevent="moveMid(1)"
               @keydown.up.prevent="moveMid(-1)"
-              @keydown.enter.prevent="confirmMid()"
+              @keydown.enter.prevent="confirmMid($event)"
               @keydown.esc="closeMidPop"
             />
             <button v-if="midSearching" class="search-btn" disabled>
@@ -942,6 +1071,9 @@ onBeforeUnmount(() => {
                 :has-docs="true"
                 addable
                 :adding-id="addingId"
+                :fallback="midFallback"
+                :rescued="midRescued"
+                :empty-reason="midEmptyReason"
                 @select="onMidPick"
                 @add="addHitToTopic"
               />
@@ -1034,6 +1166,8 @@ onBeforeUnmount(() => {
   --lb-muted: #86868b;
   --lb-border: rgba(0, 0, 0, 0.07);
   --lb-border-strong: rgba(0, 0, 0, 0.12);
+  /* 搜索关键词高亮：accent 同源浅蓝胶囊（与 hover/选中态同色相，inline 尺寸），全搜索面统一 */
+  --lb-hit: rgba(0, 113, 227, 0.14);
   --lb-accent: #0071e3;
   --lb-accent-2: #0077ed;
   --lb-grad: #0071e3; /* Apple 主按钮为纯色，不再使用渐变 */

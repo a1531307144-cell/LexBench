@@ -39,6 +39,28 @@ describe('parseLocateQuery', () => {
     })
   })
 
+  describe('解析加宽（2026-09 搜索加固）', () => {
+    it('尾部「N条」可无「第」（民法典1077条）', () => {
+      expect(parseLocateQuery('民法典1077条')).toEqual({ hint: '民法典', article_no: 1077 })
+    })
+    it('尾部杂符剥除后再解析（民法典1077。/ ？/ 、）', () => {
+      expect(parseLocateQuery('民法典1077。')).toEqual({ hint: '民法典', article_no: 1077 })
+      expect(parseLocateQuery('民法典 1077？')).toEqual({ hint: '民法典', article_no: 1077 })
+      expect(parseLocateQuery('民法典1077条。')).toEqual({ hint: '民法典', article_no: 1077 })
+    })
+    it('尾部「N年」剥除后再解析（民法典1077年）', () => {
+      expect(parseLocateQuery('民法典1077年')).toEqual({ hint: '民法典', article_no: 1077 })
+    })
+    it('NFKC 归一：全角数字/全角空格（第１０７７条、民法典　１０７７）', () => {
+      expect(parseLocateQuery('第１０７７条')).toEqual({ hint: '', article_no: 1077 })
+      expect(parseLocateQuery('民法典　１０７７')).toEqual({ hint: '民法典', article_no: 1077 })
+    })
+    it('纯标点查询 → null', () => {
+      expect(parseLocateQuery('。，！')).toBeNull()
+      expect(parseLocateQuery('  ')).toBeNull()
+    })
+  })
+
   describe('不可定位 → null（镜像 legacy 参数化用例）', () => {
     it.each(['离婚 冷静期', '民法典', '', '劳动法加班费'])('%s → null', (query) => {
       expect(parseLocateQuery(query)).toBeNull()
@@ -105,5 +127,14 @@ describe('matchDocumentIds', () => {
   })
   it('无任何命中 → 空数组', () => {
     expect(matchDocumentIds(LAWS, '刑法')).toEqual([])
+  })
+  it('「之一/之N」尾缀重试：hint 带之一时剥尾再匹配（fallback-only）', () => {
+    // 「之一」属于条文表达式不该污染法规名——parse 保留 legacy hint，匹配层兜住
+    expect(matchDocumentIds(LAWS, '民法典之一')).toEqual([1])
+    expect(matchDocumentIds(LAWS, '公司法之二')).toEqual([3])
+  })
+  it('之一重试不覆盖成功匹配', () => {
+    // 「民法典」本身就命中，无需也不会走重试
+    expect(matchDocumentIds(LAWS, '民法典')).toEqual([1])
   })
 })

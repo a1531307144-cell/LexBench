@@ -25,7 +25,7 @@ import type {
 } from '../shared/types'
 import { detectDocType, splitStatute } from '@shared/splitter'
 import type { SplitArticle } from '@shared/splitter'
-import { tokenize } from '@shared/tokenize'
+import { articleFtsText, chunkFtsText } from '@shared/ftsContent'
 import { getDb, initDb } from './db'
 
 /** 案例等非法规文档的分块目标字数（对应 legacy chunk_paragraphs target=500） */
@@ -183,8 +183,14 @@ function chunkParagraphs(paragraphs: string[], target = CHUNK_TARGET): string[] 
   return chunks
 }
 
-/** 写入法条行 + articles_fts（content 存切词后文本），并回填文档 article_count。不管理事务，由调用方包裹 */
-function indexArticles(db: DatabaseSync, documentId: number, articles: SplitArticle[]): void {
+/** 写入法条行 + articles_fts（content = 标题+条标+条号+编章节+正文 统一切词，见 @shared/ftsContent），
+ *  并回填文档 article_count。不管理事务，由调用方包裹 */
+function indexArticles(
+  db: DatabaseSync,
+  documentId: number,
+  articles: SplitArticle[],
+  title: string
+): void {
   const insertArticle = db.prepare(
     'INSERT INTO articles(document_id, article_label, article_no, branch, chapter, section, content, order_index)' +
       ' VALUES(?,?,?,?,?,?,?,?)'
@@ -201,18 +207,29 @@ function indexArticles(db: DatabaseSync, documentId: number, articles: SplitArti
       a.content,
       a.order_index
     )
-    insertFts.run(Number(info.lastInsertRowid), tokenize(a.content))
+    insertFts.run(
+      Number(info.lastInsertRowid),
+      articleFtsText({
+        title,
+        label: a.label,
+        articleNo: a.no,
+        branch: a.branch,
+        chapter: a.chapter,
+        section: a.section,
+        content: a.content
+      })
+    )
   }
   db.prepare('UPDATE documents SET article_count=? WHERE id=?').run(articles.length, documentId)
 }
 
-/** 写入段落块 + chunks_fts（content 存切词后文本）。不管理事务，由调用方包裹 */
-function indexChunks(db: DatabaseSync, documentId: number, chunks: string[]): void {
+/** 写入段落块 + chunks_fts（content = 文档标题+正文 统一切词）。不管理事务，由调用方包裹 */
+function indexChunks(db: DatabaseSync, documentId: number, chunks: string[], title: string): void {
   const insertChunk = db.prepare('INSERT INTO chunks(document_id, seq, content) VALUES(?,?,?)')
   const insertFts = db.prepare('INSERT INTO chunks_fts(chunk_id, content) VALUES(?,?)')
   for (let i = 0; i < chunks.length; i++) {
     const info = insertChunk.run(documentId, i, chunks[i])
-    insertFts.run(Number(info.lastInsertRowid), tokenize(chunks[i]))
+    insertFts.run(Number(info.lastInsertRowid), chunkFtsText(title, chunks[i]))
   }
 }
 
@@ -346,8 +363,8 @@ async function importOne(
         )
         .run(title, docType, category, fileHash, filePath, status, suffix, resolveGroupId(db, docType, category))
       const id = Number(info.lastInsertRowid)
-      if (docType === 'statute') indexArticles(db, id, articles)
-      else indexChunks(db, id, chunks)
+      if (docType === 'statute') indexArticles(db, id, articles, title)
+      else indexChunks(db, id, chunks, title)
       return id
     })
     return {
@@ -567,7 +584,8 @@ export function registerLibraryIpc(): void {
     }
   })
 
-  // 条文修正：保存并重建该条的 FTS 索引行（删旧行 → 重插切词后文本）
+  // 条文修正：保存并重建该条的 FTS 索引行（删旧行 → 按完整公式重插；
+  // 必须 JOIN documents 取标题，否则该行的标题分词会丢）
   ipcMain.handle('library:updateArticle', (_e, id: number, rawContent: string): void => {
     const content = String(rawContent ?? '').trim()
     if (!content) throw new Error('内容为空')
@@ -575,10 +593,35 @@ export function registerLibraryIpc(): void {
     withTransaction(db, () => {
       const info = db.prepare('UPDATE articles SET content=? WHERE id=?').run(content, id)
       if (Number(info.changes) === 0) throw new Error('条文不存在')
+      const row = db
+        .prepare(
+          `SELECT a.article_label, a.article_no, a.branch, a.chapter, a.section, d.title
+           FROM articles a JOIN documents d ON d.id = a.document_id
+           WHERE a.id = ?`
+        )
+        .get(id) as unknown as
+        | {
+            article_label: string
+            article_no: number
+            branch: string
+            chapter: string
+            section: string
+            title: string
+          }
+        | undefined
+      if (!row) throw new Error('条文不存在')
       db.prepare('DELETE FROM articles_fts WHERE article_id=?').run(id)
       db.prepare('INSERT INTO articles_fts(article_id, content) VALUES(?,?)').run(
         id,
-        tokenize(content)
+        articleFtsText({
+          title: row.title,
+          label: row.article_label,
+          articleNo: row.article_no,
+          branch: row.branch,
+          chapter: row.chapter,
+          section: row.section,
+          content
+        })
       )
     })
   })

@@ -547,6 +547,15 @@ def _apply_filters(sql, params, doc_type, category, document_id, table_alias):
 - `render_context(items, budget=1800)`：逐项渲染 `《title》label\ncontent`，剩余空间 ≤60 停止，单条 clip 到剩余空间（超长加 `…`），`\n\n` join。
 - `explain_context` = 本条 + 相邻条文 + 相关法规条文 一起 render。
 
+### 移植后行为修订（2026-09 搜索加固，与上文冲突时以本节为准）
+
+1. **分词器**：jieba → 运行时 `Intl.Segmenter('zh',{granularity:'word'})`（索引/查询同实现），入口 **NFKC 归一**（全角「１０７７」→ 半角）。旧库/数据包的陈旧索引由 `settings.fts_version`（现值 2）门控、启动期全量重建（`src/main/reindex.ts`，成功才打标、失败不阻断、次启重试）——对应总注意事项 2 的「旧库迁移需重索引」。
+2. **FTS content 公式**（`src/shared/ftsContent.ts`）：法条 = 标题+条标+条号+编/章/节+正文 统一切词；段落 = 标题+正文。**搜法规名与条文号可命中**；显示摘要仍读 articles/chunks 原文。FTS 表结构不变、无迁移。
+3. **MATCH 构造（两段式，`src/shared/ftsQuery.ts`）**：**精准块** = 整句短语（`buildPrecisionMatch`，按索引侧同分词含单字切词——「光污染」按 光+污染 相邻匹配，不退化为任意「污染」）OR 全 token 交集（AND 组）；**模糊块** = 每 token 双引号字面量化（大写 AND/OR/NOT 不再炸语法）+ 末词 `*` 前缀的 OR。合并 = 精准块排前、模糊块去重补后（bm25 各自排序）——**取代上文「不加引号，与 legacy 一致」条**。法内搜索另按 `article_no` 直查阿拉伯条号（正文/条标是中文数字）。
+4. **定位解析加宽**（`src/shared/locate.ts`）：入口剥尾部标点/「N年」、支持无「第」的尾部「N条」、NFKC；「之一」尾缀在**匹配层**剥尾重试（fallback-only）。`123456→末5位`、`第X条优先` 等 legacy 解析语义与既有测试保持。
+5. **auto 分段管线**（`src/main/search.ts`，取代「定位零结果即降级」的单点描述）：段1 定位（hint 命中→限定法规；无 hint→全库按号且**每法只取一条**（ROW_NUMBER 窗口，治 LIMIT 20 被同号条灌满的截断））→ 段2 全文兜底（出参 `fallback:true`）→ 段3（仅 auto）非空 hint **连法规都零匹配**→ 按条号全库救援（`rescued:true`）。**hint 非空零匹配不再直接全库降级**（旧行为使「年利率 24」劫持定位、全文永不执行）。零 token 返回 `emptyReason:'no_tokens'`。
+6. **极限不动**：LOCATE_LIMIT=20、FULLTEXT_LIMIT=50、splitter/cn2num 行为不动（万位以上条号不支持——真实数据 ≤1260 条，记为已知边界）。
+
 ---
 
 ## 5. AI 部分

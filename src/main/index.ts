@@ -8,6 +8,7 @@ import { registerExportIpc } from './exporter'
 import { registerReadingIpc } from './reading'
 import { registerBackupIpc } from './backup'
 import { applySeedIfNeeded } from './seed'
+import { reindexFtsIfNeeded } from './reindex'
 import { registerGroupsIpc } from './groups'
 import { registerAiIpc } from './ai'
 
@@ -76,6 +77,8 @@ app.whenReady().then(async () => {
   registerBackupIpc()
   registerGroupsIpc()
   registerAiIpc()
+  // 存量库索引升级/旧分词修复：fts_version 不符时全量重建一次（失败不阻断启动）
+  reindexFtsIfNeeded()
   // 首次启动预置常用法条（仅首跑执行一次；失败不阻断启动）
   await applySeedIfNeeded()
   createWindow()

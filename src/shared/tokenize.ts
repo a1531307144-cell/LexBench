@@ -7,10 +7,11 @@ const segmenter = new Intl.Segmenter('zh', { granularity: 'word' })
 // 词形段：由 Unicode 字母/数字/下划线组成（对应 legacy _TOKEN_RE 的 Unicode 语义）
 const TOKEN_RE = /^[\p{L}\p{N}_]+$/u
 
-/** 建索引用：切词后保留词形段，空格拼接（配合 FTS5 unicode61 按空格分 token） */
+/** 建索引用：切词后保留词形段，空格拼接（配合 FTS5 unicode61 按空格分 token）；
+ *  入口 NFKC 归一——全角「１０７７」与半角「1077」切成同一 token */
 export function tokenize(text: string): string {
   const words: string[] = []
-  for (const { segment, isWordLike } of segmenter.segment(text)) {
+  for (const { segment, isWordLike } of segmenter.segment((text ?? '').normalize('NFKC'))) {
     if (isWordLike && TOKEN_RE.test(segment)) words.push(segment)
   }
   return words.join(' ')
@@ -20,7 +21,7 @@ export function tokenize(text: string): string {
 export function queryTokens(q: string): string[] {
   const tokens: string[] = []
   const seen = new Set<string>()
-  const s = (q ?? '').trim()
+  const s = (q ?? '').trim().normalize('NFKC')
   for (const { segment, isWordLike } of segmenter.segment(s)) {
     const t = segment.trim()
     if (isWordLike && t && t.length >= 2 && !seen.has(t) && TOKEN_RE.test(t)) {

@@ -3,11 +3,12 @@ import { computed, ref, watch } from 'vue'
 import AiPanel from './AiPanel.vue'
 import type { ArticleDetail, DocumentDetail } from '@shared/types'
 
-/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读（书籍由 ReadingView 渲染，这里仅为类型对齐与兜底） */
+/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读 / 法规全页阅读（后两者由整区视图渲染，这里仅为类型对齐与兜底） */
 type ReaderState =
   | { type: 'article'; data: ArticleDetail }
   | { type: 'document'; data: DocumentDetail }
   | { type: 'book'; data: DocumentDetail; focusPara?: number }
+  | { type: 'statute-full'; data: DocumentDetail }
   | null
 
 const props = defineProps<{
