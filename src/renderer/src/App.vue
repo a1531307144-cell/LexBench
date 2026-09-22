@@ -89,6 +89,9 @@ const results = ref<SearchHit[]>([])
 /** 顶栏快捷检索的结果浮层：结果只在这个小窗里呈现，不占主区域、不切页面 */
 const searchPopOpen = ref(false)
 
+/** 顶栏浮窗里键盘选中的那条（↑↓ 移动、回车选中） */
+const topActive = ref(0)
+
 // ---------- 专题内常驻检索（只在中栏、且打开专题时出现）----------
 const midQuery = ref('')
 const midMode = ref<SearchMode>('auto')
@@ -341,6 +344,7 @@ async function doSearch(): Promise<void> {
     lastMode.value = out.mode
     results.value = out.results
     searched.value = true
+    topActive.value = 0
     // 结果落进小浮窗：不切页面、不占主区域，用户随手查一条就走
     searchPopOpen.value = true
     // 法条定位命中 → 直接在中栏打开第一条（同样不切 Tab）
@@ -379,7 +383,9 @@ async function runMidSearch(): Promise<void> {
     midResults.value = out.results
     midModeUsed.value = out.mode
     midActive.value = 0
-    midPopOpen.value = out.results.length > 0
+    // 没命中也要把浮层打开，让「没有找到相关条文」显示出来——
+    // 否则搜索一次毫无反馈，用户会以为输入框坏了
+    midPopOpen.value = true
     await previewMidHit()
   } catch (e) {
     showError(e)
@@ -406,6 +412,13 @@ function moveMid(delta: number): void {
 }
 
 function closeMidPop(): void {
+  midPopOpen.value = false
+}
+
+/** 回车 = 确认选中的那条（正文已随高亮呈现，这里把候选收起） */
+function confirmMid(): void {
+  if (!midPopOpen.value) return
+  void previewMidHit()
   midPopOpen.value = false
 }
 
@@ -504,6 +517,28 @@ function onPopPick(hit: SearchHit): void {
   searchPopOpen.value = false
   openResult(hit)
 }
+
+/** ↑↓ 在顶栏候选中移动 */
+function moveTop(delta: number): void {
+  const n = results.value.length
+  if (!n) return
+  topActive.value = (topActive.value + delta + n) % n
+}
+
+/** 回车：浮窗开着就选中高亮那条，否则按当前输入检索 */
+function submitTop(): void {
+  if (searchPopOpen.value && results.value.length) {
+    onPopPick(results.value[topActive.value])
+    return
+  }
+  void doSearch()
+}
+
+/** 顶栏候选中高亮的那条（给列表加选中文案） */
+const topSelectedId = computed(() => {
+  const h = results.value[topActive.value]
+  return h && h.kind === 'article' ? h.id : -1
+})
 
 /** 中栏候选里点了一条：正文其实已随高亮呈现过了，这里只是把高亮对齐并收起候选 */
 function onMidPick(hit: SearchHit): void {
@@ -701,7 +736,10 @@ onBeforeUnmount(() => {
             class="search-input"
             type="text"
             placeholder="法条定位（如：民法典 1077）或关键词检索（如：离婚 冷静期）"
-            @keydown.enter="doSearch"
+            @keydown.down.prevent="moveTop(1)"
+            @keydown.up.prevent="moveTop(-1)"
+            @keydown.enter="submitTop"
+            @keydown.esc="searchPopOpen = false"
           />
           <button class="search-btn" :disabled="searching" @click="doSearch">
             <span v-if="searching" class="spinner" aria-label="检索中"></span>
@@ -710,14 +748,18 @@ onBeforeUnmount(() => {
 
           <!-- 快捷检索结果：就地一个小浮窗，不切页面、不占主区域，随手查一条就走 -->
           <Transition name="menu-pop">
-            <div v-if="searchPopOpen" class="search-pop">
+            <div
+              v-if="searchPopOpen"
+              class="search-pop"
+              :class="{ lowered: tab === 'topics' && !!activeTopic }"
+            >
               <ResultList
                 :results="results"
                 :mode="lastMode"
                 :searched="searched"
                 :searching="searching"
                 :query="lastQuery"
-                :selected-id="selectedId"
+                :selected-id="topSelectedId"
                 :has-docs="documents.length > 0"
                 :addable="!!activeTopic"
                 :adding-id="addingId"
@@ -856,7 +898,7 @@ onBeforeUnmount(() => {
               @input="onMidInput"
               @keydown.down.prevent="moveMid(1)"
               @keydown.up.prevent="moveMid(-1)"
-              @keydown.enter.prevent="closeMidPop()"
+              @keydown.enter.prevent="confirmMid()"
               @keydown.esc="closeMidPop"
             />
             <button v-if="midSearching" class="search-btn" disabled>
@@ -1013,6 +1055,15 @@ onBeforeUnmount(() => {
   -webkit-app-region: no-drag;
 }
 
+/* 顶栏里的浮层必须显式排除拖拽：
+   上面的白名单只覆盖 button/input/select，而检索结果浮窗的候选行是 div——
+   落在拖拽区里，真实鼠标点击会被吃掉（表现为「点候选没反应」）。
+   注意：CDP 的合成事件会绕过拖拽区，所以自动化自测发现不了这个坑，必须真手点。 */
+.topbar .search-pop,
+.topbar .mode-pop {
+  -webkit-app-region: no-drag;
+}
+
 /* ---------- 自绘窗口控制按钮（─□✕） ---------- */
 .win-controls {
   display: flex;
@@ -1123,12 +1174,21 @@ onBeforeUnmount(() => {
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
 }
 
+/* 打开专题时中栏顶上有检索条（约 55px 高，且压在浮窗之上），
+   浮窗整体下移让开它，否则头几行候选会被检索条盖住 */
+.search-pop.lowered {
+  top: calc(100% + 62px);
+}
+
 /* ---------- 专题中栏的常驻检索条 ---------- */
 /* 只在打开专题时出现（模板里有 v-if）；看文档库时中栏仍是纯阅读区 */
 .mid-search {
   position: sticky;
   top: 0;
-  z-index: 8;
+  /* 必须高于顶栏检索浮窗（z-index 30）：浮窗有 60vh 高，会整个盖住这条检索条。
+     压在浮窗之上，中栏才点得进去；同时鼠标移到这条上就脱离了检索区，
+     顶栏浮窗的 mouseleave 才会触发、自动收起。 */
+  z-index: 40;
   padding: 10px 16px;
   background: var(--lb-bg);
   border-bottom: 1px solid var(--lb-border);
