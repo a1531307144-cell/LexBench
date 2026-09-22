@@ -25,17 +25,31 @@ const content = ref('')
 const editingId = ref<number | null>(null)
 const linkCurrent = ref(true)
 const preview = ref(false)
-const busy = ref(false)
-const savedHint = ref(false)
 const pendingDel = ref<NoteRow | null>(null)
+/** 本条笔记是本次会话新建的（正文清空时回收空壳，但绝不擅自删用户已有的笔记） */
+const createdInSession = ref(false)
+/** 标题旁的状态：无 / 保存中 / 已保存 */
+const saveState = ref<'idle' | 'saving' | 'saved'>('idle')
 
-let savedTimer: ReturnType<typeof setTimeout> | undefined
+/**
+ * 有可关联的法条就默认关联。
+ * 此前这里还要求「该法条已收藏进本专题」，未收藏时会把 article_id 悄悄写成 null、
+ * 把笔记降级成专题级备忘，且复选框被一并藏起、用户无从挽回。
+ * 现在「不关联」改为显式勾掉；关联本身由主进程兜底（写笔记时自动把法条收进专题）。
+ */
+const canLink = computed(() => props.currentArticleId !== null)
 
-// 当前法条已收藏进本专题时才提供「关联」复选框
-const linkedIds = computed(() => new Set(props.topic.items.map((it) => it.article_id)))
-const canLink = computed(
-  () => props.currentArticleId !== null && linkedIds.value.has(props.currentArticleId)
+/** 在编辑一条已有笔记、却把正文清空了：此时不落库，也不删用户的笔记 */
+const emptiedExisting = computed(
+  () => editingId.value !== null && !createdInSession.value && !content.value.trim()
 )
+
+/** 自动保存：停止输入 800ms 落库；首次输入立刻建出来（此刻才知道要挂哪个专题、哪条法条） */
+const AUTOSAVE_MS = 800
+let saveTimer: ReturnType<typeof setTimeout> | undefined
+let savedTimer: ReturnType<typeof setTimeout> | undefined
+/** 上次成功落库的正文，用来跳过没有实际改动的保存 */
+let lastSaved = ''
 
 // 预览：marked 渲染 + DOMPurify 消毒（修复旧版 #9 裸 v-html）
 const previewHtml = computed(() => {
@@ -43,10 +57,95 @@ const previewHtml = computed(() => {
   return DOMPurify.sanitize(marked.parse(content.value) as string)
 })
 
-// 切换法条时默认勾选关联（仅影响新建笔记；编辑已有笔记不改变其关联）
+function resetForm(): void {
+  content.value = ''
+  editingId.value = null
+  preview.value = false
+  linkCurrent.value = true
+  createdInSession.value = false
+  lastSaved = ''
+  saveState.value = 'idle'
+}
+
+function startEditNote(n: NoteRow): void {
+  editingId.value = n.id
+  content.value = n.content_md
+  preview.value = false
+  createdInSession.value = false
+  lastSaved = n.content_md.trim()
+  saveState.value = 'idle'
+}
+
+/**
+ * 落盘。
+ * 首次输入就把笔记建出来（此刻才知道挂哪个专题、哪条法条），之后只按 noteId 更新——
+ * updateNote 只要笔记 id，所以随后切换法条或专题也不会把内容写错地方。
+ */
+async function flush(): Promise<void> {
+  clearTimeout(saveTimer)
+  const md = content.value.trim()
+  if (!md) {
+    // 正文清空：回收本次会话刚建的空壳；用户原有的笔记绝不擅自删除（删除仍走 ✕ 二次确认）
+    if (editingId.value !== null && createdInSession.value) {
+      const id = editingId.value
+      resetForm()
+      try {
+        await window.lexbench.workspace.deleteNote(id)
+        emit('changed')
+      } catch (e) {
+        emit('error', errText(e))
+      }
+    }
+    return
+  }
+  if (editingId.value !== null && md === lastSaved) return
+  saveState.value = 'saving'
+  try {
+    if (editingId.value === null) {
+      const articleId = canLink.value && linkCurrent.value ? props.currentArticleId : null
+      const row = await window.lexbench.workspace.createNote(props.topic.id, articleId, md)
+      editingId.value = row.id
+      createdInSession.value = true
+    } else {
+      await window.lexbench.workspace.updateNote(editingId.value, md)
+    }
+    lastSaved = md
+    saveState.value = 'saved'
+    clearTimeout(savedTimer)
+    savedTimer = setTimeout(() => {
+      if (saveState.value === 'saved') saveState.value = 'idle'
+    }, 2500)
+    emit('changed')
+  } catch (e) {
+    // 失败保留草稿，错误进 App 错误条
+    saveState.value = 'idle'
+    emit('error', errText(e))
+  }
+}
+
+/** 收起当前这条、开始写新的（内容已在输入时自动落库，这里不需要「保存」动作） */
+async function startNew(): Promise<void> {
+  await flush()
+  resetForm()
+}
+
+// 输入即排一次自动保存；首次输入立刻建出来
+watch(content, () => {
+  if (preview.value) return
+  if (editingId.value === null && content.value.trim()) {
+    void flush()
+    return
+  }
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => void flush(), AUTOSAVE_MS)
+})
+
+// 切换法条：先把上一条的草稿落盘，再让新笔记默认勾选关联
+// （仅影响新建；编辑已有笔记不改变其关联）
 watch(
   () => props.currentArticleId,
-  () => {
+  async () => {
+    await flush()
     if (editingId.value === null) linkCurrent.value = true
   }
 )
@@ -54,45 +153,11 @@ watch(
 // 换了专题必须清空编辑态，避免把草稿误存到别的专题的笔记上
 watch(
   () => props.topic.id,
-  () => resetForm()
-)
-
-function resetForm(): void {
-  content.value = ''
-  editingId.value = null
-  preview.value = false
-  linkCurrent.value = true
-}
-
-function startEditNote(n: NoteRow): void {
-  editingId.value = n.id
-  content.value = n.content_md
-  preview.value = false
-}
-
-async function saveNote(): Promise<void> {
-  const md = content.value.trim()
-  if (!md || busy.value) return
-  busy.value = true
-  try {
-    if (editingId.value === null) {
-      const articleId = canLink.value && linkCurrent.value ? props.currentArticleId : null
-      await window.lexbench.workspace.createNote(props.topic.id, articleId, md)
-    } else {
-      await window.lexbench.workspace.updateNote(editingId.value, md)
-    }
+  async () => {
+    await flush()
     resetForm()
-    emit('changed')
-    savedHint.value = true
-    clearTimeout(savedTimer)
-    savedTimer = setTimeout(() => (savedHint.value = false), 2500)
-  } catch (e) {
-    // 失败保留草稿，错误进 App 错误条
-    emit('error', errText(e))
-  } finally {
-    busy.value = false
   }
-}
+)
 
 async function confirmDel(): Promise<void> {
   const n = pendingDel.value
@@ -138,13 +203,19 @@ function errText(e: unknown): string {
 
 const delMessage = computed(() => (pendingDel.value ? '确定删除这条笔记？此操作不可撤销。' : ''))
 
-onBeforeUnmount(() => clearTimeout(savedTimer))
+onBeforeUnmount(() => {
+  clearTimeout(savedTimer)
+  void flush() // 关栏 / 关窗口前把草稿落下
+})
 </script>
 
 <template>
   <aside class="np">
     <div class="np-head">
       <span class="np-title" :title="topic.name">{{ topic.name }}</span>
+      <span v-if="saveState !== 'idle'" class="np-save-state" :class="saveState">
+        {{ saveState === 'saving' ? '保存中…' : '已保存 ✓' }}
+      </span>
       <span class="np-flex"></span>
       <button class="np-mini" title="导出 Markdown 报告" @click="emit('export', 'md')">.md</button>
       <button class="np-mini" title="导出 Word 报告" @click="emit('export', 'docx')">.docx</button>
@@ -157,12 +228,13 @@ onBeforeUnmount(() => clearTimeout(savedTimer))
         <button class="np-tab" :class="{ on: preview }" @click="preview = true">预览</button>
         <span v-if="editingId !== null" class="np-editing-tag">编辑已有笔记</span>
         <span class="np-flex"></span>
-        <span v-if="savedHint" class="np-saved">已保存</span>
       </div>
 
       <label v-if="editingId === null && canLink" class="np-link">
         <input v-model="linkCurrent" type="checkbox" />
-        关联〔{{ currentArticleLabel }}〕
+        关联〔{{ currentArticleLabel }}〕<em v-if="!linkCurrent" class="np-link-off">
+          （不关联，只作专题备忘）
+        </em>
       </label>
 
       <textarea
@@ -170,9 +242,8 @@ onBeforeUnmount(() => clearTimeout(savedTimer))
         v-model="content"
         class="np-textarea"
         rows="6"
-        placeholder="记下思考、案例线索、适用要点……"
-        :disabled="busy"
-        @keydown.ctrl.enter.prevent="saveNote"
+        placeholder="记下思考、案例线索、适用要点……输入即自动保存"
+        @keydown.ctrl.enter.prevent="flush"
       ></textarea>
       <div v-else class="np-preview">
         <div v-if="previewHtml" class="np-preview-body" v-html="previewHtml"></div>
@@ -180,18 +251,11 @@ onBeforeUnmount(() => clearTimeout(savedTimer))
       </div>
 
       <div class="np-form-foot">
-        <span class="np-hint">Ctrl+Enter 保存</span>
+        <span class="np-hint">
+          {{ emptiedExisting ? '正文为空，不会保存' : '自动保存 · Ctrl+Enter 立即保存' }}
+        </span>
         <span class="np-flex"></span>
-        <button v-if="editingId !== null" class="np-btn" :disabled="busy" @click="resetForm">
-          取消
-        </button>
-        <button
-          class="np-btn primary"
-          :disabled="busy || !content.trim()"
-          @click="saveNote"
-        >
-          {{ busy ? '保存中…' : editingId !== null ? '保存修改' : '保存笔记' }}
-        </button>
+        <button v-if="editingId !== null" class="np-btn" @click="startNew">写新的一条</button>
       </div>
     </div>
 
@@ -323,9 +387,20 @@ onBeforeUnmount(() => clearTimeout(savedTimer))
   margin-left: 4px;
 }
 
-.np-saved {
-  font-size: 12px;
+/* 标题旁的自动保存状态：保存中… / 已保存 ✓（安静提示，不占版面也不打断输入） */
+.np-save-state {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--lb-muted);
+}
+
+.np-save-state.saved {
   color: var(--lb-ok-fg);
+}
+
+.np-link-off {
+  font-style: normal;
+  color: var(--lb-accent-2);
 }
 
 .np-link {

@@ -704,7 +704,7 @@ onBeforeUnmount(() => {
         v-if="activeTopic && reader?.type === 'article'"
         :topic="activeTopic"
         :current-article-id="reader.data.article.id"
-        :current-article-label="reader.data.article.label"
+        :current-article-label="reader.data.article.article_label"
         @changed="onNotesChanged"
         @open-article="openArticle"
         @export="exportTopic"
