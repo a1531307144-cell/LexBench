@@ -14,3 +14,6 @@ scripts/.privacy-terms
 *.db
 *.db-wal
 *.db-shm
+
+# 用户交接文档（个人文件，永不入库）
+/LexBench交接文档.docx
