@@ -1,5 +1,7 @@
-// 法规条文切分：把段落列表按 编/章/节/条 层级切成法条，并识别文档类型
-// 移植自 legacy/backend/app/services/splitter.py，正则语义与状态机行为保持一致
+// 法规条文切分：把段落列表按 编/分编/章/节/条 层级切成法条，并识别文档类型
+// 移植自 legacy/backend/app/services/splitter.py，正则语义与状态机行为保持一致；
+// 分编层级为后加（民法典/生态环境法典等法典在 编 与 章 之间分「第X分编」，
+// 旧版不认识 → 标题行被当续段吞进上一条正文且目录丢失该层）
 
 import { cn2num } from './cnnum'
 
@@ -10,6 +12,8 @@ const NUM = '[零〇一二三四五六七八九十百千\\d]+'
 const ARTICLE_RE = new RegExp(`^第(${NUM})条(之[一二三四五六七八九十])?\\s*`)
 /** 行首 第X编 后必须紧跟非空白（标题文字）—— 编标题行 */
 const BRANCH_RE = new RegExp(`^第(${NUM})编\\s*\\S`)
+/** 行首 第X分编 后必须紧跟非空白 —— 分编标题行（编与章之间的一层） */
+const SUBBRANCH_RE = new RegExp(`^第(${NUM})分编\\s*\\S`)
 /** 行首 第X章 后必须紧跟非空白 —— 章标题行 */
 const CHAPTER_RE = new RegExp(`^第(${NUM})章\\s*\\S`)
 /** 行首 第X节 后必须紧跟非空白 —— 节标题行 */
@@ -26,17 +30,19 @@ export interface SplitArticle {
   label: string
   no: number
   branch: string
+  subbranch: string
   chapter: string
   section: string
   content: string
   order_index: number
 }
 
-/** 把法规文档段落切分为法条列表；编/章/节标题行更新层级状态 */
+/** 把法规文档段落切分为法条列表；编/分编/章/节标题行更新层级状态 */
 export function splitStatute(paragraphs: string[]): SplitArticle[] {
   const articles: SplitArticle[] = []
   let current: SplitArticle | null = null
   let branch = ''
+  let subbranch = ''
   let chapter = ''
   let section = ''
   for (const raw of paragraphs) {
@@ -44,12 +50,13 @@ export function splitStatute(paragraphs: string[]): SplitArticle[] {
     if (!p) continue
     const m = ARTICLE_RE.exec(p)
     if (m) {
-      // 遇条开新条：旧条入列，新条继承当前编/章/节层级
+      // 遇条开新条：旧条入列，新条继承当前编/分编/章/节层级
       if (current !== null) articles.push(current)
       current = {
         label: `第${m[1]}条${m[2] ?? ''}`,
         no: cn2num(m[1]) ?? 0,
         branch,
+        subbranch,
         chapter,
         section,
         content: p.slice(m[0].length).trim(),
@@ -58,8 +65,14 @@ export function splitStatute(paragraphs: string[]): SplitArticle[] {
       continue
     }
     if (BRANCH_RE.exec(p)) {
-      // 新编清空章/节
+      // 新编清空分编/章/节
       branch = p
+      subbranch = ''
+      chapter = ''
+      section = ''
+    } else if (SUBBRANCH_RE.exec(p)) {
+      // 新分编清空章/节（编内换层）
+      subbranch = p
       chapter = ''
       section = ''
     } else if (CHAPTER_RE.exec(p)) {

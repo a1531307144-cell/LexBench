@@ -4,7 +4,7 @@
 const errors = []
 
 const pages = await fetch('http://127.0.0.1:9222/json').then((r) => r.json())
-const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url))
+const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url) && !p.url.includes('aiWindow'))
 if (!page) {
   console.log('FAIL: dev 未启动')
   process.exit(1)

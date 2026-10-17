@@ -1,5 +1,5 @@
 // 阅读模式：划选批注（book_notes CRUD）+ 阅读进度（settings 表 JSON）+ 读书笔记导出
-// 原则：与 workspace.ts / exporter.ts 同构但自包含（直接 getDb() 查询，不共用对方私有函数）；
+// 原则：自包含（直接 getDb() 查询，不共用其它模块的私有函数）；
 //       错误一律 throw new Error('中文信息')，经 IPC reject 后由渲染层错误条直接展示；
 //       阅读进度不建表：settings 表 key 'reading_progress:<docId>'，值为 {paraIndex, updatedAt} JSON
 

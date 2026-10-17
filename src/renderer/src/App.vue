@@ -1,40 +1,33 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AboutDialog from './components/AboutDialog.vue'
 import AiSettingsDialog from './components/AiSettingsDialog.vue'
 import BackupDialog from './components/BackupDialog.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DocLibrary from './components/DocLibrary.vue'
-import FavoriteDialog from './components/FavoriteDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
-import NotePanel from './components/NotePanel.vue'
-import Reader from './components/Reader.vue'
 import ReadingView from './components/ReadingView.vue'
 import ResultList from './components/ResultList.vue'
 import StatuteReadingView from './components/StatuteReadingView.vue'
-import TopicPanel from './components/TopicPanel.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
-import { MID_HINTS, TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
-import type { ItemMoveDirection, TopicPatch } from '@shared/ipc'
+import { TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
 import type {
-  ArticleDetail,
   DocGroupRow,
   DocumentDetail,
   DocumentRow,
-  ExportFormat,
   SearchHit,
   SearchMode,
-  SearchOutcome,
-  TopicDetail,
-  TopicRow
+  SearchOutcome
 } from '@shared/types'
 
-/** 阅读器状态：法条 / 文档 / 书籍沉浸阅读 / 法规全页阅读（与 Reader.vue 内声明保持同一形状） */
+/**
+ * 阅读器状态：书籍/案例/资料 = 沉浸阅读（ReadingView 按段落流）；
+ * 法规 = 全页阅读（StatuteReadingView，focusOrder = 搜索直达的初始定位）。
+ * 中栏单条/文档视图已随「专题」板块一并退场。
+ */
 type ReaderState =
-  | { type: 'article'; data: ArticleDetail }
-  | { type: 'document'; data: DocumentDetail }
   | { type: 'book'; data: DocumentDetail; focusPara?: number }
-  | { type: 'statute-full'; data: DocumentDetail }
+  | { type: 'statute-full'; data: DocumentDetail; focusOrder?: number }
   | null
 
 /** 交给 ImportDialog 的待导入文件（路径经 webUtils 解析，仅用于交回主进程读取） */
@@ -64,17 +57,12 @@ function pickMode(m: SearchMode): void {
   }
 }
 
-/** 点击菜单外部时收起下拉（顶栏与专题中栏各有一个模式菜单，共用 .mode-menu 标记） */
+/** 点击菜单外部时收起下拉与结果浮层 */
 function onDocClickForMode(e: MouseEvent): void {
   const el = e.target as HTMLElement
-  if (!el.closest('.mode-menu')) {
-    modeMenuOpen.value = false
-    midModeMenuOpen.value = false
-  }
+  if (!el.closest('.mode-menu')) modeMenuOpen.value = false
   // 顶栏检索结果浮层：点到它自己和检索区之外就收起
   if (!el.closest('.search-area') && !el.closest('.search-pop')) searchPopOpen.value = false
-  // 中栏候选浮层同理
-  if (!el.closest('.mid-search') && !el.closest('.mid-pop')) midPopOpen.value = false
 }
 
 // ---------- 无边框窗口控制（自绘 ──□✕） ----------
@@ -104,39 +92,29 @@ const searchPopOpen = ref(false)
 /** 顶栏浮窗里键盘选中的那条（↑↓ 移动、回车选中） */
 const topActive = ref(0)
 
-// ---------- 专题内常驻检索（只在中栏、且打开专题时出现）----------
-const midQuery = ref('')
-const midMode = ref<SearchMode>('auto')
-const midModeMenuOpen = ref(false)
-const midSearching = ref(false)
-const midResults = ref<SearchHit[]>([])
-const midModeUsed = ref<SearchOutcome['mode']>('none')
-const midFallback = ref(false)
-const midRescued = ref(false)
-const midEmptyReason = ref<SearchOutcome['emptyReason']>(undefined)
-/** 候选高亮下标；↑↓ 移动时会即时把该条呈现在下方正文区（随检随显） */
-const midActive = ref(0)
-const midPopOpen = ref(false)
-/** 正在加入专题的那条命中 id（−1 = 空闲），防连点 */
-const addingId = ref(-1)
-
-/** 导航只剩两栏：专题是工作台，文档库只看库里有什么。检索融进了专题与顶栏浮窗 */
-const tab = ref<'topics' | 'library'>('topics')
 /** 搜索示例占位：本次启动从池里随机取，别常年只显示同一组（输入后不影响） */
 const topHint = pickDistinct(TOPBAR_HINTS, 1)[0] ?? TOPBAR_HINTS[0]
-const midHint = pickDistinct(MID_HINTS, 1)[0] ?? MID_HINTS[0]
 const documents = ref<DocumentRow[]>([])
 /** 用户自建分类文件夹（全类型，DocLibrary / ImportDialog 各自按类型过滤） */
 const groups = ref<DocGroupRow[]>([])
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
-/** 进入书籍阅读模式前的 Tab（返回时恢复） */
-const preReaderTab = ref<'topics' | 'library'>('topics')
 const showImport = ref(false)
 /** 数据备份/恢复对话框（v0.5.0 数据包） */
 const showBackup = ref(false)
 /** AI 模型档案设置对话框（v0.7.0） */
 const showAiSettings = ref(false)
+/**
+ * AI 独立窗口（2026-10-17 用户定位：真·独立窗口，与主窗口互不隶属，
+ * 系统原生标题栏拖动/缩放/右上角关闭；不设 alwaysOnTop——绝不永远前置）。
+ * 主窗口顶栏按钮只负责开关；窗口本体由主进程 aiWindow.ts 创建（?aiWindow=1 挂 AiFloatWindow）。
+ */
+const aiWinOpen = ref(false)
+
+/** 顶栏开关：切走/唤出独立 AI 窗 */
+function toggleAiWindow(): void {
+  void window.lexbench.aiWindow.toggle().catch((e) => showError(e))
+}
 /** 「关于」对话框：版本信息 + 手动检查更新（v0.8.1） */
 const showAbout = ref(false)
 const dropFiles = ref<ImportFileEntry[]>([])
@@ -145,22 +123,11 @@ const error = ref('')
 const version = ref('')
 const pendingDelete = ref<DocumentRow | null>(null)
 
-// ---------- 研究工作台（v0.4.0） ----------
-const topics = ref<TopicRow[]>([])
-const activeTopic = ref<TopicDetail | null>(null)
-const showFav = ref(false)
-/** 待收藏的法条（id + label），由阅读器的 ★ 收藏按钮赋值 */
-const favArticle = ref<{ id: number; label: string } | null>(null)
-/** 全局消息条：导出成功 / 收藏成功等正向反馈（复用错误条容器，6 秒自动消失） */
+/** 全局消息条：导出成功等正向反馈（复用错误条容器，6 秒自动消失） */
 const notice = ref<{ text: string; kind: 'success' | 'warn' } | null>(null)
 
 let dragDepth = 0
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
-
-// 当前打开的法条 id（结果列表高亮 / 专题条目高亮用）
-const selectedId = computed(() =>
-  reader.value?.type === 'article' ? reader.value.data.article.id : 0
-)
 
 // 删除确认弹窗文案
 const deleteMessage = computed(() =>
@@ -183,147 +150,6 @@ function setNotice(text: string, kind: 'success' | 'warn' = 'success'): void {
     notice.value = null
   }, 6000)
 }
-
-// ---------- 工作台：专题 ----------
-
-async function refreshTopics(): Promise<void> {
-  try {
-    topics.value = await window.lexbench.workspace.listTopics()
-  } catch (e) {
-    showError(e)
-  }
-}
-
-async function refreshActiveTopic(): Promise<void> {
-  if (!activeTopic.value) return
-  try {
-    activeTopic.value = await window.lexbench.workspace.getTopic(activeTopic.value.id)
-  } catch (e) {
-    showError(e)
-  }
-}
-
-async function openTopic(id: number): Promise<void> {
-  try {
-    activeTopic.value = await window.lexbench.workspace.getTopic(id)
-  } catch (e) {
-    showError(e)
-  }
-}
-
-function backToTopics(): void {
-  activeTopic.value = null
-}
-
-async function createTopic(name: string, description: string): Promise<void> {
-  try {
-    await window.lexbench.workspace.createTopic(name, description || undefined)
-    await refreshTopics()
-  } catch (e) {
-    showError(e)
-  }
-}
-
-async function renameTopic(id: number, patch: TopicPatch): Promise<void> {
-  try {
-    await window.lexbench.workspace.updateTopic(id, patch)
-    await refreshTopics()
-    if (activeTopic.value?.id === id) await refreshActiveTopic()
-  } catch (e) {
-    showError(e)
-  }
-}
-
-async function deleteTopic(id: number): Promise<void> {
-  try {
-    await window.lexbench.workspace.deleteTopic(id)
-    // 删除后清理：若删的是打开中的专题，右栏笔记随 activeTopic 一并消失
-    if (activeTopic.value?.id === id) activeTopic.value = null
-    await refreshTopics()
-  } catch (e) {
-    showError(e)
-  }
-}
-
-async function removeTopicItem(topicId: number, articleId: number): Promise<void> {
-  try {
-    const r = await window.lexbench.workspace.removeTopicItem(topicId, articleId)
-    await refreshTopics()
-    if (activeTopic.value?.id === topicId) await refreshActiveTopic()
-    setNotice(r.removedNotes > 0 ? `已移出本专题，并删除该条下的 ${r.removedNotes} 则笔记` : '已移出本专题')
-  } catch (e) {
-    showError(e)
-  }
-}
-
-async function moveTopicItem(
-  topicId: number,
-  articleId: number,
-  dir: ItemMoveDirection
-): Promise<void> {
-  try {
-    await window.lexbench.workspace.moveTopicItem(topicId, articleId, dir)
-    if (activeTopic.value?.id === topicId) await refreshActiveTopic()
-  } catch (e) {
-    showError(e)
-  }
-}
-
-// ---------- 工作台：收藏 / 导出 ----------
-
-function openFavorite(): void {
-  if (reader.value?.type !== 'article') return
-  favArticle.value = { id: reader.value.data.article.id, label: reader.value.data.article.label }
-  showFav.value = true
-}
-
-/** 收藏成功（含重复幂等）：关对话框 + 刷新计数 + 消息条提示（修复旧版 #15） */
-function onFavorited(res: { topicName: string; duplicate: boolean }): void {
-  showFav.value = false
-  setNotice(
-    res.duplicate ? `该法条已收藏在「${res.topicName}」中` : `已收藏到「${res.topicName}」`,
-    res.duplicate ? 'warn' : 'success'
-  )
-  void refreshTopics()
-  void refreshActiveTopic()
-}
-
-/** 导出报告（修复旧版 #23：window.open 无反馈 → 本地写盘 + 成功消息条显示保存路径） */
-async function exportTopic(format: ExportFormat): Promise<void> {
-  const t = activeTopic.value
-  if (!t) return
-  try {
-    const r = await window.lexbench.export.saveTopicReport(t.id, format)
-    if (!r.canceled && r.path) setNotice(`已导出到 ${r.path}`)
-  } catch (e) {
-    showError(e)
-  }
-}
-
-/** NotePanel 笔记增删改后：刷新专题详情与列表计数 */
-async function onNotesChanged(): Promise<void> {
-  await refreshTopics()
-  await refreshActiveTopic()
-}
-
-// ---------- 工作台：专题内翻页 override ----------
-// 当前法条在激活专题内 → 按专题顺序给相邻条；不在专题内 → undefined（Reader 走法条自身前后条）
-const topicNeighbors = computed(() => {
-  const t = activeTopic.value
-  const r = reader.value
-  if (!t || r?.type !== 'article') return undefined
-  const cur = r.data.article.id
-  const items = t.items
-  const i = items.findIndex((it) => it.article_id === cur)
-  if (i < 0) return undefined
-  return {
-    prev: i > 0 ? { id: items[i - 1].article_id, label: items[i - 1].article_label } : null,
-    next:
-      i < items.length - 1
-        ? { id: items[i + 1].article_id, label: items[i + 1].article_label }
-        : null
-  }
-})
 
 async function refreshDocs(): Promise<void> {
   try {
@@ -360,7 +186,6 @@ let topTimer: ReturnType<typeof setTimeout> | undefined
 let topSeq = 0
 /** IME 组合态：组合中不搜不跳（选字回车也不触发），上屏后补搜 */
 const topComposing = ref(false)
-const midComposing = ref(false)
 
 /**
  * 顶栏检索唯一执行体。pick=true 仅用于显式提交（回车/检索按钮）：
@@ -385,9 +210,9 @@ async function runTopSearch(opts: { pick: boolean }): Promise<void> {
     topActive.value = 0
     // 结果落进小浮窗：不切页面、不占主区域，用户随手查一条就走
     searchPopOpen.value = true
-    // 法条定位命中 → 直接在中栏打开第一条（仅显式提交；同样不切 Tab）
+    // 法条定位命中 → 直接打开全页阅读并跳到那一条（仅显式提交）
     if (opts.pick && out.mode === 'locate' && out.results[0]?.kind === 'article') {
-      await openArticle(out.results[0].id)
+      openResult(out.results[0])
     }
   } catch (e) {
     if (seq === topSeq) showError(e)
@@ -415,157 +240,11 @@ function onTopInput(): void {
   topTimer = setTimeout(() => void runTopSearch({ pick: false }), TOP_SEARCH_MS)
 }
 
-// ---------- 专题内常驻检索（中栏）----------
-
-/** 输入停顿多久才发检索——本地 SQLite 很快，稍等一点免得每敲一个字就查一次；
- *  2026-09 从 300ms 收紧到 200ms（实时建议），乱序由请求序号兜底 */
-const MID_SEARCH_MS = 200
-let midTimer: ReturnType<typeof setTimeout> | undefined
-let midSeq = 0
-const midInputEl = ref<HTMLInputElement | null>(null)
-
-function onMidInput(): void {
-  if (midComposing.value) return // 拼音未上屏，不发半截查询
-  clearTimeout(midTimer)
-  midTimer = setTimeout(() => void runMidSearch(), MID_SEARCH_MS)
-}
-
-async function runMidSearch(): Promise<void> {
-  const q = midQuery.value.trim()
-  if (!q) {
-    midResults.value = []
-    midPopOpen.value = false
-    return
-  }
-  const seq = ++midSeq
-  midSearching.value = true
-  try {
-    const out = await window.lexbench.search.run(q, midMode.value)
-    if (seq !== midSeq) return // 过期响应丢弃（连打时旧结果不得覆盖新结果）
-    midResults.value = out.results
-    midModeUsed.value = out.mode
-    midFallback.value = out.fallback ?? false
-    midRescued.value = out.rescued ?? false
-    midEmptyReason.value = out.emptyReason
-    midActive.value = 0
-    // 没命中也要把浮层打开，让「没有找到相关条文」显示出来——
-    // 否则搜索一次毫无反馈，用户会以为输入框坏了
-    midPopOpen.value = true
-    await previewMidHit()
-  } catch (e) {
-    if (seq === midSeq) showError(e)
-  } finally {
-    if (seq === midSeq) midSearching.value = false
-  }
-}
-
-/** 把高亮的那条候选呈现在中栏正文区——「随检随显」，全程不切 Tab、不动左栏 */
-async function previewMidHit(): Promise<void> {
-  const hit = midResults.value[midActive.value]
-  if (!hit) return
-  if (hit.kind === 'article') await openArticle(hit.id)
-  else if (hit.doc_type === 'book') await openBook(hit.document_id, { hitId: hit.id })
-  else await openDocument(hit.document_id)
-}
-
-/** ↑↓ 在候选间移动，并即时换正文 */
-function moveMid(delta: number): void {
-  const n = midResults.value.length
-  if (!n) return
-  midActive.value = (midActive.value + delta + n) % n
-  void previewMidHit()
-}
-
-function closeMidPop(): void {
-  midPopOpen.value = false
-}
-
-/** 点回中栏检索框：重新弹出上次的候选（同上，focus 与 click 都要接） */
-function onMidFocus(): void {
-  if (midResults.value.length) {
-    midPopOpen.value = true
-  } else if (midQuery.value.trim()) {
-    void runMidSearch()
-  }
-}
-
-/** 回车 = 确认选中的那条（正文已随高亮呈现，这里把候选收起）；
- *  IME 选字回车不算确认（会把拼音中途的浮层收掉） */
-function confirmMid(e?: KeyboardEvent): void {
-  if (e && (midComposing.value || e.isComposing || e.keyCode === 229)) return
-  if (!midPopOpen.value) return
-  void previewMidHit()
-  midPopOpen.value = false
-}
-
-/** 中栏模式切换：立即按新模式重搜（同顶栏 pickMode） */
-function setMidMode(m: SearchMode): void {
-  midMode.value = m
-  midModeMenuOpen.value = false
-  if (midQuery.value.trim()) {
-    clearTimeout(midTimer)
-    void runMidSearch()
-  }
-}
-
-/** 左栏「＋ 添加法条」→ 把焦点送到中栏检索条 */
-function focusMidSearch(): void {
-  tab.value = 'topics'
-  midPopOpen.value = false
-  void nextTick(() => midInputEl.value?.focus())
-}
-
-/** 把候选里的法条加入当前专题（重复收藏由主进程幂等处理） */
-async function addHitToTopic(hit: SearchHit): Promise<void> {
-  const topic = activeTopic.value
-  if (!topic || addingId.value !== -1) return
-  if (hit.kind !== 'article') {
-    setNotice('只有法条能收进专题；案例与书籍请在「文档库」里查阅')
-    return
-  }
-  addingId.value = hit.id
-  try {
-    const r = await window.lexbench.workspace.addTopicItem(topic.id, hit.id)
-    await refreshTopics()
-    await refreshActiveTopic()
-    setNotice(r.status === 'duplicate' ? '这条法条已经在本专题里了' : '已加入本专题')
-  } catch (e) {
-    showError(e)
-  } finally {
-    addingId.value = -1
-  }
-}
-
-async function openArticle(id: number): Promise<void> {
-  readerLoading.value = true
-  try {
-    reader.value = { type: 'article', data: await window.lexbench.library.getArticle(id) }
-  } catch (e) {
-    showError(e)
-  } finally {
-    readerLoading.value = false
-  }
-}
-
-async function openDocument(id: number): Promise<void> {
-  // 书籍走沉浸阅读模式（阅读模式与法条/文档模式互斥）
-  if (documents.value.find((d) => d.id === id)?.doc_type === 'book') {
-    await openBook(id)
-    return
-  }
-  readerLoading.value = true
-  try {
-    reader.value = { type: 'document', data: await window.lexbench.library.getDocument(id) }
-  } catch (e) {
-    showError(e)
-  } finally {
-    readerLoading.value = false
-  }
-}
-
-/** 打开书籍沉浸阅读：hitId（检索命中的 chunk id）/focusPara 用于进入后定位段落 */
-async function openBook(id: number, opts?: { hitId?: number; focusPara?: number }): Promise<void> {
-  preReaderTab.value = tab.value
+/**
+ * 沉浸阅读（书籍/案例/资料的段落流；pdf 走页面模式）：
+ * hitId（检索命中的 chunk id）/focusPara 用于进入后定位段落。
+ */
+async function openReading(id: number, opts?: { hitId?: number; focusPara?: number }): Promise<void> {
   readerLoading.value = true
   try {
     const detail = await window.lexbench.library.getDocument(id)
@@ -581,12 +260,15 @@ async function openBook(id: number, opts?: { hitId?: number; focusPara?: number 
   }
 }
 
-/** 法规全页阅读（文档库入口专用）：与 openBook 同型——存 Tab、取详情、整区替换 */
-async function openStatuteFull(id: number): Promise<void> {
-  preReaderTab.value = tab.value
+/** 法规全页阅读（文档库/搜索直达统一落点）：focusOrder = 打开时定位到该条 */
+async function openStatuteFull(id: number, opts?: { focusOrder?: number }): Promise<void> {
   readerLoading.value = true
   try {
-    reader.value = { type: 'statute-full', data: await window.lexbench.library.getDocument(id) }
+    reader.value = {
+      type: 'statute-full',
+      data: await window.lexbench.library.getDocument(id),
+      focusOrder: opts?.focusOrder
+    }
   } catch (e) {
     showError(e)
   } finally {
@@ -594,18 +276,29 @@ async function openStatuteFull(id: number): Promise<void> {
   }
 }
 
-/** 文档库卡片入口三分流：book→沉浸书 / statute→全页法规 / 其余→中栏（检索预览仍走 openDocument） */
-async function openFromLibrary(id: number): Promise<void> {
-  const doc = documents.value.find((d) => d.id === id)
-  if (doc?.doc_type === 'book') return openBook(id)
-  if (doc?.doc_type === 'statute') return openStatuteFull(id)
-  return openDocument(id)
+/** 法条修正保存后：重取文档（content 变了），保持当前位置不跳 */
+async function reloadStatuteDoc(): Promise<void> {
+  if (reader.value?.type !== 'statute-full') return
+  try {
+    reader.value = {
+      type: 'statute-full',
+      data: await window.lexbench.library.getDocument(reader.value.data.id)
+    }
+  } catch (e) {
+    showError(e)
+  }
 }
 
-/** 退出阅读模式：恢复进入前的 Tab */
+/** 文档库卡片入口：statute→全页法规；其余（书籍/案例/资料）→沉浸阅读 */
+async function openFromLibrary(id: number): Promise<void> {
+  const doc = documents.value.find((d) => d.id === id)
+  if (doc?.doc_type === 'statute') return openStatuteFull(id)
+  return openReading(id)
+}
+
+/** 退出阅读模式：回到文档库 */
 function closeReading(): void {
   reader.value = null
-  tab.value = preReaderTab.value
 }
 
 /** 阅读模式正向反馈 → 全局消息条 */
@@ -613,10 +306,32 @@ function onReadingNotice(text: string): void {
   setNotice(text)
 }
 
+/** 搜索结果落点：法条→全页阅读跳到该条；段落命中→沉浸阅读定位段落 */
 function openResult(hit: SearchHit): void {
-  if (hit.kind === 'article') void openArticle(hit.id)
-  else if (hit.doc_type === 'book') void openBook(hit.document_id, { hitId: hit.id })
-  else void openDocument(hit.document_id)
+  if (hit.kind === 'article') {
+    void openStatuteFull(hit.document_id, { focusOrder: hit.order_index })
+  } else if (hit.doc_type === 'book') {
+    void openReading(hit.document_id, { hitId: hit.id })
+  } else {
+    void openReading(hit.document_id, { hitId: hit.id })
+  }
+}
+
+/** AI 独立窗里的引用点击：主窗口打开该法条所属文档并跳到该条（AI 窗保持独立不关闭） */
+async function openArticleFromAi(articleId: number): Promise<void> {
+  try {
+    const d = await window.lexbench.library.getArticle(articleId)
+    const docId = d.article.document_id
+    const order = d.article.order_index
+    if (reader.value?.type === 'statute-full' && reader.value.data.id === docId) {
+      // 同文档：改 focusOrder 触发阅读页内跳转（组件靠 watch 二次定位，不重挂）
+      reader.value = { ...reader.value, focusOrder: order }
+    } else {
+      await openStatuteFull(docId, { focusOrder: order })
+    }
+  } catch (e) {
+    showError(e)
+  }
 }
 
 /** 顶栏浮窗里选中一条：打开它，并收起浮窗（用户看完即走，不占版面） */
@@ -670,28 +385,6 @@ const topSelectedId = computed(() => {
   return h && h.kind === 'article' ? h.id : -1
 })
 
-/** 中栏候选里点了一条：正文其实已随高亮呈现过了，这里只是把高亮对齐并收起候选 */
-function onMidPick(hit: SearchHit): void {
-  const i = midResults.value.findIndex((r) => r.kind === hit.kind && r.id === hit.id)
-  if (i >= 0) midActive.value = i
-  midPopOpen.value = false
-  void previewMidHit()
-}
-
-/** 中栏候选的高亮项（法条才有 id 可高亮） */
-const midSelectedId = computed(() => {
-  const h = midResults.value[midActive.value]
-  return h && h.kind === 'article' ? h.id : -1
-})
-
-/** 条文修正保存完成（Reader 已重取详情）：同步阅读器状态；若该条在激活专题内则刷新专题摘要 */
-function onArticleSaved(detail: ArticleDetail): void {
-  reader.value = { type: 'article', data: detail }
-  if (activeTopic.value?.items.some((it) => it.article_id === detail.article.id)) {
-    void refreshActiveTopic()
-  }
-}
-
 function askDelete(doc: DocumentRow): void {
   pendingDelete.value = doc
 }
@@ -701,18 +394,9 @@ async function confirmDelete(): Promise<void> {
   if (!doc) return
   try {
     await window.lexbench.library.deleteDocument(doc.id)
-    // 删除的正是打开中的文档/书籍时才关掉阅读视图；**不改当前标签页**
-    // （此前会跳回「进入阅读前」的页面，在文档库里删文件时会被弹到检索页）
-    if (
-      (reader.value?.type === 'document' || reader.value?.type === 'book') &&
-      reader.value.data.id === doc.id
-    ) {
-      reader.value = null
-    }
+    // 删除的正是打开中的文档时才关掉阅读视图
+    if (reader.value && reader.value.data.id === doc.id) reader.value = null
     await refreshDocs()
-    // FK 级联会连带删除该文档的收藏条目（笔记保留并置空关联），同步刷新工作台
-    void refreshTopics()
-    void refreshActiveTopic()
   } catch (e) {
     showError(e)
   } finally {
@@ -724,7 +408,7 @@ async function confirmDelete(): Promise<void> {
 async function markReviewed(id: number): Promise<void> {
   try {
     await window.lexbench.library.setDocumentStatus(id, 'parsed')
-    if (reader.value?.type === 'document' && reader.value.data.id === id) await openDocument(id)
+    if (reader.value?.type === 'statute-full' && reader.value.data.id === id) await reloadStatuteDoc()
     await refreshDocs()
   } catch (e) {
     showError(e)
@@ -780,6 +464,10 @@ watch(showImport, (open) => {
   if (!open) dropFiles.value = []
 })
 
+/** AI 独立窗订阅的退订函数 */
+let unsubAiVis: (() => void) | null = null
+let unsubAiArticle: (() => void) | null = null
+
 onMounted(() => {
   // 命名监听器，卸载时全部注销（修复旧版 #6）
   window.addEventListener('dragenter', onDragEnter)
@@ -787,9 +475,13 @@ onMounted(() => {
   window.addEventListener('dragover', onDragOver)
   window.addEventListener('drop', onDrop)
   document.addEventListener('click', onDocClickForMode)
+  // AI 独立窗：顶栏按钮态同步 + 窗内引用跳转转发
+  unsubAiVis = window.lexbench.aiWindow.onVisibility((v) => {
+    aiWinOpen.value = v
+  })
+  unsubAiArticle = window.lexbench.aiWindow.onOpenArticle((id) => void openArticleFromAi(id))
   void refreshDocs()
   void refreshGroups()
-  void refreshTopics()
   void window.lexbench.app
     .getVersion()
     .then((v) => {
@@ -813,8 +505,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragover', onDragOver)
   window.removeEventListener('drop', onDrop)
   document.removeEventListener('click', onDocClickForMode)
+  unsubAiVis?.()
+  unsubAiArticle?.()
   clearTimeout(noticeTimer)
-  clearTimeout(midTimer)
+  clearTimeout(topTimer)
 })
 </script>
 
@@ -883,11 +577,7 @@ onBeforeUnmount(() => {
 
           <!-- 快捷检索结果：就地一个小浮窗，不切页面、不占主区域，随手查一条就走 -->
           <Transition name="menu-pop">
-            <div
-              v-if="searchPopOpen"
-              class="search-pop"
-              :class="{ lowered: tab === 'topics' && !!activeTopic }"
-            >
+            <div v-if="searchPopOpen" class="search-pop">
               <ResultList
                 :results="results"
                 :mode="lastMode"
@@ -896,20 +586,25 @@ onBeforeUnmount(() => {
                 :query="lastQuery"
                 :selected-id="topSelectedId"
                 :has-docs="documents.length > 0"
-                :addable="!!activeTopic"
-                :adding-id="addingId"
                 :fallback="lastFallback"
                 :rescued="lastRescued"
                 :empty-reason="lastEmptyReason"
                 @select="onPopPick"
-                @add="addHitToTopic"
               />
             </div>
           </Transition>
         </div>
       </div>
       <button class="top-btn" @click="showImport = true">导入文档</button>
-      <button class="top-btn" title="配置 AI 模型档案（解读法条 / 找案例 / 追问）" @click="showAiSettings = true">
+      <button
+        class="top-btn"
+        :class="{ on: aiWinOpen }"
+        title="通用法律问答助手（独立窗口）：随便问，不用出软件去别处查"
+        @click="toggleAiWindow"
+      >
+        ✦ AI 助手
+      </button>
+      <button class="top-btn" title="配置 AI 模型档案（接口地址 / 模型 / 密钥）" @click="showAiSettings = true">
         AI 设置
       </button>
       <button class="top-btn" title="导出/导入数据包（换电脑与备份）" @click="showBackup = true">
@@ -958,47 +653,23 @@ onBeforeUnmount(() => {
       />
     </main>
 
-    <!-- 法规全页阅读：文档库点法规卡片进入，目录+连续正文 -->
+    <!-- 法规全页阅读：文档库卡片 / 搜索直达统一落点，目录+连续正文+批注 -->
     <main v-else-if="reader?.type === 'statute-full'" class="reading-full">
       <StatuteReadingView
         :key="reader.data.id"
         :doc="reader.data"
+        :focus-order="reader.focusOrder"
         @back="closeReading"
         @error="showError"
+        @notice="setNotice"
+        @doc-changed="reloadStatuteDoc"
       />
     </main>
 
+    <!-- 首页 = 文档库（专题退场后唯一的常驻板块；笔记库在后续阶段加入左导航） -->
     <main v-else class="main">
       <aside class="side">
-        <div class="tabs" role="tablist">
-          <div class="tab-slider" :class="tab === 'topics' ? 'pos-0' : 'pos-1'"></div>
-          <button class="tab" role="tab" :aria-selected="String(tab === 'topics')" :class="{ active: tab === 'topics' }" @click="tab = 'topics'">
-            专题<span class="count">{{ topics.length }}</span>
-          </button>
-          <button class="tab" role="tab" :aria-selected="String(tab === 'library')" :class="{ active: tab === 'library' }" @click="tab = 'library'">
-            文档库<span class="count">{{ documents.length }}</span>
-          </button>
-        </div>
-
-        <TopicPanel
-          v-show="tab === 'topics'"
-          :topics="topics"
-          :active="activeTopic"
-          :selected-id="selectedId"
-          @create="createTopic"
-          @open="openTopic"
-          @back="backToTopics"
-          @rename="renameTopic"
-          @remove="deleteTopic"
-          @remove-item="removeTopicItem"
-          @move="moveTopicItem"
-          @open-article="openArticle"
-          @export-topic="exportTopic"
-          @focus-search="focusMidSearch"
-        />
-
         <DocLibrary
-          v-show="tab === 'library'"
           :documents="documents"
           :groups="groups"
           @open="openFromLibrary"
@@ -1009,104 +680,6 @@ onBeforeUnmount(() => {
           @error="showError"
         />
       </aside>
-
-      <section class="reader-pane">
-        <!-- 专题内常驻检索：只在打开专题时出现（看文档库时仍是左右两栏）。
-             随输入出候选，并把高亮的那条即时呈现在下方正文区——不必跳去别处找法条 -->
-        <div v-if="tab === 'topics' && activeTopic" class="mid-search">
-          <div class="search-group">
-            <div class="mode-menu">
-              <button class="mode-trigger" title="检索模式" @click="midModeMenuOpen = !midModeMenuOpen">
-                <span>{{ modeNames[midMode] }}</span>
-                <svg class="mode-caret" :class="{ open: midModeMenuOpen }" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                  <path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </button>
-              <Transition name="menu-pop">
-                <div v-if="midModeMenuOpen" class="mode-pop" role="listbox">
-                  <button
-                    v-for="(name, m) in modeNames"
-                    :key="m"
-                    class="mode-opt"
-                    :class="{ on: midMode === m }"
-                    role="option"
-                    :aria-selected="String(midMode === m)"
-                    @click="setMidMode(m as SearchMode)"
-                  >
-                    <span>{{ name }}</span>
-                  </button>
-                </div>
-              </Transition>
-            </div>
-            <input
-              ref="midInputEl"
-              v-model="midQuery"
-              class="search-input"
-              type="text"
-              :placeholder="midHint"
-              @input="onMidInput"
-              @focus="onMidFocus"
-              @click="onMidFocus"
-              @compositionstart="midComposing = true"
-              @compositionend="midComposing = false; onMidInput()"
-              @keydown.down.prevent="moveMid(1)"
-              @keydown.up.prevent="moveMid(-1)"
-              @keydown.enter.prevent="confirmMid($event)"
-              @keydown.esc="closeMidPop"
-            />
-            <button v-if="midSearching" class="search-btn" disabled>
-              <span class="spinner" aria-label="检索中"></span>
-            </button>
-          </div>
-
-          <Transition name="menu-pop">
-            <div v-if="midPopOpen" class="mid-pop">
-              <ResultList
-                :results="midResults"
-                :mode="midModeUsed"
-                searched
-                :searching="midSearching"
-                :query="midQuery"
-                :selected-id="midSelectedId"
-                :has-docs="true"
-                addable
-                :adding-id="addingId"
-                :fallback="midFallback"
-                :rescued="midRescued"
-                :empty-reason="midEmptyReason"
-                @select="onMidPick"
-                @add="addHitToTopic"
-              />
-            </div>
-          </Transition>
-        </div>
-
-        <Reader
-          :state="reader"
-          :loading="readerLoading"
-          :nav-prev="topicNeighbors ? topicNeighbors.prev : undefined"
-          :nav-next="topicNeighbors ? topicNeighbors.next : undefined"
-          @open-article="openArticle"
-          @saved="onArticleSaved"
-          @favorite="openFavorite"
-          @error="showError"
-          @notice="setNotice"
-          @open-settings="showAiSettings = true"
-        />
-      </section>
-
-      <!-- 右栏笔记：只有「在专题里读法条」时才出现。
-           看文档库时不出现——那时保持左右两栏，笔记属于专题，不属于文档库 -->
-      <NotePanel
-        v-if="tab === 'topics' && activeTopic && reader?.type === 'article'"
-        :topic="activeTopic"
-        :current-article-id="reader.data.article.id"
-        :current-article-label="reader.data.article.article_label"
-        @changed="onNotesChanged"
-        @open-article="openArticle"
-        @export="exportTopic"
-        @error="showError"
-      />
     </main>
 
     <ImportDialog
@@ -1114,14 +687,6 @@ onBeforeUnmount(() => {
       :initial-files="dropFiles"
       :groups="groups"
       @imported="onImported"
-      @error="showError"
-    />
-
-    <FavoriteDialog
-      v-model:visible="showFav"
-      :article-id="favArticle?.id ?? 0"
-      :article-label="favArticle?.label ?? ''"
-      @done="onFavorited"
       @error="showError"
     />
 
@@ -1325,40 +890,6 @@ onBeforeUnmount(() => {
   right: 0;
   z-index: 30;
   max-height: 60vh;
-  overflow-y: auto;
-  border: 1px solid var(--lb-border);
-  border-radius: var(--lb-radius-l);
-  background: var(--lb-panel);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
-}
-
-/* 打开专题时中栏顶上有检索条（约 55px 高，且压在浮窗之上），
-   浮窗整体下移让开它，否则头几行候选会被检索条盖住 */
-.search-pop.lowered {
-  top: calc(100% + 62px);
-}
-
-/* ---------- 专题中栏的常驻检索条 ---------- */
-/* 只在打开专题时出现（模板里有 v-if）；看文档库时中栏仍是纯阅读区 */
-.mid-search {
-  position: sticky;
-  top: 0;
-  /* 必须高于顶栏检索浮窗（z-index 30）：浮窗有 60vh 高，会整个盖住这条检索条。
-     压在浮窗之上，中栏才点得进去；同时鼠标移到这条上就脱离了检索区，
-     顶栏浮窗的 mouseleave 才会触发、自动收起。 */
-  z-index: 40;
-  padding: 10px 16px;
-  background: var(--lb-bg);
-  border-bottom: 1px solid var(--lb-border);
-}
-
-.mid-pop {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 9;
-  max-height: 48vh;
   overflow-y: auto;
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
@@ -1638,80 +1169,11 @@ onBeforeUnmount(() => {
   border-right: 1px solid var(--lb-border);
 }
 
-/* ---------- 分段控件（Apple segmented control） ---------- */
-.tabs {
-  position: relative;
-  display: flex;
-  margin: 12px 12px 0;
-  padding: 3px;
-  background: var(--lb-chip);
-  border-radius: var(--lb-radius-s);
-  flex-shrink: 0;
-}
-
-/* 白色滑块在两个选项间平滑滑动 */
-.tab-slider {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: calc((100% - 6px) / 2);
-  height: calc(100% - 6px);
-  background: var(--lb-panel);
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .tab-slider {
-    transition: transform 0.22s cubic-bezier(0.25, 0.1, 0.25, 1);
-  }
-}
-
-.tab-slider.pos-0 {
-  transform: translateX(0);
-}
-
-.tab-slider.pos-1 {
-  transform: translateX(100%);
-}
-
-
-.tab {
-  position: relative;
-  z-index: 1;
-  flex: 1;
-  padding: 8px 0;
-  background: none;
-  border: none;
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--lb-muted);
-}
-
-.tab:hover {
-  color: var(--lb-text);
-}
-
-.tab.active {
-  color: var(--lb-text);
-  font-weight: 600;
-}
-
-.count {
-  display: inline-block;
-  min-width: 18px;
-  margin-left: 4px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: var(--lb-chip);
-  font-size: 12px;
-  text-align: center;
-}
-
-.reader-pane {
-  flex: 1;
-  min-width: 0;
-  overflow-y: auto;
+/* 顶栏「✦ AI 助手」按下态（配方同 sv-top-btn.on：accent 边+柔底） */
+.top-btn.on {
+  border-color: var(--lb-accent-2);
+  color: var(--lb-accent);
+  background: var(--lb-accent-soft);
 }
 
 /* ---------- 拖拽遮罩 ---------- */

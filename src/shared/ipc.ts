@@ -26,20 +26,6 @@ export interface PickFilesResult {
   paths: string[]
 }
 
-// ---------- 研究工作台（阶段2） ----------
-
-export interface AddItemResult {
-  status: 'added' | 'duplicate'
-  itemId: number
-}
-
-export interface TopicPatch {
-  name?: string
-  description?: string
-}
-
-export type ItemMoveDirection = 'up' | 'down'
-
 // ---------- 阅读模式（阶段2.5） ----------
 
 export interface BookNoteInput {

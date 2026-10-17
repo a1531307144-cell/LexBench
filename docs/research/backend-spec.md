@@ -556,6 +556,14 @@ def _apply_filters(sql, params, doc_type, category, document_id, table_alias):
 5. **auto 分段管线**（`src/main/search.ts`，取代「定位零结果即降级」的单点描述）：段1 定位（hint 命中→限定法规；无 hint→全库按号且**每法只取一条**（ROW_NUMBER 窗口，治 LIMIT 20 被同号条灌满的截断））→ 段2 全文兜底（出参 `fallback:true`）→ 段3（仅 auto）非空 hint **连法规都零匹配**→ 按条号全库救援（`rescued:true`）。**hint 非空零匹配不再直接全库降级**（旧行为使「年利率 24」劫持定位、全文永不执行）。零 token 返回 `emptyReason:'no_tokens'`。
 6. **极限不动**：LOCATE_LIMIT=20、FULLTEXT_LIMIT=50、splitter/cn2num 行为不动（万位以上条号不支持——真实数据 ≤1260 条，记为已知边界）。
 
+### 移植后行为修订（2026-10 分编层级 + 右键复制，与上文冲突时以本节为准）
+
+1. **切分层级四层：编 › 分编 › 章 › 节**（`src/shared/splitter.ts`）：新增 `SUBBRANCH_RE = ^第(NUM)分编\s*\S`（语义与编/章/节正则一致——必须紧跟非空白标题）。状态机：新编清 分编/章/节；新分编清 章/节；新章清 节。**分编标题行不再落入正文**——旧版把它 append 进上一条法条的最后一行（民法典 8 处、生态环境法典 9 处，实测全部污染），目录也丢掉该层。articles 表增列 `subbranch`（迁移 014，纯 SQL ALTER）。
+2. **存量数据启动期修复**（`src/main/repairSubbranch.ts`，settings `subbranch_repaired` 门控，模式同 seed/reindex：成功才打标、失败不阻断、次启重试）：逐法按 splitter 语义回放——第 i 条正文里剥出的分编行 → 第 i+1 条起 `subbranch` = 该标题（取最后一行）；无分编行但编变了 → 清空；其余沿用上一条。剥行 + 补戳记同事务。**改了 content 必须触发 FTS 重建**：修复成功即写 `fts_version='0'`，且本函数必须排在 `reindexFtsIfNeeded()` **之前**（顺序颠倒会把脏内容写进索引）。已知边界：升级前「首编即分编」被旧版直接丢弃的标题行无痕迹可还原（全库语料未见此形态）。
+3. **FTS 公式 v3**（`ftsContent.ts` / `reindex.ts`）：索引文本并入分编（编/分编/章/节）；`FTS_VERSION` 2→3 触发存量全量重建。
+4. **目录/面包屑/导出**：`buildStatuteToc` 四层 LEVELS（branch › subbranch › chapter › section）；Reader 面包屑与专题导出层级串同步为 `branch › subbranch › chapter › section`。
+5. **右键上下文菜单**（`src/main/index.ts`，`webContents.on('context-menu')`）：Electron 默认没有右键菜单——**此前右键毫无反应，即「法条选中后复制不了」的根因**（Ctrl+C 实测一直是通的，走默认应用菜单）。现：可编辑 → 撤销/重做/剪切/复制/粘贴/全选（8 项含分隔）；有选中 → 复制/全选（3 项）；其它 → 全选（1 项）。
+
 ---
 
 ## 5. AI 部分

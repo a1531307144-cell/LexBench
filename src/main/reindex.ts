@@ -8,7 +8,7 @@ import { articleFtsText, chunkFtsText } from '@shared/ftsContent'
 import { getDb, getSetting, setSetting } from './db'
 
 /** 索引公式版本；公式变更时 +1，触发一次性全量重建 */
-const FTS_VERSION = '2'
+const FTS_VERSION = '3'
 /** 每批事务行数（控制单事务时长与内存） */
 const BATCH = 500
 
@@ -17,6 +17,7 @@ interface ArticleIndexRow {
   article_label: string
   article_no: number
   branch: string
+  subbranch: string
   chapter: string
   section: string
   content: string
@@ -56,7 +57,7 @@ export function reindexFtsIfNeeded(): void {
 
     const articles = db
       .prepare(
-        `SELECT a.id, a.article_label, a.article_no, a.branch, a.chapter, a.section, a.content, d.title
+        `SELECT a.id, a.article_label, a.article_no, a.branch, a.subbranch, a.chapter, a.section, a.content, d.title
          FROM articles a JOIN documents d ON d.id = a.document_id
          ORDER BY a.id`
       )
@@ -73,6 +74,7 @@ export function reindexFtsIfNeeded(): void {
               label: r.article_label,
               articleNo: r.article_no,
               branch: r.branch,
+              subbranch: r.subbranch,
               chapter: r.chapter,
               section: r.section,
               content: r.content

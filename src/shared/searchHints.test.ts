@@ -1,7 +1,7 @@
 // searchHints 单测：随机取样的边界与确定性
 
 import { describe, expect, it } from 'vitest'
-import { MID_HINTS, RESULT_HINTS, TOPBAR_HINTS, pickDistinct } from './searchHints'
+import { RESULT_HINTS, TOPBAR_HINTS, pickDistinct } from './searchHints'
 
 describe('pickDistinct', () => {
   it('取样数量与池内容一致且互不相同', () => {
@@ -12,9 +12,9 @@ describe('pickDistinct', () => {
   })
 
   it('count 超过池大小时返回整池（去重后不多取）', () => {
-    const got = pickDistinct(MID_HINTS, 99)
-    expect(got).toHaveLength(MID_HINTS.length)
-    expect(new Set(got).size).toBe(MID_HINTS.length)
+    const got = pickDistinct(RESULT_HINTS, 99)
+    expect(got).toHaveLength(RESULT_HINTS.length)
+    expect(new Set(got).size).toBe(RESULT_HINTS.length)
   })
 
   it('相同 rng 序列可复现相同结果', () => {

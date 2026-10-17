@@ -1,7 +1,7 @@
-// 法规目录推导：从 articles 的 编/章/节 戳记还原可点击的目录结构
+// 法规目录推导：从 articles 的 编/分编/章/节 戳记还原可点击的目录结构
 // 数据在切分时已随导入保存（splitter.ts 把标题全文盖到每条上），这里只做纯推导，不改切分行为
 
-export type StatuteTocLevel = 'branch' | 'chapter' | 'section'
+export type StatuteTocLevel = 'branch' | 'subbranch' | 'chapter' | 'section'
 
 export interface StatuteTocEntry {
   level: StatuteTocLevel
@@ -14,18 +14,19 @@ export interface StatuteTocEntry {
 /** buildStatuteToc 所需的条文字段（与 articles 表列一一对应） */
 export interface StatuteHeadingFields {
   branch: string
+  subbranch: string
   chapter: string
   section: string
   order_index: number
 }
 
-const LEVELS: StatuteTocLevel[] = ['branch', 'chapter', 'section']
+const LEVELS: StatuteTocLevel[] = ['branch', 'subbranch', 'chapter', 'section']
 
 /**
  * 从按 order_index 升序的条文列表推导目录（getDocument 已保证有序）。
- * 逐条比较三层戳记：变了且非空才发条目——连续相同戳记天然去重，
- * 空串表示被高级层清空（新编清章/节、新章清节），等真正的标题行到来时再发。
- * 平铺法规（无编/章/节）返回 []。
+ * 逐条比较四层戳记：变了且非空才发条目——连续相同戳记天然去重，
+ * 空串表示被高级层清空（新编清分编/章/节、新分编清章/节、新章清节），
+ * 等真正的标题行到来时再发。平铺法规（无编/分编/章/节）返回 []。
  */
 export function buildStatuteToc(articles: readonly StatuteHeadingFields[]): StatuteTocEntry[] {
   const toc: StatuteTocEntry[] = []

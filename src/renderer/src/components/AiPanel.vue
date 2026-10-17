@@ -7,8 +7,8 @@ import type { AiProgress } from '@shared/ipc'
 import type { AiCitation, AiMessageRow, AiTask } from '@shared/types'
 
 const props = defineProps<{
-  /** 当前打开的法条 id（法条模式才渲染本面板） */
-  articleId: number
+  /** 可选的法条上下文：带 → 显示「解读本条/找案例」且历史按条归档；不带 → 通用问答（全局面板） */
+  articleId?: number
 }>()
 
 const emit = defineEmits<{
@@ -75,7 +75,7 @@ function isConfigError(msg: string): boolean {
 
 async function loadHistory(): Promise<void> {
   try {
-    history.value = await window.lexbench.ai.history(props.articleId)
+    history.value = await window.lexbench.ai.history(props.articleId ?? null)
   } catch (e) {
     emit('error', errText(e))
   }
@@ -190,7 +190,9 @@ async function finishOk(messageId?: number): Promise<void> {
 }
 
 async function startTask(task: AiTask): Promise<void> {
-  if (busy.value || !props.articleId) return
+  if (busy.value) return
+  // 解读/找案例必须有法条上下文；followup 即通用问答，允许不带 articleId
+  if (task !== 'followup' && !props.articleId) return
   const q = question.value.trim()
   if (task === 'followup' && !q) return
   resetStream()
@@ -204,7 +206,7 @@ async function startTask(task: AiTask): Promise<void> {
     const res = await window.lexbench.ai.run({
       taskId: tid,
       task,
-      articleId: props.articleId,
+      ...(props.articleId ? { articleId: props.articleId } : {}),
       question: task === 'followup' ? q : undefined
     })
     // 期间已被停止 / 切条：丢弃本次结果
@@ -273,7 +275,7 @@ onBeforeUnmount(() => {
   <section class="ai">
     <div class="ai-head">
       <span class="ai-title">✦ AI 研究助手</span>
-      <span class="ai-sub">问答仅存本机，按条文归档</span>
+      <span class="ai-sub">问答仅存本机</span>
       <span class="ai-flex"></span>
       <button class="ai-mini" title="配置模型档案" @click="emit('open-settings')">AI 设置</button>
     </div>
@@ -283,9 +285,12 @@ onBeforeUnmount(() => {
       <button class="ai-warn-btn" @click="emit('open-settings')">去设置</button>
     </div>
 
-    <div class="ai-ops">
-      <button class="ai-btn" :disabled="busy" @click="startTask('explain')">✦ 解读本条</button>
-      <button class="ai-btn" :disabled="busy" @click="startTask('cases')">⚖ 找案例</button>
+    <!-- 解读/找案例仅在带法条上下文时出现；通用问答模式只剩提问与（进行中的）停止 -->
+    <div v-if="articleId || busy" class="ai-ops">
+      <template v-if="articleId">
+        <button class="ai-btn" :disabled="busy" @click="startTask('explain')">✦ 解读本条</button>
+        <button class="ai-btn" :disabled="busy" @click="startTask('cases')">⚖ 找案例</button>
+      </template>
       <span class="ai-flex"></span>
       <button v-if="busy" class="ai-btn stop" @click="stop">停止</button>
     </div>
@@ -352,13 +357,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 追问输入 -->
+    <!-- 提问输入（通用问答主入口；带法条时文案提示可追问本条） -->
     <div class="ai-ask">
       <input
         v-model="question"
         class="ai-input"
         type="text"
-        placeholder="就本条继续追问，Enter 发送"
+        :placeholder="articleId ? '就本条继续追问，Enter 发送' : '随便问点什么，Enter 发送'"
         :disabled="busy"
         @keydown.enter.prevent="startTask('followup')"
       />

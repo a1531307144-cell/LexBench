@@ -8,7 +8,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = join(ROOT, 'docs', 'screenshots')
 
 const pages = await fetch('http://127.0.0.1:9222/json').then((r) => r.json())
-const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url))
+const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url) && !p.url.includes('aiWindow'))
 if (!page) {
   console.log('FAIL: 未找到应用页面')
   process.exit(1)
@@ -95,7 +95,7 @@ await sleep(800)
 await shot('02-fulltext.png')
 
 // 场景3：文档库
-await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
+// 专题退场后首页即文档库，无需再切 Tab
 await sleep(600)
 await shot('03-library.png')
 

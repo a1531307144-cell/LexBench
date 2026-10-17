@@ -22,6 +22,7 @@ import {
   type ChatMessage
 } from '@shared/aiProtocol'
 import {
+  GENERAL_SYSTEM_PROMPT,
   HISTORY_LIMIT,
   SYSTEM_PROMPT,
   buildCasesPrompt,
@@ -90,12 +91,11 @@ function toProfileRow(row: DbRow): AiProfileRow {
   }
 }
 
-/** 行 → AiMessageRow：article_id / topic_id 可空（专题级问答无关联条文） */
+/** 行 → AiMessageRow（article_id 可空：通用问答归入全局时间线） */
 function toMessageRow(row: DbRow): AiMessageRow {
   return {
     id: Number(row['id']),
     article_id: row['article_id'] == null ? null : Number(row['article_id']),
-    topic_id: row['topic_id'] == null ? null : Number(row['topic_id']),
     action: String(row['action']) as AiTask,
     question: String(row['question'] ?? ''),
     answer_md: String(row['answer_md'] ?? ''),
@@ -481,12 +481,22 @@ function resolveCitations(db: DatabaseSync, answer: string): AiCitation[] {
 
 // ---------- 历史（追问上下文） ----------
 
-/** 该条文最近 HISTORY_LIMIT 条归档（时间正序）；explain/cases 的空 question 按动作代填 */
+/**
+ * 归档历史（时间正序）：articleId=null → **全局时间线**（通用问答模式，含旧的按条文记录，
+ * 用户看到的是连续的对话记忆）；带 articleId → 只取该条文的问答。
+ * explain/cases 的空 question 按动作代填。
+ */
 function loadHistory(db: DatabaseSync, articleId: number | null): AiHistoryMessage[] {
-  if (articleId === null) return []
-  const rows = db
-    .prepare('SELECT action, question, answer_md FROM ai_messages WHERE article_id=? ORDER BY id DESC LIMIT ?')
-    .all(articleId, HISTORY_LIMIT) as unknown as DbRow[]
+  const rows =
+    articleId === null
+      ? (db
+          .prepare('SELECT action, question, answer_md FROM ai_messages ORDER BY id DESC LIMIT ?')
+          .all(HISTORY_LIMIT) as unknown as DbRow[])
+      : (db
+          .prepare(
+            'SELECT action, question, answer_md FROM ai_messages WHERE article_id=? ORDER BY id DESC LIMIT ?'
+          )
+          .all(articleId, HISTORY_LIMIT) as unknown as DbRow[])
   const out: AiHistoryMessage[] = []
   for (const r of rows.reverse()) {
     const action = String(r['action'])
@@ -634,7 +644,8 @@ export function registerAiIpc(): void {
           question = asked
           if (articleId !== null && !article) return fail('法条不存在')
           messages = [
-            { role: 'system', content: SYSTEM_PROMPT },
+            // 带法条 → 材料约束版提示词；不带（全局通用问答）→ 通用提示词（无材料可引）
+            { role: 'system', content: article ? SYSTEM_PROMPT : GENERAL_SYSTEM_PROMPT },
             ...buildFollowupMessages(loadHistory(db, article !== null ? articleId : null), article ? toBrief(article) : null, asked)
           ]
         } else {
@@ -654,13 +665,13 @@ export function registerAiIpc(): void {
           emit({ taskId, delta, done: false })
         )
 
-        // 归库：解析引用 → 归档 ai_messages（question 仅追问有值；专题维度本轮不走）
+        // 归库：解析引用 → 归档 ai_messages（question 仅追问有值）
         const citations = resolveCitations(db, answer)
         const info = db
           .prepare(
-            'INSERT INTO ai_messages(article_id, topic_id, action, question, answer_md, citations) VALUES(?,?,?,?,?,?)'
+            'INSERT INTO ai_messages(article_id, action, question, answer_md, citations) VALUES(?,?,?,?,?)'
           )
-          .run(articleId, null, task, question, answer, JSON.stringify(citations))
+          .run(articleId, task, question, answer, JSON.stringify(citations))
         finish()
         emit({ taskId, delta: '', done: true, messageId: Number(info.lastInsertRowid) })
         return { ok: true }
@@ -685,11 +696,16 @@ export function registerAiIpc(): void {
     state.controller.abort()
   })
 
-  // 某条文的历史问答（时间正序）
-  ipcMain.handle('ai:history', (_e, articleId: number): AiMessageRow[] => {
-    const rows = getDb()
-      .prepare('SELECT * FROM ai_messages WHERE article_id=? ORDER BY id')
-      .all(Number(articleId)) as unknown as DbRow[]
+  // 历史问答（时间正序）：articleId=null → 全局时间线（通用问答面板用）；否则该条文的问答
+  ipcMain.handle('ai:history', (_e, articleId: number | null): AiMessageRow[] => {
+    const rows =
+      articleId == null
+        ? (getDb()
+            .prepare('SELECT * FROM ai_messages ORDER BY id')
+            .all() as unknown as DbRow[])
+        : (getDb()
+            .prepare('SELECT * FROM ai_messages WHERE article_id=? ORDER BY id')
+            .all(Number(articleId)) as unknown as DbRow[])
     return rows.map(toMessageRow)
   })
 

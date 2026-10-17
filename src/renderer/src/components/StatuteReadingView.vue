@@ -1,23 +1,29 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { buildHighlightTerms, highlightText } from '@shared/highlight'
 import { parseLocateQuery } from '@shared/locate'
 import { buildStatuteToc, type StatuteTocEntry, type StatuteTocLevel } from '@shared/statuteToc'
-import type { DocumentDetail } from '@shared/types'
+import type { AnnotationRow, DocumentDetail } from '@shared/types'
 
 /**
- * 法规全页阅读（doc_type='statute'，文档库入口专用）：
- * 连续正文 + 行内编/章/节标题（跳转锚点）+ 右侧目录栏点击跳转。
- * 纯阅读页：无批注无 AI（工作台能力留在专题/中栏单条视图）。
+ * 法规全页阅读（文档库/搜索直达统一落点）：
+ * 连续正文 + 行内编/章/节标题（跳转锚点）+ 右侧目录栏点击跳转 +
+ * 法条批注（选中→右键「添加批注」→浮窗→★常驻）+ 条文修正（✎）。
+ * AI 已解绑为全局通用问答（App 顶栏「AI 助手」抽屉），本页不再挂 AI 入口。
  */
 const props = defineProps<{
   doc: DocumentDetail
+  /** 搜索直达 / AI 引用跳转：定位到该 order_index 并高亮；不传则按阅读进度恢复 */
+  focusOrder?: number
 }>()
 
 const emit = defineEmits<{
-  /** 返回（App 恢复原 Tab） */
+  /** 返回（App 恢复原视图） */
   back: []
   error: [message: string]
+  notice: [message: string]
+  /** 条文修正保存后请求 App 重新拉取文档（content 变了，批注偏移已在主进程重定位） */
+  'doc-changed': []
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
@@ -65,10 +71,13 @@ watch(q, (v) => {
   popOpen.value = !!v
 })
 
-/** 点到搜索区之外 → 收起候选（同顶栏 onDocClickForMode 的外点模式） */
+/** 点到搜索区之外 → 收起候选；点到批注浮窗之外 → 浮窗落盘收起（外点自动保存语义） */
 function onDocClickForStatute(e: MouseEvent): void {
   const el = e.target as HTMLElement
   if (!el.closest('.sv-search')) popOpen.value = false
+  if (annoPop.open && !el.closest('.sv-anno-pop') && !el.closest('.sv-anno-star') && !el.closest('.sv-fix-btn')) {
+    void commitPop()
+  }
 }
 
 /** 点回输入框：查询还在就重新展开候选 */
@@ -137,37 +146,115 @@ const activeNo = computed(() => {
   return i < 0 ? 0 : i + 1
 })
 
-/** 全篇命中高亮：段落切成 [{text, hit}]，无查询时每段单节（DOM 与纯文本等价） */
+// ---------- 批注（锚定法条选区的永久眉批；★ 常驻标记） ----------
+
+/** 批注行 + 所属条文 order_index（listByDoc 返回） */
+type AnnoRow = AnnotationRow & { order_index: number }
+
+const annos = ref<AnnoRow[]>([])
+
+/** articleId → 批注列表（渲染分段用） */
+const annosByArticle = computed(() => {
+  const m = new Map<number, AnnoRow[]>()
+  for (const a of annos.value) {
+    const arr = m.get(a.article_id)
+    if (arr) arr.push(a)
+    else m.set(a.article_id, [a])
+  }
+  return m
+})
+
+/**
+ * 渲染行基址：与模板渲染同一套跳行规则（空行不渲染），
+ * 返回每个渲染段落（.sv-p）对应的 content 起始偏移——选区 DOM→content 偏移换算的地基。
+ */
+function lineBases(content: string): Array<{ base: number; len: number }> {
+  const out: Array<{ base: number; len: number }> = []
+  let pos = 0
+  for (const line of content.split('\n')) {
+    const base = pos
+    pos += line.length + 1 // +1 = 换行符
+    if (!line.trim()) continue
+    out.push({ base, len: line.length })
+  }
+  return out
+}
+
+/** 全篇渲染分段：搜索命中（胶囊）与批注选区（点线+★）叠加切分，无查询无批注时每段单节 */
 interface Seg {
   text: string
   hit?: boolean
+  anno?: number
+  /** 本段末尾要挂的 ★（批注结束边界落点；可能多个批注同点结束） */
+  annoEndIds?: number[]
 }
 const segsById = computed(() => {
+  // 依赖批注数据：批注增删改后分段重算（★/点线随之更新）
+  void annos.value
   const m = new Map<number, Seg[][]>()
   const s = q.value
   const re = s ? new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') : null
   for (const a of props.doc.articles) {
     const lines: Seg[][] = []
+    let pos = 0
     for (const line of a.content.split('\n')) {
+      const lineStart = pos
+      pos += line.length + 1
       if (!line.trim()) continue
-      if (!re) {
-        lines.push([{ text: line }])
-        continue
-      }
-      re.lastIndex = 0
-      const lineSegs: Seg[] = []
-      let last = 0
-      let mt: RegExpExecArray | null
-      while ((mt = re.exec(line)) !== null) {
-        if (mt[0].length === 0) {
-          re.lastIndex++
-          continue
+      // 行内搜索命中区间
+      const hitRanges: Array<[number, number]> = []
+      if (re) {
+        re.lastIndex = 0
+        let mt: RegExpExecArray | null
+        while ((mt = re.exec(line)) !== null) {
+          if (mt[0].length === 0) {
+            re.lastIndex++
+            continue
+          }
+          hitRanges.push([mt.index, mt.index + mt[0].length])
         }
-        if (mt.index > last) lineSegs.push({ text: line.slice(last, mt.index) })
-        lineSegs.push({ text: mt[0], hit: true })
-        last = mt.index + mt[0].length
       }
-      if (last < line.length) lineSegs.push({ text: line.slice(last) })
+      // 批注区间：content 绝对偏移 → 行内相对
+      const annoParts = (annosByArticle.value.get(a.id) ?? [])
+        .map((an) => ({
+          id: an.id,
+          from: Math.max(an.start_offset, lineStart) - lineStart,
+          to: Math.min(an.end_offset, lineStart + line.length) - lineStart,
+          endHere: an.end_offset > lineStart && an.end_offset <= lineStart + line.length
+        }))
+        .filter((r) => r.to > r.from || (r.endHere && r.to >= 0))
+      // 切点：行两端 + 命中边界 + 批注边界
+      const cuts = new Set<number>([0, line.length])
+      for (const [h0, h1] of hitRanges) {
+        cuts.add(h0)
+        cuts.add(h1)
+      }
+      for (const r of annoParts) {
+        cuts.add(Math.max(0, Math.min(r.from, line.length)))
+        cuts.add(Math.max(0, Math.min(r.to, line.length)))
+      }
+      const xs = [...cuts].sort((x, y) => x - y)
+      const lineSegs: Seg[] = []
+      for (let i = 0; i < xs.length - 1; i++) {
+        const from = xs[i]
+        const to = xs[i + 1]
+        if (to <= from) continue
+        const seg: Seg = { text: line.slice(from, to) }
+        if (hitRanges.some(([h0, h1]) => h0 < to && from < h1)) seg.hit = true
+        const an = annoParts.find((r) => r.from < to && from < r.to)
+        if (an) seg.anno = an.id
+        const ends = annoParts.filter((r) => r.endHere && r.to === to).map((r) => r.id)
+        if (ends.length) {
+          seg.annoEndIds = ends
+          if (seg.anno === undefined) seg.anno = ends[0] // ★ 前的零长度段也算批注本体（星标可点）
+        }
+        lineSegs.push(seg)
+      }
+      // 行首即结束边界（批注恰好在上一行末尾结束的换行边界）：首段挂 ★
+      const headEnds = annoParts.filter((r) => r.endHere && r.to === 0).map((r) => r.id)
+      if (headEnds.length && lineSegs.length) {
+        lineSegs[0].annoEndIds = [...(lineSegs[0].annoEndIds ?? []), ...headEnds]
+      }
       if (lineSegs.length) lines.push(lineSegs)
     }
     m.set(a.id, lines)
@@ -262,6 +349,244 @@ function jumpFromToc(e: StatuteTocEntry): void {
   flashTimer = setTimeout(() => (flashOrder.value = -1), 1800)
 }
 
+// ---------- 批注浮窗 / 条文修正浮窗（共用一个浮窗体） ----------
+
+/** 浮窗状态：anno = 批注（新建/查看编辑）；fix = 条文修正（锚整个 article.content） */
+const annoPop = reactive({
+  open: false,
+  mode: 'anno' as 'anno' | 'fix',
+  /** null = 新批注（尚未落库） */
+  id: null as number | null,
+  articleId: 0,
+  start: 0,
+  end: 0,
+  /** 打开时的原文（判断是否改动） */
+  origin: '',
+  draft: '',
+  time: '',
+  pos: { x: 0, y: 0 }
+})
+const annoPopEl = ref<HTMLTextAreaElement | null>(null)
+
+/** 把浮窗摆到锚点附近（视口内钳制） */
+function placePop(rect: { left: number; top: number; width: number; height: number }): void {
+  const W = 320
+  const H = 150
+  let x = rect.left
+  let y = rect.top - H - 8 // 默认在选区上方
+  if (y < 8) y = rect.bottom + 8 // 上方放不下 → 下方
+  x = Math.max(8, Math.min(x, window.innerWidth - W - 8))
+  y = Math.max(8, Math.min(y, window.innerHeight - H - 8))
+  annoPop.pos = { x, y }
+}
+
+/**
+ * DOM 选区 → content 字符偏移（同 .sv-article 内才算数）。
+ * ★（sup.sv-anno-star）不是正文文本，计数时跳过。
+ */
+function offsetInArticle(node: Node, off: number, article: { id: number; content: string }): number | null {
+  const el = scrollEl.value
+  if (!el) return null
+  const host = node instanceof Element ? node : node.parentElement
+  const p = host?.closest('.sv-p')
+  const articleEl = host?.closest('.sv-article')
+  if (!p || !articleEl) return null
+  if (Number(articleEl.getAttribute('data-article-id')) !== article.id) return null
+  const pIndex = Number(p.getAttribute('data-line'))
+  const base = lineBases(article.content)[pIndex]?.base
+  if (base === undefined) return null
+  let acc = 0
+  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      const par = n.parentElement
+      if (par && par.closest('.sv-anno-star')) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    }
+  })
+  let t: Node | null
+  while ((t = walker.nextNode())) {
+    if (t === node) return base + acc + off
+    acc += t.textContent?.length ?? 0
+  }
+  return null
+}
+
+/** 右键菜单「添加批注」：把当前选区变成新批注草稿并弹浮窗 */
+function tryAddFromSelection(): void {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+  const range = sel.getRangeAt(0)
+  const startEl = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement
+  const endEl = range.endContainer instanceof Element ? range.endContainer : range.endContainer.parentElement
+  const startArticleEl = startEl?.closest('.sv-article')
+  const endArticleEl = endEl?.closest('.sv-article')
+  if (!startArticleEl || startArticleEl !== endArticleEl) {
+    emit('notice', '批注请在同一法条内选择文字')
+    return
+  }
+  const order = Number(startArticleEl.getAttribute('data-order'))
+  const article = props.doc.articles.find((x) => x.order_index === order)
+  if (!article) return
+  const s = offsetInArticle(range.startContainer, range.startOffset, article)
+  const e = offsetInArticle(range.endContainer, range.endOffset, article)
+  if (s === null || e === null) return
+  const start = Math.min(s, e)
+  const end = Math.max(s, e)
+  if (end <= start) return
+  commitPop() // 上一个浮窗先落盘
+  annoPop.open = true
+  annoPop.mode = 'anno'
+  annoPop.id = null
+  annoPop.articleId = article.id
+  annoPop.start = start
+  annoPop.end = end
+  annoPop.origin = ''
+  annoPop.draft = ''
+  annoPop.time = ''
+  placePop(range.getBoundingClientRect())
+  void nextTick(() => annoPopEl.value?.focus())
+}
+
+/** 点 ★ / 点批注正文：打开已有批注 */
+function openAnnoById(id: number): void {
+  const an = annos.value.find((x) => x.id === id)
+  if (!an) return
+  commitPop()
+  annoPop.open = true
+  annoPop.mode = 'anno'
+  annoPop.id = an.id
+  annoPop.articleId = an.article_id
+  annoPop.start = an.start_offset
+  annoPop.end = an.end_offset
+  annoPop.origin = an.content_md
+  annoPop.draft = an.content_md
+  annoPop.time = an.updated_at.slice(0, 16)
+  const anchor = scrollEl.value?.querySelector<HTMLElement>(`.sv-anno[data-anno="${id}"]`)
+  placePop(anchor?.getBoundingClientRect() ?? { left: 60, top: 120, width: 0, height: 40 })
+  void nextTick(() => annoPopEl.value?.focus())
+}
+
+/** 条文修正（✎）：浮窗里编辑整条 content，保存走主进程并重建索引/批注偏移 */
+function openFixPop(a: { id: number; content: string }): void {
+  commitPop()
+  annoPop.open = true
+  annoPop.mode = 'fix'
+  annoPop.id = null
+  annoPop.articleId = a.id
+  annoPop.start = 0
+  annoPop.end = 0
+  annoPop.origin = a.content
+  annoPop.draft = a.content
+  annoPop.time = ''
+  const articleEl = scrollEl.value?.querySelector<HTMLElement>(`[data-article-id="${a.id}"]`)
+  const btn = articleEl?.querySelector<HTMLElement>('.sv-fix-btn')
+  placePop(btn?.getBoundingClientRect() ?? { left: 60, top: 120, width: 0, height: 40 })
+  void nextTick(() => {
+    annoPopEl.value?.focus()
+    annoPopEl.value?.setSelectionRange(0, 0)
+    annoPopEl.value?.scrollTo({ top: 0 })
+  })
+}
+
+function closeAnnoPop(): void {
+  annoPop.open = false
+}
+
+/**
+ * 浮窗落盘（外点/Esc/打开新浮窗都走这里）：
+ * 新批注空内容=丢弃；已有批注清空=删除；修正空内容=取消；其余保存。
+ */
+async function commitPop(): Promise<void> {
+  if (!annoPop.open) return
+  const draft = annoPop.draft.trim()
+  try {
+    if (annoPop.mode === 'fix') {
+      if (draft && draft !== annoPop.origin) {
+        await window.lexbench.library.updateArticle(annoPop.articleId, draft)
+        emit('doc-changed')
+      }
+    } else if (annoPop.id === null) {
+      if (draft && annoPop.end > annoPop.start) {
+        const row = await window.lexbench.annotations.create({
+          articleId: annoPop.articleId,
+          quote: props.doc.articles.find((x) => x.id === annoPop.articleId)?.content.slice(annoPop.start, annoPop.end) ?? '',
+          startOffset: annoPop.start,
+          endOffset: annoPop.end,
+          contentMd: draft
+        })
+        const order = props.doc.articles.find((x) => x.id === row.article_id)?.order_index ?? 0
+        annos.value.push({ ...row, order_index: order })
+      }
+    } else if (draft === '') {
+      await window.lexbench.annotations.delete(annoPop.id)
+      annos.value = annos.value.filter((x) => x.id !== annoPop.id)
+    } else if (draft !== annoPop.origin) {
+      await window.lexbench.annotations.update(annoPop.id, draft)
+      const an = annos.value.find((x) => x.id === annoPop.id)
+      if (an) {
+        an.content_md = draft
+        an.updated_at = new Date().toISOString().slice(0, 19).replace('T', ' ')
+      }
+    }
+  } catch (err) {
+    emit('error', errText(err))
+  }
+  closeAnnoPop()
+}
+
+async function deleteFromPop(): Promise<void> {
+  if (annoPop.mode !== 'anno' || annoPop.id === null) return
+  try {
+    await window.lexbench.annotations.delete(annoPop.id)
+    annos.value = annos.value.filter((x) => x.id !== annoPop.id)
+  } catch (err) {
+    emit('error', errText(err))
+  }
+  closeAnnoPop()
+}
+
+async function loadAnnos(): Promise<void> {
+  try {
+    annos.value = await window.lexbench.annotations.listByDoc(props.doc.id)
+  } catch (err) {
+    emit('error', errText(err))
+  }
+}
+
+watch(() => props.doc.id, () => void loadAnnos())
+
+// ---------- 视口定位（进度 / 搜索直达共用） ----------
+
+/** 视口顶部可见的首个 [data-order]（阅读进度用） */
+function topVisibleOrder(): number | null {
+  const el = scrollEl.value
+  if (!el) return null
+  const box = el.getBoundingClientRect()
+  for (const m of el.querySelectorAll<HTMLElement>('[data-order]')) {
+    if (m.getBoundingClientRect().bottom >= box.top + 64) return Number(m.dataset.order)
+  }
+  const marks = el.querySelectorAll<HTMLElement>('[data-order]')
+  return marks.length ? Number(marks[marks.length - 1].dataset.order) : null
+}
+
+/** 跳到目标条并短暂高亮（focusOrder 初次打开与后续变化共用） */
+function jumpToFocus(order: number): void {
+  lastSaved = order
+  scrollTo(order, undefined, 'center')
+  flashOrder.value = order
+  clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => (flashOrder.value = -1), 1800)
+}
+
+// focusOrder 变化（同文档内从全局 AI 点引用再次跳转）：组件不重挂，靠 watch 二次定位
+watch(
+  () => props.focusOrder,
+  (v) => {
+    if (v === undefined || v < 0) return
+    void nextTick(() => jumpToFocus(v))
+  }
+)
+
 // ---------- 阅读进度 ----------
 
 let progTimer: ReturnType<typeof setTimeout> | undefined
@@ -279,21 +604,8 @@ function onScroll(): void {
 
 /** 找视口顶部可见的 [data-order] 存为进度 */
 async function saveProgressNow(): Promise<void> {
-  const el = scrollEl.value
-  if (!el) return
-  const box = el.getBoundingClientRect()
-  const marks = el.querySelectorAll<HTMLElement>('[data-order]')
-  let found = false
-  let order = 0
-  for (const m of marks) {
-    if (m.getBoundingClientRect().bottom >= box.top + 64) {
-      order = Number(m.dataset.order)
-      found = true
-      break
-    }
-  }
-  if (!found && marks.length) order = Number(marks[marks.length - 1].dataset.order)
-  if (order === lastSaved) return
+  const order = topVisibleOrder()
+  if (order === null || order === lastSaved) return
   lastSaved = order
   // 注意语义：法规进度的 paraIndex = order_index（书籍 = chunk.seq）；
   // 键按 docId 隔离，一本书/一部法只有一种类型，两义互不冲突
@@ -306,10 +618,22 @@ async function saveProgressNow(): Promise<void> {
 
 // ---------- 生命周期 ----------
 
+/** 右键菜单「添加批注」通知的退订 */
+let unsubAddRequest: (() => void) | null = null
+
 onMounted(async () => {
   document.addEventListener('click', onDocClickForStatute)
+  // 批注上下文：本页在场时主进程右键菜单才追加「添加批注」
+  window.lexbench.annotations.setActive(true)
+  unsubAddRequest = window.lexbench.annotations.onAddRequest(() => tryAddFromSelection())
+  void loadAnnos()
   await nextTick()
   try {
+    if (props.focusOrder !== undefined && props.focusOrder >= 0 && props.doc.articles.length) {
+      // 搜索直达 / AI 引用：定位到命中条并高亮（不走进度恢复）
+      jumpToFocus(props.focusOrder)
+      return
+    }
     const prog = await window.lexbench.reading.getProgress(props.doc.id)
     if (prog && prog.paraIndex >= 0 && props.doc.articles.length) {
       lastSaved = prog.paraIndex
@@ -325,6 +649,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClickForStatute)
+  window.lexbench.annotations.setActive(false)
+  unsubAddRequest?.()
+  unsubAddRequest = null
   clearTimeout(progTimer)
   clearTimeout(backHintTimer)
   clearTimeout(flashTimer)
@@ -410,7 +737,15 @@ onBeforeUnmount(() => {
               <component
                 v-for="e in headingsByOrder.get(a.order_index) ?? []"
                 :key="e.level"
-                :is="e.level === 'branch' ? 'h2' : e.level === 'chapter' ? 'h3' : 'h4'"
+                :is="
+                  e.level === 'branch'
+                    ? 'h2'
+                    : e.level === 'subbranch'
+                      ? 'h3'
+                      : e.level === 'chapter'
+                        ? 'h4'
+                        : 'h5'
+                "
                 class="sv-h"
                 :data-level="e.level"
                 :data-order="e.orderIndex"
@@ -419,13 +754,33 @@ onBeforeUnmount(() => {
               <section
                 class="sv-article"
                 :data-order="a.order_index"
+                :data-article-id="a.id"
                 :class="{ 'sv-flash': flashOrder === a.order_index }"
               >
-                <span class="sv-label">{{ a.article_label }}</span>
-                <p v-for="(segs, i) in segsById.get(a.id) ?? []" :key="i" class="sv-p">
+                <div class="sv-label-row">
+                  <span class="sv-label">{{ a.article_label }}</span>
+                  <button
+                    class="sv-fix-btn"
+                    title="修正本条条文"
+                    @click.stop="openFixPop(a)"
+                  >
+                    ✎
+                  </button>
+                </div>
+                <p v-for="(segs, i) in segsById.get(a.id) ?? []" :key="i" class="sv-p" :data-line="i">
                   <template v-for="(seg, j) in segs" :key="j">
-                    <mark v-if="seg.hit" class="sv-hit">{{ seg.text }}</mark>
+                    <mark v-if="seg.hit && seg.anno !== undefined" class="sv-hit sv-anno" :data-anno="seg.anno">{{ seg.text }}</mark>
+                    <mark v-else-if="seg.hit" class="sv-hit">{{ seg.text }}</mark>
+                    <span v-else-if="seg.anno !== undefined" class="sv-anno" :data-anno="seg.anno">{{ seg.text }}</span>
                     <template v-else>{{ seg.text }}</template>
+                    <sup
+                      v-for="aid in seg.annoEndIds ?? []"
+                      :key="'an' + aid"
+                      class="sv-anno-star"
+                      :data-anno-star="aid"
+                      title="查看批注"
+                      @click.stop="openAnnoById(aid)"
+                    >★</sup>
                   </template>
                 </p>
               </section>
@@ -455,6 +810,30 @@ onBeforeUnmount(() => {
           </div>
         </aside>
       </Transition>
+
+    </div>
+
+    <!-- 批注/修正浮窗（贴锚点定位；外点/Esc 落盘收起） -->
+    <div
+      v-if="annoPop.open"
+      class="sv-anno-pop"
+      :style="{ left: annoPop.pos.x + 'px', top: annoPop.pos.y + 'px' }"
+      @click.stop
+    >
+      <textarea
+        ref="annoPopEl"
+        v-model="annoPop.draft"
+        class="sv-anno-input"
+        :placeholder="annoPop.mode === 'fix' ? '修正条文内容（清空并点外部 = 取消）' : '写批注（清空并点外部 = 删除）'"
+        @keydown.esc.stop.prevent="commitPop"
+      ></textarea>
+      <div class="sv-anno-pop-foot">
+        <span class="sv-anno-time">{{ annoPop.time }}</span>
+        <button v-if="annoPop.mode === 'anno' && annoPop.id !== null" class="sv-anno-del" @click="deleteFromPop">
+          删除
+        </button>
+        <button class="sv-top-btn sv-anno-close" @click="commitPop">✕</button>
+      </div>
     </div>
   </div>
 </template>
@@ -775,7 +1154,7 @@ onBeforeUnmount(() => {
   padding: 46px 40px 160px;
 }
 
-/* ---------- 行内标题：编大章中节小，编/章居中 ---------- */
+/* ---------- 行内标题：编大分编次之章节小，编/分编/章居中 ---------- */
 .sv-h {
   font-family: var(--lb-serif);
   color: var(--lb-text);
@@ -787,6 +1166,12 @@ onBeforeUnmount(() => {
   font-size: 22px;
   font-weight: 700;
   margin: 52px 0 18px;
+}
+
+.sv-h-subbranch {
+  font-size: 19px;
+  font-weight: 600;
+  margin: 44px 0 16px;
 }
 
 .sv-h-chapter {
@@ -804,6 +1189,7 @@ onBeforeUnmount(() => {
 }
 
 .sv-col > .sv-h-branch:first-child,
+.sv-col > .sv-h-subbranch:first-child,
 .sv-col > .sv-h-chapter:first-child {
   margin-top: 0;
 }
@@ -830,16 +1216,44 @@ onBeforeUnmount(() => {
   border-radius: 4px;
 }
 
+.sv-label-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 18px 0 4px;
+}
+
 .sv-label {
-  display: block;
   font-family: var(--lb-serif);
   font-size: 16px;
   font-weight: 700;
   color: var(--lb-text);
-  margin: 18px 0 4px;
 }
 
-.sv-article:first-child .sv-label {
+/* 条文修正入口：悬停条文才显露（平时不打扰阅读） */
+.sv-fix-btn {
+  border: none;
+  background: transparent;
+  color: var(--lb-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.sv-article:hover .sv-fix-btn {
+  opacity: 0.75;
+}
+
+.sv-fix-btn:hover {
+  opacity: 1;
+  color: var(--lb-accent);
+  background: var(--lb-accent-soft);
+}
+
+.sv-article:first-child .sv-label-row {
   margin-top: 0;
 }
 
@@ -932,12 +1346,117 @@ onBeforeUnmount(() => {
   margin-top: 6px;
 }
 
+.sv-toc-item[data-level='subbranch'] {
+  padding-left: 20px;
+  font-weight: 500;
+}
+
+/* ---------- 批注：点线下划线 + ★（accent 家族，与搜索胶囊区分） ---------- */
+.sv-scroll .sv-anno {
+  background: rgba(0, 113, 227, 0.05);
+  border-radius: 2px;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--lb-accent-2);
+  text-underline-offset: 3px;
+  transition: background 0.12s ease;
+}
+
+.sv-scroll .sv-anno:hover {
+  background: rgba(0, 113, 227, 0.1);
+}
+
+.sv-anno-star {
+  color: var(--lb-accent);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 1px;
+  border-radius: 3px;
+  transition: background 0.12s ease;
+}
+
+.sv-anno-star:hover {
+  background: var(--lb-accent-soft);
+}
+
+/* ---------- 批注/修正浮窗（弹层配方同 .search-pop：radius-l + 同款投影） ---------- */
+.sv-anno-pop {
+  position: fixed;
+  z-index: 420;
+  width: 320px;
+  padding: 10px;
+  background: var(--lb-panel);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-l);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+}
+
+.sv-anno-input {
+  width: 100%;
+  min-height: 64px;
+  max-height: 220px;
+  resize: vertical;
+  padding: 6px 9px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-s);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--lb-text);
+  outline: none;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+
+.sv-anno-input:focus {
+  border-color: rgba(0, 113, 227, 0.55);
+  box-shadow: 0 2px 10px rgba(0, 113, 227, 0.16);
+}
+
+.sv-anno-input::placeholder {
+  color: var(--lb-muted);
+}
+
+.sv-anno-pop-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sv-anno-time {
+  flex: 1;
+  font-size: 12px;
+  color: var(--lb-muted);
+}
+
+.sv-anno-del {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-s);
+  background: transparent;
+  font-size: 12px;
+  color: var(--lb-warn-fg);
+}
+
+.sv-anno-del:hover {
+  border-color: var(--lb-warn-fg);
+}
+
+.sv-anno-close {
+  height: 26px;
+  padding: 0 10px;
+}
+
+/* （AI 已解绑为 App 全局抽屉——样式随组件迁去 App.vue） */
+
 .sv-toc-item[data-level='chapter'] {
-  padding-left: 24px;
+  padding-left: 34px;
 }
 
 .sv-toc-item[data-level='section'] {
-  padding-left: 38px;
+  padding-left: 48px;
   font-size: 12.5px;
   color: var(--lb-muted);
 }

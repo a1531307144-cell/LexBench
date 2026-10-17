@@ -183,7 +183,7 @@ function chunkParagraphs(paragraphs: string[], target = CHUNK_TARGET): string[] 
   return chunks
 }
 
-/** 写入法条行 + articles_fts（content = 标题+条标+条号+编章节+正文 统一切词，见 @shared/ftsContent），
+/** 写入法条行 + articles_fts（content = 标题+条标+条号+编分章节+正文 统一切词，见 @shared/ftsContent），
  *  并回填文档 article_count。不管理事务，由调用方包裹 */
 function indexArticles(
   db: DatabaseSync,
@@ -192,8 +192,8 @@ function indexArticles(
   title: string
 ): void {
   const insertArticle = db.prepare(
-    'INSERT INTO articles(document_id, article_label, article_no, branch, chapter, section, content, order_index)' +
-      ' VALUES(?,?,?,?,?,?,?,?)'
+    'INSERT INTO articles(document_id, article_label, article_no, branch, subbranch, chapter, section, content, order_index)' +
+      ' VALUES(?,?,?,?,?,?,?,?,?)'
   )
   const insertFts = db.prepare('INSERT INTO articles_fts(article_id, content) VALUES(?,?)')
   for (const a of articles) {
@@ -202,6 +202,7 @@ function indexArticles(
       a.label,
       a.no,
       a.branch,
+      a.subbranch,
       a.chapter,
       a.section,
       a.content,
@@ -214,6 +215,7 @@ function indexArticles(
         label: a.label,
         articleNo: a.no,
         branch: a.branch,
+        subbranch: a.subbranch,
         chapter: a.chapter,
         section: a.section,
         content: a.content
@@ -593,9 +595,23 @@ export function registerLibraryIpc(): void {
     withTransaction(db, () => {
       const info = db.prepare('UPDATE articles SET content=? WHERE id=?').run(content, id)
       if (Number(info.changes) === 0) throw new Error('条文不存在')
+      // 修正会挪动正文偏移：批注按 quote 原文重新定位；找不到原文的钳到文末（不静默删除，留给用户处理）
+      const annos = db
+        .prepare('SELECT id, quote, start_offset FROM statute_annotations WHERE article_id=?')
+        .all(id) as unknown as Array<{ id: number; quote: string; start_offset: number }>
+      const reloc = db.prepare('UPDATE statute_annotations SET start_offset=?, end_offset=? WHERE id=?')
+      for (const an of annos) {
+        const idx = content.indexOf(an.quote)
+        if (idx >= 0) {
+          reloc.run(idx, idx + an.quote.length, an.id)
+        } else {
+          const s = Math.min(an.start_offset, content.length)
+          reloc.run(s, Math.min(s + an.quote.length, content.length), an.id)
+        }
+      }
       const row = db
         .prepare(
-          `SELECT a.article_label, a.article_no, a.branch, a.chapter, a.section, d.title
+          `SELECT a.article_label, a.article_no, a.branch, a.subbranch, a.chapter, a.section, d.title
            FROM articles a JOIN documents d ON d.id = a.document_id
            WHERE a.id = ?`
         )
@@ -604,6 +620,7 @@ export function registerLibraryIpc(): void {
             article_label: string
             article_no: number
             branch: string
+            subbranch: string
             chapter: string
             section: string
             title: string
@@ -618,6 +635,7 @@ export function registerLibraryIpc(): void {
           label: row.article_label,
           articleNo: row.article_no,
           branch: row.branch,
+          subbranch: row.subbranch,
           chapter: row.chapter,
           section: row.section,
           content

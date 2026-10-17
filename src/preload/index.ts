@@ -1,20 +1,18 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
-  AddItemResult,
   AiProbePayload,
   AiProfilePatch,
   AiProgress,
   AiRunRequest,
   BackupImportOutcome,
   BookNoteInput,
-  ItemMoveDirection,
-  TopicPatch,
   UpdateCheckInfo,
   UpdateStatus
 } from '../shared/ipc'
 import type {
   AiMessageRow,
   AiProfileRow,
+  AnnotationRow,
   ArticleDetail,
   BookNoteRow,
   DocGroupRow,
@@ -26,12 +24,9 @@ import type {
   ExportResult,
   ImportResultItem,
   ImportTypeChoice,
-  NoteRow,
   ReadingProgress,
   SearchMode,
-  SearchOutcome,
-  TopicDetail,
-  TopicRow
+  SearchOutcome
 } from '../shared/types'
 
 /**
@@ -120,8 +115,8 @@ const api = {
         ipcRenderer.removeListener('ai:progress', handler)
       }
     },
-    /** 某条文的历史问答（升序） */
-    history: (articleId: number): Promise<AiMessageRow[]> => invoke('ai:history', articleId),
+    /** 历史问答（升序）：articleId=null → 全局时间线（通用问答面板）；否则该条文的问答 */
+    history: (articleId: number | null): Promise<AiMessageRow[]> => invoke('ai:history', articleId),
     deleteMessage: (id: number): Promise<void> => invoke('ai:deleteMessage', id)
   },
   groups: {
@@ -136,36 +131,54 @@ const api = {
     /** 删除文件夹（其中文档移入「未分类」，不随之删除） */
     remove: (id: number): Promise<void> => invoke('groups:remove', id)
   },
-  workspace: {
-    listTopics: (): Promise<TopicRow[]> => invoke('workspace:listTopics'),
-    createTopic: (name: string, description?: string): Promise<TopicRow> =>
-      invoke('workspace:createTopic', name, description),
-    updateTopic: (id: number, patch: TopicPatch): Promise<void> =>
-      invoke('workspace:updateTopic', id, patch),
-    deleteTopic: (id: number): Promise<void> => invoke('workspace:deleteTopic', id),
-    getTopic: (id: number): Promise<TopicDetail> => invoke('workspace:getTopic', id),
-    /** 收藏法条进专题；重复收藏幂等返回 duplicate */
-    addTopicItem: (topicId: number, articleId: number): Promise<AddItemResult> =>
-      invoke('workspace:addTopicItem', topicId, articleId),
-    /** 移出法条：连同该条下的笔记一并删除，removedNotes 为删掉的笔记数 */
-    removeTopicItem: (topicId: number, articleId: number): Promise<{ removedNotes: number }> =>
-      invoke('workspace:removeTopicItem', topicId, articleId),
-    /** 专题内收藏条目上移/下移（重排 order_index） */
-    moveTopicItem: (topicId: number, articleId: number, direction: ItemMoveDirection): Promise<void> =>
-      invoke('workspace:moveTopicItem', topicId, articleId, direction),
-    createNote: (topicId: number, articleId: number | null, contentMd: string): Promise<NoteRow> =>
-      invoke('workspace:createNote', topicId, articleId, contentMd),
-    updateNote: (noteId: number, contentMd: string): Promise<void> =>
-      invoke('workspace:updateNote', noteId, contentMd),
-    deleteNote: (noteId: number): Promise<void> => invoke('workspace:deleteNote', noteId)
+  aiWindow: {
+    /** 顶栏开关：开 / 切走独立 AI 窗（已开则隐藏、隐藏则显示、未开则新建） */
+    toggle: (): Promise<void> => invoke('aiWindow:toggle'),
+    /** AI 窗内调用：点引用 → 请主窗口打开对应法条（AI 窗自己不动，保持独立） */
+    openArticle: (articleId: number): Promise<void> => invoke('aiWindow:openArticle', articleId),
+    /** 主窗口侧订阅：AI 窗显示/隐藏/关闭（顶栏按钮态同步）；返回退订函数 */
+    onVisibility: (cb: (visible: boolean) => void): (() => void) => {
+      const handler = (_e: unknown, v: boolean): void => cb(v)
+      ipcRenderer.on('aiwin:visibility', handler)
+      return () => {
+        ipcRenderer.removeListener('aiwin:visibility', handler)
+      }
+    },
+    /** 主窗口侧订阅：AI 窗内点引用的转发；返回退订函数 */
+    onOpenArticle: (cb: (articleId: number) => void): (() => void) => {
+      const handler = (_e: unknown, id: number): void => cb(id)
+      ipcRenderer.on('aiwin:openArticle', handler)
+      return () => {
+        ipcRenderer.removeListener('aiwin:openArticle', handler)
+      }
+    }
+  },
+  annotations: {
+    /** 按文档列出全部批注（含 order_index，打开阅读页一次拉全） */
+    listByDoc: (documentId: number): Promise<Array<AnnotationRow & { order_index: number }>> =>
+      invoke('annotations:listByDoc', documentId),
+    create: (payload: {
+      articleId: number
+      quote: string
+      startOffset: number
+      endOffset: number
+      contentMd: string
+    }): Promise<AnnotationRow> => invoke('annotations:create', payload),
+    update: (id: number, contentMd: string): Promise<void> =>
+      invoke('annotations:update', id, contentMd),
+    delete: (id: number): Promise<void> => invoke('annotations:delete', id),
+    /** 告知主进程当前是否处于可批注阅读页（右键菜单据此追加「添加批注」） */
+    setActive: (active: boolean): void => ipcRenderer.send('annotations:setActive', active),
+    /** 主进程菜单「添加批注」点击通知；返回退订函数 */
+    onAddRequest: (cb: () => void): (() => void) => {
+      const handler = (): void => cb()
+      ipcRenderer.on('annotations:addRequest', handler)
+      return () => {
+        ipcRenderer.removeListener('annotations:addRequest', handler)
+      }
+    }
   },
   export: {
-    /** 弹出保存对话框 → 生成报告 → 写盘；返回保存路径（取消则 canceled:true） */
-    saveTopicReport: (topicId: number, format: ExportFormat): Promise<ExportResult> =>
-      invoke('export:saveTopicReport', topicId, format),
-    /** 仅开发模式存在：跳过对话框直接写到指定路径（自测用） */
-    __testSaveTopicReport: (topicId: number, format: ExportFormat, outPath: string): Promise<ExportResult> =>
-      invoke('export:__testSaveTopicReport', topicId, format, outPath),
     /** 读书笔记导出：引用 + 批注成对列出 */
     saveBookNotes: (documentId: number, format: ExportFormat): Promise<ExportResult> =>
       invoke('export:saveBookNotes', documentId, format),

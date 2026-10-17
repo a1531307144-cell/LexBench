@@ -40,6 +40,8 @@ export interface ArticleRow {
   article_label: string
   article_no: number
   branch: string
+  /** 分编（编与章之间一层，如「第一分编　通则」；无法典分编的法规为空串） */
+  subbranch: string
   chapter: string
   section: string
   content: string
@@ -95,6 +97,7 @@ export interface SearchHit {
   snippet?: string
   content?: string
   branch?: string
+  subbranch?: string
   chapter?: string
   section?: string
   order_index?: number
@@ -115,51 +118,8 @@ export interface SearchOutcome {
 }
 
 // ---------- 研究工作台（阶段2） ----------
-
-export interface TopicRow {
-  id: number
-  name: string
-  description: string
-  created_at: string
-  updated_at: string
-  item_count: number
-  note_count: number
-}
-
-/** 专题详情里的收藏条目：条目行 + JOIN 出的法条/文档展示字段 */
-export interface TopicItemRow {
-  id: number
-  topic_id: number
-  article_id: number
-  order_index: number
-  added_at: string
-  article_label: string
-  title: string
-  category: string
-  content: string
-  /** 该条法条在本专题下的笔记条数（专题列表上显示「N 记」） */
-  note_count: number
-}
-
-export interface NoteRow {
-  id: number
-  topic_id: number
-  /** 可空：不关联具体法条 = 专题级笔记 */
-  article_id: number | null
-  content_md: string
-  created_at: string
-  updated_at: string
-  /** LEFT JOIN 出的关联条文标签，供卡片展示（无关联时为 null） */
-  article_label: string | null
-}
-
-export interface TopicDetail {
-  id: number
-  name: string
-  description: string
-  items: TopicItemRow[]
-  notes: NoteRow[]
-}
+// 专题板块已整链路退场（2026-10，数据随迁移 015 删除）；专题类型一并移除，
+// 现存导出仅剩读书笔记（export:saveBookNotes）。
 
 export type ExportFormat = 'md' | 'docx'
 
@@ -167,6 +127,23 @@ export interface ExportResult {
   canceled: boolean
   /** 保存成功后的完整路径（canceled 时省略） */
   path?: string
+}
+
+// ---------- 法条批注（阅读板块阶段1） ----------
+
+/**
+ * 法条批注：锚定到「法条内选区」的永久眉批。
+ * 锚点 = article_id + content 内字符起止偏移 + 原文引用（quote 渲染时校验/兜底高亮）。
+ */
+export interface AnnotationRow {
+  id: number
+  article_id: number
+  quote: string
+  start_offset: number
+  end_offset: number
+  content_md: string
+  created_at: string
+  updated_at: string
 }
 
 // ---------- 阅读模式（阶段2.5，并入 v0.4.0） ----------
@@ -231,11 +208,10 @@ export interface AiCitation {
   citeText: string
 }
 
-/** AI 问答归档（按条文/专题分组） */
+/** AI 问答归档（通用问答 article_id=NULL 归入全局时间线；带法条的问答按条归档） */
 export interface AiMessageRow {
   id: number
   article_id: number | null
-  topic_id: number | null
   action: AiTask
   question: string
   answer_md: string

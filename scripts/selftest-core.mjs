@@ -10,7 +10,7 @@ function getJSON(url) {
 }
 
 const pages = await getJSON('http://127.0.0.1:9222/json')
-const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url))
+const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url) && !p.url.includes('aiWindow'))
 if (!page) {
   console.log('FAIL: 未找到应用页面（dev 未启动？）')
   process.exit(1)
@@ -44,8 +44,12 @@ ws.onmessage = (ev) => {
 await new Promise((r) => ws.onopen = r)
 await send('Runtime.enable', {})
 
+// 超时探针：锁屏/窗口挂起时 CDP 可能永不应答——15s 无响应即转为 __error 暴露问题，不再干等
 const evalJs = async (expression) => {
-  const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+  const r = await Promise.race([
+    send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('EVALJS_TIMEOUT(15s)：渲染/连接无响应（锁屏或窗口挂起？）')), 15000))
+  ]).catch((e) => ({ exceptionDetails: { exception: { description: String(e) } } }))
   if (r.exceptionDetails) return { __error: r.exceptionDetails.exception?.description || 'eval error' }
   return r.result.value
 }
@@ -88,6 +92,8 @@ writeFileSync(
     '第二章　离婚登记',
     pad('第一千零七十八条　婚姻登记机关查明双方确实是自愿离婚，并已经对子女抚养、财产以及债务处理等事项协商一致的，予以登记，发给离婚证。'),
     pad('第一千零七十九条　夫妻一方要求离婚的，可以由有关组织进行调解或者直接向人民法院提起离婚诉讼。'),
+    // 分编层级：法典在编与章之间分「第X分编」——旧版把这行吞进上一条正文且目录丢层（回归用）
+    '第一分编　附　则',
     '第三章　附则',
     pad('第八条　本自测法规的附则条目，用于验证多章目录结构与跳转。'),
     pad('第九条　本自测法规的附则第二条，凑足三章以覆盖目录的层级渲染。')
@@ -265,13 +271,11 @@ for (let i = 0; i < 20; i++) {
 }
 await send('Runtime.enable', {}) // 重载后重开错误收集
 
-// 切到文档库并复位「全部」过滤（防同会话里先前跑过的套件改过组件内过滤状态）
+// 专题退场后首页即文档库（无分段控件）；复位「全部」过滤（防同会话里先前跑过的套件改过组件内过滤状态）
 console.log('8-tab:', await evalJs(`(() => {
-  const tab = [...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库'))
-  tab?.click()
   const all = [...document.querySelectorAll('.filter-chip')].find((c) => c.textContent.includes('全部'))
   all?.click()
-  return tab ? 'ok' : 'no-tab'
+  return 'ok'
 })()`))
 
 // 点法规卡片 → 轮询全页阅读出现
@@ -298,13 +302,37 @@ const headingsOk =
   hTexts.length >= 3 &&
   ['第一章', '第二章', '第三章'].every((t) => hTexts.some((x) => String(x).includes(t)))
 const tocInfo = (await evalJs(
-  `[...document.querySelectorAll('.sv-toc-item')].map((e) => ({ t: e.textContent.trim(), o: Number(e.dataset.order) }))`
+  `[...document.querySelectorAll('.sv-toc-item')].map((e) => ({ t: e.textContent.trim(), o: Number(e.dataset.order), lv: e.dataset.level }))`
 )) || []
 const tocOk = Array.isArray(tocInfo) && tocInfo.length >= 3 && tocInfo[0].t.includes('第一章')
 console.log('=== 8b. 行内标题/目录 ===', headingsOk && tocOk ? 'OK' : 'FAIL', JSON.stringify(hTexts), JSON.stringify(tocInfo.map((x) => x.t)))
 
-// 目录点击跳转（几何断言：末章标题顶到滚动区上方留 44px；offsetTop>600 证明语料垫高生效）
+// 8b2. 分编层级（法典分篇）：目录有该层且缩进在章之上、行内有标题、正文不被标题行污染
+const subInfo = (await evalJs(`(() => {
+  const subToc = [...document.querySelectorAll('.sv-toc-item')].find((e) => e.dataset.level === 'subbranch')
+  const chToc = [...document.querySelectorAll('.sv-toc-item')].find((e) => e.dataset.level === 'chapter')
+  const pad = (el) => (el ? parseFloat(getComputedStyle(el).paddingLeft) : NaN)
+  const polluted = [...document.querySelectorAll('.sv-article')].filter((a) => a.textContent.includes('分编'))
+  return {
+    tocText: subToc ? subToc.textContent.trim() : '',
+    hasInline: !!document.querySelector('.sv-h[data-level="subbranch"]'),
+    padSub: pad(subToc),
+    padCh: pad(chToc),
+    polluted: polluted.length
+  }
+})()`)) || {}
+const subOk =
+  subInfo && !subInfo.__error &&
+  String(subInfo.tocText).includes('第一分编') &&
+  subInfo.hasInline === true &&
+  subInfo.padSub < subInfo.padCh &&
+  subInfo.polluted === 0
+console.log('=== 8b2. 分编层级（目录/行内/缩进/正文不污染） ===', subOk ? 'OK' : 'FAIL', JSON.stringify(subInfo))
+
+// 目录点击跳转（几何断言：末项标题顶到滚动区上方留 44px；offsetTop>600 证明语料垫高生效）
+// 锚点必须按目录末项的层级取——同 order 可能挂多个标题（分编+章），组件跳的是层级匹配的那个
 const jumpOrder = tocOk ? tocInfo[tocInfo.length - 1].o : -1
+const jumpLevel = tocOk ? tocInfo[tocInfo.length - 1].lv : ''
 if (jumpOrder >= 0) {
   await evalJs(`(() => {
     const items = document.querySelectorAll('.sv-toc-item')
@@ -320,7 +348,7 @@ if (jumpOrder >= 0) {
     if (i > 0) await new Promise((r) => setTimeout(r, 300))
     jumpGeo = await evalJs(`(() => {
         const sc = document.querySelector('.sv-scroll')
-        const h = document.querySelector('.sv-h[data-order="${jumpOrder}"]')
+        const h = document.querySelector('.sv-h[data-level="${jumpLevel}"][data-order="${jumpOrder}"]') || document.querySelector('.sv-h[data-order="${jumpOrder}"]')
         if (!sc || !h) return null
         return { top: sc.scrollTop, expected: Math.max(0, h.offsetTop - 44), off: h.offsetTop }
       })()`)
@@ -357,9 +385,7 @@ await new Promise((r) => setTimeout(r, 400))
 const backOk =
   (await evalJs(`!document.querySelector('.sv')`)) === true &&
   (await evalJs(`!!document.querySelector('.doc-card')`)) === true &&
-  (await evalJs(
-    `[...document.querySelectorAll('.tab')].some((b) => b.textContent.includes('文档库') && b.getAttribute('aria-selected') === 'true')`
-  )) === true
+  (await evalJs(`!document.querySelector('.tab')`)) === true // 分段控件已随专题退场
 console.log('=== 8e. 返回文档库 ===', backOk ? 'OK' : 'FAIL')
 
 // 重开 → 恢复上次阅读位置 + 「已回到上次阅读位置」提示
@@ -555,6 +581,141 @@ for (let i = 0; i < 15; i++) {
 }
 console.log('=== 8l. 阿拉伯数字条号直查 ===', numOk ? 'OK' : 'FAIL', JSON.stringify(numSt))
 
+// ---------- 8m. 搜索直达全页阅读（专题退场后的唯一落点） ----------
+// Esc 收掉法内搜索，回顶栏
+await evalJs(`(() => {
+  const input = document.querySelector('.sv-search-input')
+  input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  return 'esc'
+})()`)
+await evalJs(`document.querySelector('.sv-back')?.click()`)
+await new Promise((r) => setTimeout(r, 400))
+// 顶栏定位查询 → 回车显式提交 → 应直接打开全页并高亮跳到 1078
+await evalJs(`(() => {
+  const input = document.querySelector('.search-input')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '自测法规 第一千零七十八条')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return 'typed'
+})()`)
+await new Promise((r) => setTimeout(r, 400)) // 等 150ms 防抖出结果
+await evalJs(`(() => {
+  document.querySelector('.search-input')?.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, keyCode: 13, which: 13 })
+  )
+  return 'enter'
+})()`)
+let directSt = null
+for (let i = 0; i < 20; i++) {
+  await new Promise((r) => setTimeout(r, 300))
+  directSt = await evalJs(`(() => {
+    if (!document.querySelector('.sv .sv-article')) return null
+    const fl = document.querySelector('.sv-article.sv-flash .sv-label')?.textContent ?? ''
+    return { opened: true, fl }
+  })()`)
+  if (directSt?.opened) break
+}
+const directOk = !!directSt?.opened && String(directSt.fl).includes('第一千零七十八条')
+console.log('=== 8m. 搜索直达全页并高亮跳转 ===', directOk ? 'OK' : 'FAIL', JSON.stringify(directSt))
+
+// ---------- 8n–8q. 法条批注（锚定选区的永久眉批） ----------
+// 8n. API 建一条批注 → 重开文档 → 点线选区 + ★ 落在正文里
+const annoLocate = await evalJs(`window.lexbench.search.run('自测法规 1076', 'auto')`)
+const annoArtId = annoLocate?.results?.[0]?.id ?? null
+const annoCreated = annoArtId
+  ? await evalJs(`window.lexbench.annotations.create({
+      articleId: ${annoArtId},
+      quote: '夫妻双方自愿离婚的',
+      startOffset: 0,
+      endOffset: 9,
+      contentMd: '自测批注内容'
+    })`)
+  : null
+await evalJs(`(() => { location.reload(); return true })()`)
+for (let i = 0; i < 20; i++) {
+  await new Promise((r) => setTimeout(r, 500))
+  if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) break
+}
+await send('Runtime.enable', {})
+await evalJs(`(() => {
+  const card = [...document.querySelectorAll('.doc-card')].find((c) => c.textContent.includes('自测法规_'))
+  card?.click()
+  return card ? 'clicked' : 'no-card'
+})()`)
+let annoUi = null
+for (let i = 0; i < 20; i++) {
+  await new Promise((r) => setTimeout(r, 300))
+  annoUi = await evalJs(`(() => {
+    const star = document.querySelector('.sv-anno-star')
+    const span = document.querySelector('.sv-anno')
+    const fixBtns = document.querySelectorAll('.sv-fix-btn').length
+    return star && span
+      ? { star: star.textContent.trim(), dataAnno: span.getAttribute('data-anno'), fixBtns }
+      : null
+  })()`)
+  if (annoUi) break
+}
+const annoRenderOk =
+  !!annoCreated?.id && !!annoUi && annoUi.star === '★' && Number(annoUi.dataAnno) === annoCreated.id && annoUi.fixBtns > 0
+console.log('=== 8n. 批注渲染（点线+★+修正入口） ===', annoRenderOk ? 'OK' : 'FAIL', JSON.stringify(annoUi))
+
+// 8o. 点 ★ → 浮窗带出内容
+await evalJs(`document.querySelector('.sv-anno-star')?.click()`)
+let popSt = null
+for (let i = 0; i < 10; i++) {
+  await new Promise((r) => setTimeout(r, 200))
+  popSt = await evalJs(`(() => {
+    const pop = document.querySelector('.sv-anno-pop')
+    const val = document.querySelector('.sv-anno-input')?.value ?? ''
+    return pop ? { val } : null
+  })()`)
+  if (popSt) break
+}
+const annoOpenOk = !!popSt && popSt.val === '自测批注内容'
+console.log('=== 8o. 点★打开批注浮窗 ===', annoOpenOk ? 'OK' : 'FAIL', JSON.stringify(popSt))
+
+// 8p. 改内容 → 点外部自动保存收起
+await evalJs(`(() => {
+  const input = document.querySelector('.sv-anno-input')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  setter.call(input, '批注已改')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return 'edited'
+})()`)
+await evalJs(`(() => { document.body.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'outside' })()`)
+let annoSaved = null
+for (let i = 0; i < 12; i++) {
+  await new Promise((r) => setTimeout(r, 250))
+  annoSaved = await evalJs(`window.lexbench.annotations.listByDoc(${annoLocate.results[0].document_id})`)
+  const row = Array.isArray(annoSaved) ? annoSaved.find((x) => x.id === annoCreated?.id) : null
+  if (row?.content_md === '批注已改') break
+}
+const rowSaved = Array.isArray(annoSaved) ? annoSaved.find((x) => x.id === annoCreated?.id) : null
+const popGone = (await evalJs(`!document.querySelector('.sv-anno-pop')`)) === true
+const annoSaveOk = rowSaved?.content_md === '批注已改' && popGone
+console.log('=== 8p. 外点自动保存收起 ===', annoSaveOk ? 'OK' : 'FAIL', JSON.stringify({ saved: rowSaved?.content_md, popGone }))
+
+// 8q. 再开浮窗 → 删除 → 星标消失
+await evalJs(`document.querySelector('.sv-anno-star')?.click()`)
+await new Promise((r) => setTimeout(r, 300))
+await evalJs(`(() => {
+  const btn = [...document.querySelectorAll('.sv-anno-pop button')].find((b) => b.textContent.includes('删除'))
+  btn?.click()
+  return btn ? 'deleted' : 'no-btn'
+})()`)
+let annoGone = false
+for (let i = 0; i < 12; i++) {
+  await new Promise((r) => setTimeout(r, 250))
+  const left = await evalJs(`window.lexbench.annotations.listByDoc(${annoLocate.results[0].document_id})`)
+  const starLeft = await evalJs(`!!document.querySelector('.sv-anno-star')`)
+  if (Array.isArray(left) && left.length === 0 && !starLeft) { annoGone = true; break }
+}
+console.log('=== 8q. 批注删除（库+星标同步消失） ===', annoGone ? 'OK' : 'FAIL')
+
+// 回文档库，进清理
+await evalJs(`document.querySelector('.sv-back')?.click()`)
+await new Promise((r) => setTimeout(r, 400))
+
 // 清理：删掉本脚本导入的测试文档（含此前版本遗留的同名文档）。
 // 只删临时文件是不够的——文档进了库就一直躺在那儿，跑几次开发库就多几份垃圾。
 const junkIds = JSON.parse(
@@ -593,6 +754,7 @@ const checks = [
   ['文档库点法规 → 独立全页阅读', fullPageOk],
   ['正文行内渲染编/章标题（≥3 个）', headingsOk],
   ['右栏目录列出章节（≥3 条、首条第一章）', tocOk],
+  ['分编层级：目录/行内/缩进 + 正文不被标题行污染', subOk],
   ['目录点击跳转到对应标题', jumpOk],
   ['阅读进度按 order_index 保存', progOk],
   ['返回文档库（整区卸载 + Tab 恢复）', backOk],
@@ -604,6 +766,11 @@ const checks = [
   ['法内搜索：Esc 关闭并清除高亮', escOk],
   ['法内搜索：外点收起候选保留查询', outsideOk],
   ['法内搜索：阿拉伯数字条号直查', numOk],
+  ['搜索直达全页并高亮跳转（专题退场后唯一落点）', directOk],
+  ['批注渲染：点线选区 + ★ + 修正入口', annoRenderOk],
+  ['批注：点★打开浮窗带出内容', annoOpenOk],
+  ['批注：外点自动保存收起', annoSaveOk],
+  ['批注：删除后库与星标同步消失', annoGone],
   ['测试文档已清理（不留垃圾在库里）', junkLeft === 0],
   ['零控制台错误', errors.length === 0]
 ]

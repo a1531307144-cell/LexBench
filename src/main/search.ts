@@ -82,10 +82,10 @@ function locateByDocIds(
   const rows = db
     .prepare(
       `SELECT id, document_id, article_label, article_no, branch,
-              chapter, section, content, order_index, title, category
+              subbranch, chapter, section, content, order_index, title, category
        FROM (
          SELECT a.id, a.document_id, a.article_label, a.article_no, a.branch,
-                a.chapter, a.section, a.content, a.order_index,
+                a.subbranch, a.chapter, a.section, a.content, a.order_index,
                 d.title, d.category,
                 ROW_NUMBER() OVER (
                   PARTITION BY a.document_id ORDER BY a.order_index
@@ -109,6 +109,7 @@ function locateByDocIds(
     category: r.category,
     label: r.article_label,
     branch: r.branch,
+    subbranch: r.subbranch,
     chapter: r.chapter,
     section: r.section,
     content: r.content,
@@ -160,6 +161,7 @@ function searchFulltext(q: string, limit = FULLTEXT_LIMIT): {
     id: number
     document_id: number
     article_label: string
+    order_index: number
     content: string
     title: string
     doc_type: DocType
@@ -178,7 +180,7 @@ function searchFulltext(q: string, limit = FULLTEXT_LIMIT): {
   const queryArticles = (match: string, n: number): ArticleFtsRow[] =>
     db
       .prepare(
-        `SELECT a.id, a.document_id, a.article_label, a.content,
+        `SELECT a.id, a.document_id, a.article_label, a.order_index, a.content,
                 d.title, d.doc_type, d.category
          FROM articles_fts f
          JOIN articles a ON a.id = f.article_id
@@ -201,6 +203,7 @@ function searchFulltext(q: string, limit = FULLTEXT_LIMIT): {
       title: r.title,
       category: r.category,
       label: r.article_label,
+      order_index: r.order_index,
       snippet: makeSnippet(r.content, hlTerms)
     })
   }

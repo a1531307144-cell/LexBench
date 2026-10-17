@@ -252,6 +252,76 @@ ALTER TABLE documents ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
 UPDATE documents SET sort_order = (SELECT MAX(id) FROM documents) - id;
 `
 
+// 014_article_subbranch：法条增加「分编」层级列（编与章之间，如「第一分编　通则」）。
+// 民法典/生态环境法典等法典按分编组织，旧版切分不认识该层——标题行被吞进上一条
+// 正文、目录丢失该层。列先加（纯 SQL）；存量正文里的分编行还原由启动期
+// repairSubbranch.ts 处理（需正则回放，不进迁移——迁移保持纯 SQL 惯例）。
+const MIGRATION_014_ARTICLE_SUBBRANCH = `-- 014_article_subbranch
+
+ALTER TABLE articles ADD COLUMN subbranch TEXT NOT NULL DEFAULT '';
+`
+
+// 015_annotations_and_topic_drop：法条批注表 + 「专题」板块整链路切除（用户拍板：老数据直接删，不留回滚）。
+// - statute_annotations：批注锚定 article_id + 选区偏移（渲染层恢复高亮与 ★）；
+// - DROP topic_items / notes / topics：专题及其笔记数据一次性删除（不可逆——发版前须提醒用户备份数据包）；
+// - ai_messages 重建：去掉 topic_id（SQLite 在 CHECK 引用列时拒绝 DROP COLUMN，整表重建最干净），
+//   专题归档路径随之消亡，按条文归档（article_id）原样保留。
+const MIGRATION_015_ANNOTATIONS_TOPIC_DROP = `-- 015_annotations_and_topic_drop
+
+CREATE TABLE IF NOT EXISTS statute_annotations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_id   INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    quote        TEXT NOT NULL,                   -- 选区原文（校验锚点漂移用）
+    start_offset INTEGER NOT NULL,                -- articles.content 内起始字符偏移（含）
+    end_offset   INTEGER NOT NULL,                -- 结束偏移（不含）
+    content_md   TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_article ON statute_annotations(article_id);
+
+DROP TABLE IF EXISTS topic_items;
+DROP TABLE IF EXISTS notes;
+DROP TABLE IF EXISTS topics;
+
+CREATE TABLE ai_messages_v2 (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    action     TEXT NOT NULL,                     -- explain | cases | followup
+    question   TEXT NOT NULL DEFAULT '',
+    answer_md  TEXT NOT NULL,
+    citations  TEXT NOT NULL DEFAULT '[]',        -- JSON: [{article_id, title, label, citeText}]
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+INSERT INTO ai_messages_v2(article_id, action, question, answer_md, citations, created_at)
+    SELECT article_id, action, question, answer_md, citations, created_at
+      FROM ai_messages WHERE article_id IS NOT NULL;
+DROP TABLE IF EXISTS ai_messages;
+ALTER TABLE ai_messages_v2 RENAME TO ai_messages;
+CREATE INDEX IF NOT EXISTS idx_ai_messages_article ON ai_messages(article_id, id);
+`
+
+// 016_ai_general_chat：AI 改为全局通用问答（用户 2026-10-17 定位），归档不再强制挂法条——
+// article_id 放开为可空（SQLite 放宽 NOT NULL 须整表重建，照 015 的换名手法）；
+// 既有按条文的问答原样保留，通用问答以 article_id=NULL 归入同一时间线。
+const MIGRATION_016_AI_GENERAL = `-- 016_ai_general_chat
+
+CREATE TABLE ai_messages_v3 (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
+    action     TEXT NOT NULL,                     -- explain | cases | followup
+    question   TEXT NOT NULL DEFAULT '',
+    answer_md  TEXT NOT NULL,
+    citations  TEXT NOT NULL DEFAULT '[]',        -- JSON: [{article_id, title, label, citeText}]
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+INSERT INTO ai_messages_v3(id, article_id, action, question, answer_md, citations, created_at)
+    SELECT id, article_id, action, question, answer_md, citations, created_at FROM ai_messages;
+DROP TABLE ai_messages;
+ALTER TABLE ai_messages_v3 RENAME TO ai_messages;
+CREATE INDEX IF NOT EXISTS idx_ai_messages_article ON ai_messages(article_id, id);
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -266,7 +336,10 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 10, sql: MIGRATION_010_AI_PROTOCOL },
   { version: 11, sql: MIGRATION_011_AI_PROTOCOL_GUESS },
   { version: 12, sql: MIGRATION_012_TOPIC_ITEMS_FROM_NOTES },
-  { version: 13, sql: MIGRATION_013_DOC_ORDER }
+  { version: 13, sql: MIGRATION_013_DOC_ORDER },
+  { version: 14, sql: MIGRATION_014_ARTICLE_SUBBRANCH },
+  { version: 15, sql: MIGRATION_015_ANNOTATIONS_TOPIC_DROP },
+  { version: 16, sql: MIGRATION_016_AI_GENERAL }
 ]
 
 /** 全局唯一连接（单例） */

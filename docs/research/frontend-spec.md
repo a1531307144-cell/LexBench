@@ -185,3 +185,9 @@ AIMessage 结构：`{id, article_id, topic_id, action: 'explain'|'cases'|'follow
 - **IME**：composition 期间不发查询、上屏后补搜（顶栏/中栏/法内三处）。
 - **ResultList**：0 结果分支也显示模式 chip 与降级说明（fallback=已改全文 / rescued=全库按条号 / no_tokens=无可检索关键词）；有结果时显示「共 N 条」；空态示例从固定一组改为**每次启动随机换**（shared/searchHints.ts）。
 - **法内搜索**（StatuteReadingView，第三个独立搜索框，只搜当前法）：点击别处收起候选（查询/高亮/计数保留，再点输入即恢复）；Esc/✕ 完全清除；样式与顶栏搜索胶囊统一（中性静息边 → focus-within 蓝边柔光 0.25s、候选行 .item 同款悬停抬升）；**条号直查**——输入阿拉伯数字（`1077`/`第1077条`/`1077条`，经 `parseLocateQuery` 归一）按 `article_no` 精准命中条款（正文与条标是中文数字，纯子串匹配搜不到阿拉伯数字）。
+
+### 目录与复制修订（2026-10，TS 版为准；与上文冲突时以本节为准）
+
+- **全页阅读目录四层缩进**（StatuteReadingView）：branch 10 → subbranch 20 → chapter 34 → section 48（px，沿 .sv-toc-item 的 data-level 阶梯）；行内标题层级 h2 编 / h3 分编 / h4 章 / h5 节，分编 19px/600 居中（插在编 22px 与章 18px 之间，边距 44/16）。目录面板与行内标题同源（buildStatuteToc），分编条目可点击跳转、可高亮。
+- **中栏法条面包屑**（Reader.crumb）：法规名 › 编 › 分编 › 章 › 节，分编为空串时整段不渲染。
+- **右键菜单**（主进程 context-menu，渲染层无代码）：鼠标选中 → 右键 → 复制，是用户复制法条的主路径；输入框右键含粘贴。修复前 Electron 默认无菜单、右键全无反应。

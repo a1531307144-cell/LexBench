@@ -3,14 +3,17 @@
 import { describe, expect, it } from 'vitest'
 import { buildStatuteToc, type StatuteHeadingFields } from './statuteToc'
 
-/** 便捷构造：按序给出每条的 编/章/节，order_index 自动回填 */
-function makeArticles(rows: Array<[branch: string, chapter: string, section: string]>): StatuteHeadingFields[] {
-  return rows.map(([branch, chapter, section], order_index) => ({
-    branch,
-    chapter,
-    section,
-    order_index
-  }))
+/** 便捷构造：三元组 = 编/章/节（无分编）；四元组 = 编/分编/章/节。order_index 自动回填 */
+function makeArticles(
+  rows: Array<
+    [branch: string, chapter: string, section: string] | [branch: string, subbranch: string, chapter: string, section: string]
+  >
+): StatuteHeadingFields[] {
+  return rows.map((r, order_index) =>
+    r.length === 3
+      ? { branch: r[0], subbranch: '', chapter: r[1], section: r[2], order_index }
+      : { branch: r[0], subbranch: r[1], chapter: r[2], section: r[3], order_index }
+  )
 }
 
 describe('buildStatuteToc', () => {
@@ -77,5 +80,40 @@ describe('buildStatuteToc', () => {
       ])
     )
     expect(toc).toHaveLength(3)
+  })
+
+  // ---------- 分编层级（民法典/生态环境法典式法典） ----------
+
+  it('四层齐全：按 编→分编→章→节 序发出且共享同一 orderIndex', () => {
+    const toc = buildStatuteToc(
+      makeArticles([['第二编 物权', '第一分编 通则', '第一章 一般规定', '第一节 一般规定']])
+    )
+    expect(toc.map((e) => e.level)).toEqual(['branch', 'subbranch', 'chapter', 'section'])
+    expect(toc.every((e) => e.orderIndex === 0)).toBe(true)
+    expect(toc[1].title).toBe('第一分编 通则')
+  })
+
+  it('新编清分编/章/节，新分编清章/节——空串不发条目', () => {
+    const toc = buildStatuteToc(
+      makeArticles([
+        ['第二编 物权', '第一分编 通则', '第一章 一般规定', ''],
+        ['第二编 物权', '第一分编 通则', '第一章 一般规定', ''],
+        // 新分编：章被清空，等标题到来
+        ['第二编 物权', '第二分编 所有权', '', ''],
+        ['第二编 物权', '第二分编 所有权', '第四章 一般规定', ''],
+        // 新编且无分编：分编/章清空
+        ['第四编 人格权', '', '', ''],
+        ['第四编 人格权', '', '第一章 一般规定', '']
+      ])
+    )
+    expect(toc.map((e) => `${e.level}:${e.title}`)).toEqual([
+      'branch:第二编 物权',
+      'subbranch:第一分编 通则',
+      'chapter:第一章 一般规定',
+      'subbranch:第二分编 所有权',
+      'chapter:第四章 一般规定',
+      'branch:第四编 人格权',
+      'chapter:第一章 一般规定'
+    ])
   })
 })

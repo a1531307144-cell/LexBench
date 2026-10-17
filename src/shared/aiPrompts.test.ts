@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest'
 import { cn2num } from './cnnum'
 import {
   CONTEXT_BUDGET,
+  GENERAL_SYSTEM_PROMPT,
   HISTORY_LIMIT,
+  SYSTEM_PROMPT,
   buildCasesPrompt,
   buildExplainPrompt,
   buildFollowupMessages,
@@ -132,5 +134,19 @@ describe('parseCitations', () => {
 
   it('「万」量级条号不匹配（与 legacy 正则一致，仅支持到千位）', () => {
     expect(parseCitations('参见《某规定》第十万条。', cn2num)).toEqual([])
+  })
+})
+
+describe('系统提示词双轨（2026-10 AI 通用化）', () => {
+  it('通用问答提示词：带通用定位与「拿不准必须明说」，且不含材料专属约束', () => {
+    expect(GENERAL_SYSTEM_PROMPT).toContain('通用法律问答')
+    expect(GENERAL_SYSTEM_PROMPT).toContain('严禁编造')
+    expect(GENERAL_SYSTEM_PROMPT).toContain('不确定')
+    expect(GENERAL_SYSTEM_PROMPT).not.toContain('只能引用用户提供的材料')
+    expect(GENERAL_SYSTEM_PROMPT).not.toContain('材料中没有的内容要明确说明')
+  })
+
+  it('材料版提示词保持原文不变（带法条任务继续受材料约束）', () => {
+    expect(SYSTEM_PROMPT).toContain('只能引用用户提供的材料中确实存在的条文')
   })
 })

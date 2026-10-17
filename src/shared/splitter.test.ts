@@ -96,6 +96,64 @@ describe('splitStatute', () => {
     const articles = splitStatute(STATUTE_PARAGRAPHS)
     articles.forEach((a, i) => expect(a.order_index).toBe(i))
   })
+
+  // ---------- 分编层级（民法典/生态环境法典式法典；旧版吞行 + 目录丢层的回归） ----------
+
+  it('分编标题行设为层级戳记，后续条文继承', () => {
+    const paragraphs = [
+      '第一编 总则',
+      '第一条 甲。',
+      '第二编 物权',
+      '第一分编 通则',
+      '第二章 一般规定',
+      '第二条 乙。',
+    ]
+    const articles = splitStatute(paragraphs)
+    expect(articles[1].subbranch).toBe('第一分编 通则')
+    expect(articles[1].branch).toBe('第二编 物权')
+    expect(articles[1].chapter).toBe('第二章 一般规定')
+    expect(articles[0].subbranch).toBe('')
+  })
+
+  it('分编标题行不吞进上一条正文（旧版最大污染源）', () => {
+    const paragraphs = [
+      '第一编 总则',
+      '第一条 甲。',
+      '第二编 物权',
+      '第一分编 通则',
+      '第二条 乙。',
+    ]
+    const articles = splitStatute(paragraphs)
+    expect(articles[0].content).toBe('甲。')
+    expect(articles[0].content).not.toContain('分编')
+  })
+
+  it('新编清空分编，新分编清空章/节', () => {
+    const paragraphs = [
+      '第二编 物权',
+      '第一分编 通则',
+      '第三章 所有权',
+      '第一节 一般规定',
+      '第二条 乙。',
+      // 新编：分编/章/节全部清掉（该编无分编，等标题到来）
+      '第四编 人格权',
+      '第三条 丙。',
+      // 另起分编：章/节清掉
+      '第二分编 所有权',
+      '第四条 丁。',
+    ]
+    const articles = splitStatute(paragraphs)
+    expect(articles[0]).toMatchObject({ subbranch: '第一分编 通则', chapter: '第三章 所有权', section: '第一节 一般规定' })
+    expect(articles[1]).toMatchObject({ branch: '第四编 人格权', subbranch: '', chapter: '', section: '' })
+    expect(articles[2]).toMatchObject({ subbranch: '第二分编 所有权', chapter: '', section: '' })
+  })
+
+  it('无标题的裸「第X分编」不设戳记（与编/章/节正则语义一致）', () => {
+    const paragraphs = ['第一条 甲。', '第一分编', '第二条 乙。']
+    const articles = splitStatute(paragraphs)
+    expect(articles[0].subbranch).toBe('')
+    expect(articles[1].subbranch).toBe('')
+  })
 })
 
 describe('detectDocType', () => {

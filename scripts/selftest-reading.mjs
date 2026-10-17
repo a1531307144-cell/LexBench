@@ -15,7 +15,7 @@ const bookPath = join(tmp, '阅读模式自测书.txt').replace(/\//g, '\\')
 writeFileSync(bookPath, paras.join('\n'), 'utf-8')
 
 const pages = await fetch('http://127.0.0.1:9222/json').then((r) => r.json())
-const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url))
+const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url) && !p.url.includes('aiWindow'))
 if (!page) {
   console.log('FAIL: 未找到应用页面（dev 未启动？）')
   process.exit(1)
@@ -123,7 +123,7 @@ const p5 = await api(`reading.getProgress(${docId})`)
 check('进度存取（null → 5）', p0 === null && p5?.paraIndex === 5)
 
 // 4. UI 层：打开阅读模式，验证段落渲染 + 高亮恢复（段内 mark + 跨段双段 mark）
-await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
+// 专题退场后首页即文档库，无需再切 Tab
 await new Promise((r) => setTimeout(r, 400))
 await evalJs(`[...document.querySelectorAll('.doc-card')].find((r) => r.textContent.includes('阅读模式自测书'))?.click()`)
 let uiReady = false
@@ -284,7 +284,7 @@ for (let i = 0; i < 20; i++) {
   if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) break
 }
 await send('Runtime.enable', {})
-await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
+// 专题退场后首页即文档库，无需再切 Tab
 await new Promise((r) => setTimeout(r, 400))
 await evalJs(`[...document.querySelectorAll('.doc-card')].find((r) => r.textContent.includes('页面模式自测书'))?.click()`)
 let pdfUiReady = false

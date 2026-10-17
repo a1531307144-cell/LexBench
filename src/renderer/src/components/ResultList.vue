@@ -17,10 +17,6 @@ const props = withDefaults(
     query: string
     selectedId: number
     hasDocs: boolean
-    /** 打开着专题时，法条类结果右侧给一个「＋」直接收进专题 */
-    addable?: boolean
-    /** 正在加入的那条命中 id（−1 = 空闲），用来禁用按钮防连点 */
-    addingId?: number
     /** 定位先行为空，本结果来自全文兜底 */
     fallback?: boolean
     /** 非空法规名零匹配后按条号全库救援 */
@@ -28,10 +24,10 @@ const props = withDefaults(
     /** 零结果是因为查询切不出 token */
     emptyReason?: 'no_tokens'
   }>(),
-  { addable: false, addingId: -1, fallback: false, rescued: false }
+  { fallback: false, rescued: false }
 )
 
-defineEmits<{ select: [hit: SearchHit]; add: [hit: SearchHit] }>()
+defineEmits<{ select: [hit: SearchHit] }>()
 
 /**
  * 法条定位（如「民法典 1077」）返回的是条文全文、没有高亮摘要字段，
@@ -118,15 +114,6 @@ const typeNames: Record<string, string> = {
                「最高人民法院关于适用《…」，同部法规的（一）（二）分不出来 -->
           <span class="item-title" :title="r.title" v-html="titleHtml(r)"></span>
           <span class="item-type" :data-type="r.doc_type">{{ typeNames[r.doc_type] || r.doc_type }}</span>
-          <button
-            v-if="addable && r.kind === 'article'"
-            class="item-add"
-            title="加入当前专题"
-            :disabled="addingId === r.id"
-            @click.stop="$emit('add', r)"
-          >
-            ＋
-          </button>
         </div>
         <div class="item-label" v-html="labelHtml(r)"></div>
         <!-- snippet 由主进程按同一词条规则转义+高亮生成，em 为关键词高亮 -->
@@ -309,29 +296,6 @@ const typeNames: Record<string, string> = {
   font-family: var(--lb-serif);
   font-size: 14px;
   color: var(--lb-text);
-}
-
-.item-add {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  margin-left: 2px;
-  border: 1px solid var(--lb-border-strong);
-  border-radius: 6px;
-  background: var(--lb-panel);
-  color: var(--lb-accent);
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.item-add:hover {
-  border-color: var(--lb-accent);
-}
-
-.item-add:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* 没有高亮摘要时的纯文本正文预览 */

@@ -15,7 +15,7 @@ writeFileSync(
 )
 
 const pages = await fetch('http://127.0.0.1:9222/json').then((r) => r.json())
-const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url))
+const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url) && !p.url.includes('aiWindow'))
 if (!page) {
   console.log('FAIL: dev 未启动')
   process.exit(1)
@@ -144,7 +144,7 @@ for (let i = 0; i < 20; i++) {
   if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) break
 }
 await send('Runtime.enable', {})
-await evalJs(`[...document.querySelectorAll('.tab')].find((b) => b.textContent.includes('文档库')).click()`)
+// 专题退场后首页即文档库，无需再切 Tab
 await new Promise((r) => setTimeout(r, 600))
 
 const openMover = await evalJs(`(() => {
@@ -167,8 +167,8 @@ await new Promise((r) => setTimeout(r, 300))
 const stillOpen = await evalJs(`!!document.querySelector('.move-select')`)
 await evalJs(`(() => { const s = document.querySelector('.move-select'); s?.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'ok' })()`)
 await new Promise((r) => setTimeout(r, 500))
-// 判据：主区域仍停在欢迎页（.welcome）说明没有误打开文档
-const openedDoc = await evalJs(`!document.querySelector('.welcome')`)
+// 判据：没有进入任何全页阅读区（中栏 Reader 已随专题退场，误点文档只会表现为阅读区整块打开）
+const openedDoc = await evalJs(`!!document.querySelector('main.reading-full')`)
 check('点下拉框体不会误打开文档', stillOpen === true && !openedDoc)
 
 // 9.5 老版 Word（.doc）：不再被文件类型白名单拦掉，而是交给解析器。

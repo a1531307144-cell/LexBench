@@ -1,4 +1,4 @@
-// FTS 索引文本公式单测：标题/条标/条号/编章节确实进了索引文本，
+// FTS 索引文本公式单测：标题/条标/条号/编分章节确实进了索引文本，
 // 且查询侧 token 能在索引文本里找到（index-vs-query 一致性）
 
 import { describe, expect, it } from 'vitest'
@@ -11,6 +11,7 @@ describe('articleFtsText', () => {
     label: '第一千零七十七条',
     articleNo: 1077,
     branch: '',
+    subbranch: '',
     chapter: '第四章 海上货物运输合同',
     section: '',
     content: '托运人应当按照约定的数量交付货物。'
@@ -20,11 +21,17 @@ describe('articleFtsText', () => {
     expect(articleFtsText(base).split(' ')).toContain('1077')
   })
 
-  it('按 标题→条标→条号→编章节→正文 顺序拼接后统一再分词', () => {
+  it('按 标题→条标→条号→编分章节→正文 顺序拼接后统一再分词', () => {
     const expected = tokenize(
       [base.title, base.label, '1077', base.chapter, base.content].filter((s) => s.trim()).join(' ')
     )
     expect(articleFtsText(base)).toBe(expected)
+  })
+
+  it('分编标题进索引文本（搜分编名可命中）', () => {
+    const withSub = articleFtsText({ ...base, subbranch: '第一分编 担保物权' })
+    const text = new Set(withSub.split(' '))
+    for (const tok of queryTokens('担保物权')) expect(text.has(tok)).toBe(true)
   })
 
   it('查询侧法名 token 能在索引文本中找到（搜法规名可命中）', () => {
@@ -37,8 +44,8 @@ describe('articleFtsText', () => {
     for (const tok of queryTokens('1077')) expect(text.has(tok)).toBe(true)
   })
 
-  it('空编/章节字段被过滤，不产生多余分词', () => {
-    const text = articleFtsText({ ...base, branch: '', chapter: '  ', section: '' })
+  it('空编/分编/章节字段被过滤，不产生多余分词', () => {
+    const text = articleFtsText({ ...base, branch: '', subbranch: '', chapter: '  ', section: '' })
     expect(text).not.toContain('  ')
   })
 })

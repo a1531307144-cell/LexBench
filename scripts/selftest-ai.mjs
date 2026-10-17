@@ -88,7 +88,7 @@ const BASE_ANTHROPIC = `http://127.0.0.1:${MOCK_PORT}/anthropic`
 console.log(`假服务端已就绪：127.0.0.1:${MOCK_PORT}`)
 
 const pages = await fetch('http://127.0.0.1:9222/json').then((r) => r.json())
-const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url))
+const page = pages.find((p) => p.type === 'page' && /localhost:5173/.test(p.url) && !p.url.includes('aiWindow'))
 if (!page) {
   console.log('FAIL: dev 未启动')
   mock.close()
@@ -338,10 +338,67 @@ if (!articleId) {
     if (d?.__error) cleaned = false
   }
   check('自测问答已清理', cleaned)
+
+  // ---------- 10.5 通用问答（2026-10 AI 通用化：不带 articleId 的全局问答） ----------
+  lastReq = null
+  await evalJs(`(() => { window.__aiTest.deltas = []; window.__aiTest.done = null; return true })()`)
+  const gRes = await api(
+    `ai.run({ taskId: 'selftest-general-' + Date.now(), task: 'followup', question: '测试通用问题：什么是诉讼时效？', profileId: ${pOpenai?.id} })`
+  )
+  const gGot = await evalJs(`window.__aiTest.deltas.join('')`)
+  const gDone = await evalJs(`window.__aiTest.done`)
+  const gSys =
+    lastReq?.body?.messages?.[0]?.role === 'system' ? String(lastReq.body.messages[0].content) : ''
+  check(
+    '通用问答走通用系统提示词（无材料约束）',
+    gRes?.ok === true && gSys.includes('通用法律问答') && !gSys.includes('只能引用用户提供的材料')
+  )
+  const gMsg = gDone?.messageId
+  const gHistAll = await api(`ai.history(null)`)
+  const gRow = Array.isArray(gHistAll) ? gHistAll.find((m) => m.id === gMsg) : null
+  check(
+    '通用问答归档 article_id=NULL 并进入全局时间线',
+    !!gRow && gRow.article_id === null && String(gRow.question).includes('诉讼时效')
+  )
+  check('通用问答流式有内容', typeof gGot === 'string' && gGot.length > 0)
+  let gCleaned = true
+  if (gMsg) {
+    const d = await tryErr(`ai.deleteMessage(${gMsg})`)
+    if (d?.__error) gCleaned = false
+  }
+  check('通用问答已清理', gCleaned)
 }
 
 // 解除进度订阅（避免监听器泄漏）
 await evalJs(`(() => { if (window.__aiTestOff) window.__aiTestOff(); return true })()`)
+
+// ---------- 10.6 AI 独立窗（2026-10：浮窗=真·独立 BrowserWindow） ----------
+await api('aiWindow.toggle()')
+let aiPage = null
+for (let i = 0; i < 10; i++) {
+  await new Promise((r) => setTimeout(r, 300))
+  const ps = await fetch('http://127.0.0.1:9222/json').then((r) => r.json())
+  aiPage = ps.find((p) => p.type === 'page' && p.url.includes('aiWindow'))
+  if (aiPage) break
+}
+check('独立 AI 窗已创建（?aiWindow=1 渲染目标存在）', !!aiPage)
+if (articleId) {
+  // 引用转发闭环：通道全局注册，这里代 AI 窗发起 → 主窗应打开对应法条的全页阅读
+  await api(`aiWindow.openArticle(${articleId})`)
+  let jumped = false
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 300))
+    if ((await evalJs(`!!document.querySelector('main.reading-full .sv')`)) === true) {
+      jumped = true
+      break
+    }
+  }
+  check('引用转发：主窗打开对应法条（AI 窗保持独立不关）', jumped)
+  // 收尾：关掉阅读视图，隐藏 AI 窗，不打扰后续清理
+  await evalJs(`document.querySelector('.sv-back')?.click()`)
+}
+await api('aiWindow.toggle()')
+await new Promise((r) => setTimeout(r, 300))
 
 // ---------- 11. 清理测试档案 + 还原用户的启用档案 ----------
 for (const pid of [profileId, pOpenai?.id, pAnthropic?.id, badProto?.id]) {

@@ -12,15 +12,16 @@ export interface ArticleFtsFields {
   /** 阿拉伯条号，如 1077 */
   articleNo: number
   branch: string
+  subbranch: string
   chapter: string
   section: string
   content: string
 }
 
-/** 法条类 FTS 文本：标题 + 条标 + 条号 + 编/章/节 + 正文（统一再分词） */
+/** 法条类 FTS 文本：标题 + 条标 + 条号 + 编/分编/章/节 + 正文（统一再分词） */
 export function articleFtsText(a: ArticleFtsFields): string {
   return tokenize(
-    [a.title, a.label, String(a.articleNo), a.branch, a.chapter, a.section, a.content]
+    [a.title, a.label, String(a.articleNo), a.branch, a.subbranch, a.chapter, a.section, a.content]
       .filter((s) => s && s.trim())
       .join(' ')
   )
