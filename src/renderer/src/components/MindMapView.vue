@@ -19,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'change', tree: OutlineNode[]): void
   (e: 'error', err: unknown): void
+  (e: 'rename', title: string): void
   (e: 'undo'): void
   (e: 'redo'): void
 }>()
@@ -223,6 +224,8 @@ function paintDecorations(): void {
     el.classList.toggle('mm-task-done', node?.task === 2)
     el.classList.toggle('mm-has-note', !!node?.note)
     el.classList.toggle('mm-has-image', !!node && nodeImages(node).length > 0)
+    const jsnode = jm.mind.nodes[id]
+    el.title = jsnode?.isroot ? '拖动空白处平移画布' : '拖动调整层级（松手到目标上/下缘=同级）'
   }
 }
 
@@ -414,7 +417,7 @@ const noteEditor = reactive({
 function openNoteEditor(): void {
   if (!jm) return
   const sel = ensureSelected()
-  if (!sel) return
+  if (!sel || sel.isroot) return
   const node = metaById.get(sel.id)
   noteEditor.open = true
   noteEditor.nodeId = sel.id
@@ -446,7 +449,7 @@ function saveNoteEditor(): void {
 function toggleTask(status: 0 | 1 | 2): void {
   if (!jm) return
   const sel = ensureSelected()
-  if (!sel) return
+  if (!sel || sel.isroot) return
   if (status === 0) delete sel.data['task']
   else sel.data['task'] = status
   const meta = metaById.get(sel.id)
@@ -482,7 +485,7 @@ function fileToBase64(file: File): Promise<string> {
 async function attachImages(files: File[]): Promise<void> {
   if (!jm || !files.length) return
   const sel = ensureSelected()
-  if (!sel) return
+  if (!sel || sel.isroot) return
   const meta = metaById.get(sel.id)
   const list = meta ? nodeImages(meta) : []
   for (const file of files) {
@@ -595,26 +598,51 @@ function onPointerMove(ev: PointerEvent): void {
   else if (ev.clientX > box.right - 44) panel.scrollLeft += 12
 }
 
+/** 当前指针下的节点；空白处按 90px 内最近邻兜底（拖到节点旁也能落点） */
+function findDropNodeElement(x: number, y: number, from: MNode): HTMLElement | null {
+  if (!jm) return null
+  const acceptable = (id: string): boolean => {
+    if (!id || id === from.id) return false
+    const n = jm!.mind.nodes[id]
+    if (!n || !jm!.layout.is_visible(n)) return false
+    return !jsMind.node.inherited(from, n)
+  }
+  for (const el of document.elementsFromPoint(x, y)) {
+    if (el instanceof HTMLElement && el.tagName.toLowerCase() === 'jmnode') {
+      const id = jm.view.get_binded_nodeid(el)
+      if (id && acceptable(id)) return el
+    }
+  }
+  let best: HTMLElement | null = null
+  let bestDist = Infinity
+  for (const el of Array.from(jm.view.e_nodes.querySelectorAll('jmnode'))) {
+    const id = jm.view.get_binded_nodeid(el)
+    if (!id || !acceptable(id)) continue
+    const r = el.getBoundingClientRect()
+    const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0
+    const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0
+    const dist = Math.hypot(dx, dy)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = el
+    }
+  }
+  return bestDist <= 90 ? best : null
+}
+
 function updateDropTarget(x: number, y: number): void {
   if (!jm || !drag.fromId) return
   clearDropHighlight()
   const from = jm.mind.nodes[drag.fromId]
   if (!from) return
-  let targetEl: HTMLElement | null = null
-  for (const el of document.elementsFromPoint(x, y)) {
-    if (el instanceof HTMLElement && el.tagName.toLowerCase() === 'jmnode') {
-      targetEl = el
-      break
-    }
-  }
+  const targetEl = findDropNodeElement(x, y, from)
   if (!targetEl) return
   const id = jm.view.get_binded_nodeid(targetEl)
-  if (!id || id === from.id) return
+  if (!id) return
   const target = jm.mind.nodes[id]
   if (!target) return
-  if (jsMind.node.inherited(from, target)) return // 不能拖进自己的子树
   const rect = targetEl.getBoundingClientRect()
-  const rel = (y - rect.top) / Math.max(1, rect.height)
+  const rel = Math.max(0, Math.min(1, (y - rect.top) / Math.max(1, rect.height)))
   const mode: 'child' | 'before' | 'after' =
     target.isroot ? 'child' : rel < 0.25 ? 'before' : rel > 0.75 ? 'after' : 'child'
   drag.targetId = id
@@ -869,7 +897,7 @@ onMounted(() => {
         hmargin: 52,
         vmargin: 18,
         line_width: 1.6,
-        line_color: 'rgba(100, 106, 115, 0.45)',
+        line_color: '#b3bdc8',
         line_style: 'curved',
         draggable: true,
         hide_scrollbars_when_draggable: true,
@@ -885,6 +913,9 @@ onMounted(() => {
     jm.add_event_listener((type, data) => {
       if (!jm) return
       if (type === jsMind.event_type.edit) {
+        // 中心主题就是笔记标题：导图里改名要回写标题，不能只改虚拟 root
+        const root = jm.get_root()
+        if (root && root.topic !== props.title) emit('rename', root.topic)
         syncToParent()
         paintDecorations()
       } else if (
@@ -901,6 +932,8 @@ onMounted(() => {
     hostEl.value.addEventListener('paste', onHostPaste)
     hostEl.value.addEventListener('click', onHostClick)
     hostEl.value.addEventListener('wheel', onWheelZoom)
+    hostEl.value.addEventListener('input', onEditorInput, true)
+    hostEl.value.addEventListener('focusin', onEditorFocusIn)
     document.addEventListener('click', onDocumentClick)
   } catch (e) {
     emit('error', e)
@@ -916,15 +949,38 @@ function onWheelZoom(): void {
   setTimeout(updateZoomPercent, 40)
 }
 
+/** 节点编辑框随输入增长（jsMind 默认固定 70px，长文本会被截住看不见） */
+function sizeEditor(): void {
+  if (!jm) return
+  const input = jm.view.e_panel.querySelector('.jsmind-editor') as HTMLInputElement | null
+  if (!input) return
+  const max = Math.max(180, Math.min(680, (hostEl.value?.clientWidth ?? 800) - 120))
+  input.style.maxWidth = 'none'
+  // 先压到 1px 再量 scrollWidth，否则 input 默认 20 字符宽会把测量值撑大
+  input.style.width = '1px'
+  const measured = Math.max(input.scrollWidth + 24, input.value.length * 14 + 30, 120)
+  input.style.width = `${Math.min(max, measured)}px`
+}
+
+function onEditorInput(ev: Event): void {
+  const t = ev.target as HTMLElement | null
+  if (t?.classList?.contains('jsmind-editor')) sizeEditor()
+}
+
+function onEditorFocusIn(ev: FocusEvent): void {
+  const t = ev.target as HTMLElement | null
+  if (t?.classList?.contains('jsmind-editor')) setTimeout(sizeEditor, 0)
+}
+
 function onDocumentClick(ev: MouseEvent): void {
   const t = ev.target as HTMLElement
-  if (!t.closest('.mm-menu') && !t.closest('.mm-zoom') && !t.closest('.mm-toolbar')) closeMenu()
-  if (!t.closest('.mm-more-wrap') && !t.closest('.mm-toolbar')) moreMenu.value = false
-  // 点备注面板之外保存（排除打开它的工具条按钮，避免刚点开就被关）
+  if (!t.closest('.mm-menu') && !t.closest('.mm-zoom') && !t.closest('.mm-fab-wrap')) closeMenu()
+  if (!t.closest('.mm-fab-wrap')) moreMenu.value = false
+  // 点备注面板之外保存（排除打开它的入口按钮，避免刚点开就被关）
   if (
     noteEditor.open &&
     !t.closest('.mm-note-card') &&
-    !t.closest('.mm-toolbar') &&
+    !t.closest('.mm-fab-wrap') &&
     !t.closest('.mm-menu')
   ) {
     saveNoteEditor()
@@ -964,6 +1020,8 @@ onBeforeUnmount(() => {
   hostEl.value?.removeEventListener('paste', onHostPaste)
   hostEl.value?.removeEventListener('click', onHostClick)
   hostEl.value?.removeEventListener('wheel', onWheelZoom)
+  hostEl.value?.removeEventListener('input', onEditorInput, true)
+  hostEl.value?.removeEventListener('focusin', onEditorFocusIn)
   document.removeEventListener('click', onDocumentClick)
   window.removeEventListener('pointermove', onPointerMove)
   for (const t of resizeTimers) clearTimeout(t)
@@ -979,106 +1037,98 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="hostEl" class="ol-mind" tabindex="0"></div>
+  <div class="mm-root">
+    <div ref="hostEl" class="ol-mind" tabindex="0"></div>
 
-  <!-- 底部工具条（深色浮动，节点操作） -->
-  <div class="mm-toolbar" @click.stop>
-    <button class="mm-tb" title="新建子主题（Tab）" @click="addChild()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
-    </button>
-    <button class="mm-tb" title="新建同级主题（Enter）" @click="addSibling()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h7a4 4 0 0 1 4 4v6M12 12l3 3 3-3" /></svg>
-    </button>
-    <button class="mm-tb" title="删除主题（Delete）" @click="deleteSelected()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10M9 9v4M11 9v4" /></svg>
-    </button>
-    <span class="mm-sep"></span>
-    <button class="mm-tb" title="折叠 / 展开" @click="toggleCollapse()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 8l5 5 5-5" /></svg>
-    </button>
-    <button class="mm-tb" title="备注" @click="openNoteEditor()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v9H8l-4 3V4z" /></svg>
-    </button>
-    <button class="mm-tb" title="待办 / 完成" @click="toggleTaskFromToolbar()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3.5" y="3.5" width="13" height="13" rx="3" /><path d="M7 10l2 2 4-4" /></svg>
-    </button>
-    <button class="mm-tb" title="插入图片" @click="requestImage()">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2" /><circle cx="7.5" cy="8" r="1.3" /><path d="M4 14l4-4 3 3 2-2 3 3" /></svg>
-    </button>
-    <span class="mm-sep"></span>
-    <div class="mm-more-wrap">
-      <button class="mm-tb" title="更多" @click.stop="moreMenu = !moreMenu">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="1.3" /><circle cx="10" cy="10" r="1.3" /><circle cx="15" cy="10" r="1.3" /></svg>
+    <!-- 顶部小菜单：不常驻大工具条，只留一个不碍眼的入口 -->
+    <div class="mm-fab-wrap" @click.stop>
+      <button class="mm-fab" title="导图操作" @click.stop="moreMenu = !moreMenu">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="4.5" cy="10" r="1.4" />
+          <circle cx="10" cy="10" r="1.4" />
+          <circle cx="15.5" cy="10" r="1.4" />
+        </svg>
       </button>
-      <div v-if="moreMenu" class="mm-more" @click.stop>
-        <button class="mm-mi" @click="moreMenu = false; duplicateSelected()">复制节点</button>
+      <div v-if="moreMenu" class="mm-fab-menu" @click.stop>
+        <button class="mm-mi" @click="moreMenu = false; addChild()">新建子主题 <kbd>Tab</kbd></button>
+        <button class="mm-mi" @click="moreMenu = false; addSibling()">新建同级主题 <kbd>Enter</kbd></button>
+        <button class="mm-mi" @click="moreMenu = false; addSibling(true)">在前插入同级</button>
+        <button class="mm-mi" @click="moreMenu = false; editSelected()">编辑 <kbd>Space</kbd></button>
+        <div class="mm-sep-h"></div>
+        <button class="mm-mi" @click="moreMenu = false; openNoteEditor()">备注</button>
+        <button class="mm-mi" @click="moreMenu = false; toggleTaskFromToolbar()">待办 / 完成</button>
+        <button class="mm-mi" @click="moreMenu = false; requestImage()">插入图片</button>
+        <button class="mm-mi" @click="moreMenu = false; duplicateSelected()">复制节点 <kbd>Ctrl+D</kbd></button>
+        <div class="mm-sep-h"></div>
         <button class="mm-mi" @click="moreMenu = false; expandAll()">全部展开</button>
         <button class="mm-mi" @click="moreMenu = false; collapseAll()">全部折叠</button>
         <button class="mm-mi" @click="moreMenu = false; fitView()">适应画布</button>
+        <div class="mm-sep-h"></div>
+        <button class="mm-mi danger" @click="moreMenu = false; deleteSelected()">删除主题 <kbd>Del</kbd></button>
       </div>
     </div>
-  </div>
 
-  <!-- 缩放 -->
-  <div class="mm-zoom" @click.stop>
-    <button title="缩小（Ctrl+-）" @click="zoomOut()">−</button>
-    <button class="mm-zoom-val" title="恢复 100%" @click="resetZoom()">{{ zoomPercent }}%</button>
-    <button title="放大（Ctrl+=）" @click="zoomIn()">＋</button>
-    <span class="mm-zoom-sep"></span>
-    <button class="mm-zoom-fit" title="适应画布（Ctrl+0）" @click="fitView()">⤢</button>
-  </div>
-
-  <!-- 拖动幽灵 + 落点线 -->
-  <div v-if="drag.active" class="mm-drag-ghost" :style="{ left: drag.ghostX + 'px', top: drag.ghostY + 'px' }">
-    {{ metaById.get(drag.fromId ?? '')?.text || '移动主题' }}
-  </div>
-  <div
-    v-if="drag.active && drag.targetId && drag.mode !== 'child'"
-    class="mm-drop-line"
-    :style="{ left: drag.lineLeft + 'px', top: drag.lineTop + 'px', width: drag.lineWidth + 'px' }"
-  ></div>
-
-  <!-- 右键菜单 -->
-  <div v-if="menu.open" class="mm-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop>
-    <button class="mm-mi" @click="menuCall(() => addChild())">新建子主题 <kbd>Tab</kbd></button>
-    <button class="mm-mi" @click="menuCall(() => addSibling())">新建同级主题 <kbd>Enter</kbd></button>
-    <button class="mm-mi" @click="menuCall(() => addSibling(true))">在前插入同级</button>
-    <button class="mm-mi" @click="menuCall(() => editSelected())">编辑 <kbd>Space</kbd></button>
-    <div class="mm-sep-h"></div>
-    <button class="mm-mi" @click="menuCall(() => duplicateSelected())">复制节点 <kbd>Ctrl+D</kbd></button>
-    <button class="mm-mi" @click="menuCall(() => openNoteEditor())">备注</button>
-    <button class="mm-mi" @click="menuCall(() => toggleTask(1))">设为待办</button>
-    <button class="mm-mi" @click="menuCall(() => toggleTask(2))">标记完成</button>
-    <button class="mm-mi" @click="menuCall(() => toggleTask(0))">取消待办</button>
-    <button class="mm-mi" @click="menuCall(() => requestImage())">插入图片</button>
-    <div class="mm-sep-h"></div>
-    <button class="mm-mi" @click="menuCall(() => toggleCollapse())">折叠 / 展开</button>
-    <button class="mm-mi" @click="menuCall(() => fitView())">适应画布</button>
-    <div class="mm-sep-h"></div>
-    <button class="mm-mi danger" @click="menuCall(() => deleteSelected())">删除主题 <kbd>Del</kbd></button>
-  </div>
-
-  <!-- 备注编辑 -->
-  <div v-if="noteEditor.open" class="mm-note-card" @click.stop>
-    <div class="mm-note-head">
-      <span>备注</span>
-      <button title="关闭" @click="saveNoteEditor()">✕</button>
+    <!-- 缩放 -->
+    <div class="mm-zoom" @click.stop>
+      <button title="缩小（Ctrl+-）" @click="zoomOut()">−</button>
+      <button class="mm-zoom-val" title="恢复 100%" @click="resetZoom()">{{ zoomPercent }}%</button>
+      <button title="放大（Ctrl+=）" @click="zoomIn()">＋</button>
+      <span class="mm-zoom-sep"></span>
+      <button class="mm-zoom-fit" title="适应画布（Ctrl+0）" @click="fitView()">⤢</button>
     </div>
-    <textarea
-      v-model="noteEditor.value"
-      class="mm-note-text"
-      rows="4"
-      placeholder="给这个主题补一段说明…"
-      @keydown.esc.prevent="saveNoteEditor()"
-      @keydown.ctrl.enter.prevent="saveNoteEditor()"
-    ></textarea>
-    <div class="mm-note-foot">
-      <span class="mm-note-hint">Ctrl+Enter 保存</span>
-      <button class="mm-note-save" @click="saveNoteEditor()">保存</button>
-    </div>
-  </div>
 
-  <input ref="imageInput" type="file" accept="image/*" multiple class="mm-file" @change="onPickImages" />
+    <!-- 拖动幽灵 + 落点线 -->
+    <div v-if="drag.active" class="mm-drag-ghost" :style="{ left: drag.ghostX + 'px', top: drag.ghostY + 'px' }">
+      {{ metaById.get(drag.fromId ?? '')?.text || '移动主题' }}
+    </div>
+    <div
+      v-if="drag.active && drag.targetId && drag.mode !== 'child'"
+      class="mm-drop-line"
+      :style="{ left: drag.lineLeft + 'px', top: drag.lineTop + 'px', width: drag.lineWidth + 'px' }"
+    ></div>
+
+    <!-- 右键菜单 -->
+    <div v-if="menu.open" class="mm-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop>
+      <button class="mm-mi" @click="menuCall(() => addChild())">新建子主题 <kbd>Tab</kbd></button>
+      <button class="mm-mi" @click="menuCall(() => addSibling())">新建同级主题 <kbd>Enter</kbd></button>
+      <button class="mm-mi" @click="menuCall(() => addSibling(true))">在前插入同级</button>
+      <button class="mm-mi" @click="menuCall(() => editSelected())">编辑 <kbd>Space</kbd></button>
+      <div class="mm-sep-h"></div>
+      <button class="mm-mi" @click="menuCall(() => duplicateSelected())">复制节点 <kbd>Ctrl+D</kbd></button>
+      <button class="mm-mi" @click="menuCall(() => openNoteEditor())">备注</button>
+      <button class="mm-mi" @click="menuCall(() => toggleTask(1))">设为待办</button>
+      <button class="mm-mi" @click="menuCall(() => toggleTask(2))">标记完成</button>
+      <button class="mm-mi" @click="menuCall(() => toggleTask(0))">取消待办</button>
+      <button class="mm-mi" @click="menuCall(() => requestImage())">插入图片</button>
+      <div class="mm-sep-h"></div>
+      <button class="mm-mi" @click="menuCall(() => toggleCollapse())">折叠 / 展开</button>
+      <button class="mm-mi" @click="menuCall(() => fitView())">适应画布</button>
+      <div class="mm-sep-h"></div>
+      <button class="mm-mi danger" @click="menuCall(() => deleteSelected())">删除主题 <kbd>Del</kbd></button>
+    </div>
+
+    <!-- 备注编辑 -->
+    <div v-if="noteEditor.open" class="mm-note-card" @click.stop>
+      <div class="mm-note-head">
+        <span>备注</span>
+        <button title="关闭" @click="saveNoteEditor()">✕</button>
+      </div>
+      <textarea
+        v-model="noteEditor.value"
+        class="mm-note-text"
+        rows="4"
+        placeholder="给这个主题补一段说明…"
+        @keydown.esc.prevent="saveNoteEditor()"
+        @keydown.ctrl.enter.prevent="saveNoteEditor()"
+      ></textarea>
+      <div class="mm-note-foot">
+        <span class="mm-note-hint">Ctrl+Enter 保存</span>
+        <button class="mm-note-save" @click="saveNoteEditor()">保存</button>
+      </div>
+    </div>
+
+    <input ref="imageInput" type="file" accept="image/*" multiple class="mm-file" @change="onPickImages" />
+  </div>
 </template>
 
 <!-- jsMind 内部 DOM 不受 scoped 约束：作用域统一用 .ol-mind 前缀 -->
@@ -1088,26 +1138,31 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   outline: none;
-  background: #eef2f5;
+  background: #fff;
   position: relative;
 }
 
 .ol-mind jmnode {
   background: #fff;
   color: var(--lb-text);
-  border: 1px solid #e1e5e9;
+  border: 1px solid #e3e7ec;
   border-radius: 16px;
-  box-shadow: 0 1px 2px rgba(20, 24, 38, 0.07);
+  box-shadow: 0 1px 3px rgba(20, 24, 38, 0.07);
   font-family: var(--lb-sans);
   font-size: 14px;
   line-height: 1.55;
   padding: 7px 13px;
   max-width: 260px;
   white-space: normal;
+  cursor: grab;
   transition:
     border-color 0.14s ease,
     box-shadow 0.14s ease,
     transform 0.14s ease;
+}
+
+.ol-mind jmnode:active {
+  cursor: grabbing;
 }
 
 .ol-mind jmnode:hover {
@@ -1196,6 +1251,7 @@ onBeforeUnmount(() => {
 }
 
 .ol-mind .jsmind-editor {
+  box-sizing: border-box;
   border: 1px solid rgba(0, 113, 227, 0.55);
   border-radius: 10px;
   box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
@@ -1203,6 +1259,9 @@ onBeforeUnmount(() => {
   font-size: 14px;
   padding: 6px 10px;
   outline: none;
+  position: relative;
+  z-index: 2;
+  background: #fff;
 }
 
 /* 拖动时关闭文本选择 */
@@ -1213,65 +1272,57 @@ body.mm-dragging {
 </style>
 
 <style scoped>
-.mm-toolbar {
-  position: absolute;
-  left: 50%;
-  bottom: 26px;
-  z-index: 30;
+.mm-root {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 5px 8px;
-  border-radius: 14px;
-  background: rgba(43, 47, 54, 0.96);
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.24);
-  transform: translateX(-50%);
-  backdrop-filter: blur(12px);
+  flex: 1;
+  min-height: 0;
+  background: #fff;
 }
 
-.mm-tb {
+/* 不常驻大工具条：只留右上角一个低存在感入口 */
+.mm-fab-wrap {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 30;
+}
+
+.mm-fab {
   width: 34px;
   height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  border-radius: 9px;
-  background: transparent;
-  color: #c9c9ce;
+  border: 1px solid var(--lb-border);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--lb-muted);
+  box-shadow: var(--lb-shadow-1);
+  backdrop-filter: blur(8px);
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease,
+    transform 0.14s ease;
 }
 
-.mm-tb:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+.mm-fab:hover {
+  color: var(--lb-accent);
+  border-color: var(--lb-accent-2);
+  transform: translateY(-1px);
 }
 
-.mm-tb svg {
-  width: 20px;
-  height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.mm-fab svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
-.mm-sep {
-  width: 1px;
-  height: 20px;
-  margin: 0 4px;
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.mm-more-wrap {
-  position: relative;
-}
-
-.mm-more {
+.mm-fab-menu {
   position: absolute;
+  top: calc(100% + 8px);
   right: 0;
-  bottom: calc(100% + 10px);
-  min-width: 148px;
+  min-width: 196px;
   padding: 5px;
   border-radius: 10px;
   background: #2b2f36;

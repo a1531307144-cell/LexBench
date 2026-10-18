@@ -459,7 +459,19 @@ let mapModeOk = false
 
   await evalJs(`[...document.querySelectorAll('.ol-view-switch button')].find((x) => x.textContent.includes('导图'))?.click()`)
   mapOk = await until(() => document.querySelectorAll('jmnode').length >= 2)
-  await evalJs(`(() => { const n = [...document.querySelectorAll('jmnode')].find((x) => !x.classList.contains('root') && x.textContent.includes('贴图载体行')); n?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); return !!n })()`)
+  await sleep(600)
+  // 先点选节点，再用 Space 进入编辑（比合成 dblclick 稳定）
+  await evalJs(`(() => {
+    const n = [...document.querySelectorAll('jmnode')].find((x) => !x.classList.contains('root') && x.textContent.includes('贴图载体行'))
+    if (!n) return false
+    const r = n.getBoundingClientRect()
+    n.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    const host = document.querySelector('.ol-mind')
+    host?.focus()
+    host?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }))
+    return true
+  })()`)
   const editing = await until(() => !!document.querySelector('.ol-mind .jsmind-editor'))
   if (editing) {
     await evalJs(`(() => {
@@ -472,11 +484,20 @@ let mapModeOk = false
       inp.dispatchEvent(ke)
       return true
     })()`)
-    await sleep(800)
+    await sleep(900)
   }
+  const editSaved = editing && (await until(() => {
+    return window.lexbench.outlines.list().then(async (l) => {
+      const n = l.find((x) => x.group_id !== null)
+      if (!n) return false
+      const d = await window.lexbench.outlines.get(n.id)
+      const walk = (ns) => ns.some((x) => x.text === '导图自测节点' || walk(x.children ?? []))
+      return walk(JSON.parse(d.tree))
+    })
+  }))
   await evalJs(`[...document.querySelectorAll('.ol-view-switch button')].find((x) => x.textContent.includes('大纲'))?.click()`)
-  await sleep(600)
-  mapEditOk = editing && (await evalJs(`[...document.querySelectorAll('.ol-text')].some((t) => t.textContent.includes('导图自测节点'))`))
+  const editUiOk = await until(() => [...document.querySelectorAll('.ol-text')].some((t) => t.textContent.includes('导图自测节点')))
+  mapEditOk = editing && editSaved && editUiOk
   mapImageKept = await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
     const n = l.find((x) => x.group_id !== null)
@@ -497,6 +518,8 @@ let mapModeOk = false
 console.log('=== 11b. 导图拖动 + 缩放 ===')
 let mapDragOk = false
 let mapZoomOk = false
+let mapChromeOk = false
+let mapEditorGrowOk = false
 {
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -548,6 +571,40 @@ let mapZoomOk = false
   await sleep(350)
   const zoomAfter = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
   mapZoomOk = !!zoomBefore && !!zoomAfter && zoomBefore !== zoomAfter
+
+  // 白底 + 不常驻底部工具条（反馈修正）
+  mapChromeOk = await evalJs(`(() => {
+    const m = document.querySelector('.ol-mind')
+    return !document.querySelector('.mm-toolbar') && !!document.querySelector('.mm-fab') && !!m && getComputedStyle(m).backgroundColor === 'rgb(255, 255, 255)'
+  })()`)
+
+  // 编辑框随键入扩展（jsMind 默认固定宽度会截住长文本）
+  await evalJs(`(() => { const n = [...document.querySelectorAll('jmnode')].find(x => x.textContent === 'A'); n?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); return !!n })()`)
+  const growEditor = await until(`() => !!document.querySelector('.jsmind-editor')`)
+  if (growEditor) {
+    const w0 = await evalJs(`document.querySelector('.jsmind-editor')?.getBoundingClientRect().width ?? 0`)
+    await evalJs(`(() => {
+      const inp = document.querySelector('.jsmind-editor')
+      if (!inp) return false
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setter.call(inp, '这是一段很长的导图节点文字用来测试编辑框是否随输入扩展')
+      inp.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    })()`)
+    await sleep(400)
+    const w1 = await evalJs(`document.querySelector('.jsmind-editor')?.getBoundingClientRect().width ?? 0`)
+    mapEditorGrowOk = w1 > w0 + 80
+    await evalJs(`(() => {
+      const inp = document.querySelector('.jsmind-editor')
+      if (!inp) return false
+      const ke = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      Object.defineProperty(ke, 'keyCode', { value: 13 })
+      inp.dispatchEvent(ke)
+      return true
+    })()`)
+    await sleep(500)
+  }
+
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
     for (const n of l) if (n.title === '拖动自测') await window.lexbench.outlines.remove(n.id)
@@ -668,6 +725,8 @@ const checks = [
   ['view_mode 记忆落库', mapModeOk],
   ['导图：节点拖动改挂载', mapDragOk],
   ['导图：缩放控件', mapZoomOk],
+  ['导图：白底且无底部工具条', mapChromeOk],
+  ['导图：编辑框随输入扩展', mapEditorGrowOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],

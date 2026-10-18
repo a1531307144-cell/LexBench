@@ -234,6 +234,11 @@ function scheduleTitleSave(): void {
   saveTimer = setTimeout(() => void saveNow(true), 500)
 }
 
+/** 笔记已被删（如删除/数据恢复后的卸载冲刷）：不再弹「笔记不存在」打扰 */
+function isMissingNoteError(e: unknown): boolean {
+  return (e instanceof Error ? e.message : String(e)).includes('笔记不存在')
+}
+
 async function saveNow(withTitle: boolean): Promise<void> {
   clearTimeout(saveTimer)
   if (!dirty && !withTitle) return
@@ -248,6 +253,7 @@ async function saveNow(withTitle: boolean): Promise<void> {
     )
     if (sendTitle) emit('list-changed')
   } catch (e) {
+    if (isMissingNoteError(e)) return
     dirty = true
     emit('error', e)
   }
@@ -1577,7 +1583,7 @@ async function setView(mode: 'outline' | 'map'): Promise<void> {
   try {
     await window.lexbench.outlines.setViewMode(props.outline.id, mode)
   } catch (e) {
-    emit('error', e)
+    if (!isMissingNoteError(e)) emit('error', e)
   }
   if (mode === 'outline') {
     nextTick(() => {
@@ -1594,6 +1600,15 @@ function onMapChange(newTree: OutlineNode[]): void {
   bumpRender()
   pushHistory()
   scheduleSave()
+}
+
+/** 导图中心主题改名 = 笔记标题改名 */
+function onMapRename(next: string): void {
+  const clean = next.trim() || '未命名笔记'
+  if (clean === title.value) return
+  title.value = clean
+  scheduleTitleSave()
+  emit('list-changed')
 }
 
 async function exportOutline(format: ExportFormat): Promise<void> {
@@ -1878,6 +1893,7 @@ onBeforeUnmount(() => {
       :title="displayTitle"
       @change="onMapChange"
       @error="(e) => emit('error', e)"
+      @rename="onMapRename"
       @undo="undo"
       @redo="redo"
     />

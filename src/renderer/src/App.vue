@@ -202,6 +202,13 @@ const notice = ref<{ text: string; kind: 'success' | 'warn' } | null>(null)
 
 let dragDepth = 0
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
+let errorTimer: ReturnType<typeof setTimeout> | undefined
+
+// 错误条也自动收起（8s）：不再需要用户手动找 ✕，也不会长期挂在界面上
+watch(error, (text) => {
+  clearTimeout(errorTimer)
+  if (text) errorTimer = setTimeout(() => (error.value = ''), 8000)
+})
 
 // 删除确认弹窗文案
 const deleteMessage = computed(() =>
@@ -719,6 +726,7 @@ onBeforeUnmount(() => {
   unsubAiVis?.()
   unsubAiArticle?.()
   clearTimeout(noticeTimer)
+  clearTimeout(errorTimer)
   clearTimeout(topTimer)
 })
 </script>
