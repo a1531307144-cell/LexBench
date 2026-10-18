@@ -379,13 +379,13 @@ const progOk =
   !!prog && !prog.__error && Number.isInteger(prog.paraIndex) && prog.paraIndex === jumpOrder
 console.log('=== 8d. 进度记忆 ===', progOk ? 'OK' : 'FAIL', JSON.stringify(prog))
 
-// 返回 → 整区卸载、回到文档库 Tab
+// 返回 → 整区卸载、回到文档库方向（阶段2：分段控件=文档库/笔记，返回后应落在文档库侧）
 await evalJs(`document.querySelector('.sv-back')?.click()`)
 await new Promise((r) => setTimeout(r, 400))
 const backOk =
   (await evalJs(`!document.querySelector('.sv')`)) === true &&
   (await evalJs(`!!document.querySelector('.doc-card')`)) === true &&
-  (await evalJs(`!document.querySelector('.tab')`)) === true // 分段控件已随专题退场
+  (await evalJs(`document.querySelector('.rail-item.active')?.textContent?.includes('文档库') === true`)) === true
 console.log('=== 8e. 返回文档库 ===', backOk ? 'OK' : 'FAIL')
 
 // 重开 → 恢复上次阅读位置 + 「已回到上次阅读位置」提示

@@ -6,6 +6,8 @@ import BackupDialog from './components/BackupDialog.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DocLibrary from './components/DocLibrary.vue'
 import ImportDialog from './components/ImportDialog.vue'
+import NotesPanel from './components/NotesPanel.vue'
+import OutlineEditor from './components/OutlineEditor.vue'
 import ReadingView from './components/ReadingView.vue'
 import ResultList from './components/ResultList.vue'
 import StatuteReadingView from './components/StatuteReadingView.vue'
@@ -15,6 +17,9 @@ import type {
   DocGroupRow,
   DocumentDetail,
   DocumentRow,
+  NoteGroupRow,
+  OutlineListRow,
+  OutlineRow,
   SearchHit,
   SearchMode,
   SearchOutcome
@@ -24,10 +29,11 @@ import type {
  * 阅读器状态：书籍/案例/资料 = 沉浸阅读（ReadingView 按段落流）；
  * 法规 = 全页阅读（StatuteReadingView，focusOrder = 搜索直达的初始定位）。
  * 中栏单条/文档视图已随「专题」板块一并退场。
+ * silentRestore = 续读契约的静默重开（恢复位置但不弹「已回到上次位置」提示）。
  */
 type ReaderState =
-  | { type: 'book'; data: DocumentDetail; focusPara?: number }
-  | { type: 'statute-full'; data: DocumentDetail; focusOrder?: number }
+  | { type: 'book'; data: DocumentDetail; focusPara?: number; silentRestore?: boolean }
+  | { type: 'statute-full'; data: DocumentDetail; focusOrder?: number; silentRestore?: boolean }
   | null
 
 /** 交给 ImportDialog 的待导入文件（路径经 webUtils 解析，仅用于交回主进程读取） */
@@ -97,6 +103,72 @@ const topHint = pickDistinct(TOPBAR_HINTS, 1)[0] ?? TOPBAR_HINTS[0]
 const documents = ref<DocumentRow[]>([])
 /** 用户自建分类文件夹（全类型，DocLibrary / ImportDialog 各自按类型过滤） */
 const groups = ref<DocGroupRow[]>([])
+/** 主板块方向：文档库 / 笔记（左导航两项，阶段2） */
+const tab = ref<'library' | 'notes'>('library')
+/**
+ * 续读契约（§3.5，用户点名必须做好）：离开阅读（返回）时记住文档；
+ * 从笔记切回文档库方向时**静默**重开该文档并恢复位置（不弹横幅）。
+ * 只恢复一次；用户从文档库显式打开新文档即作废。
+ */
+const resumeDoc = ref<{ id: number; type: 'statute' | 'book' } | null>(null)
+
+// ---------- 左侧竖排导航 + 悬停浮层面板（2026-10-17 用户定稿） ----------
+// 热区 = 竖排 + 浮层面板整体：面板内连续翻文档/笔记保持展开，移出后 150ms 才折叠；
+// 面板是覆盖式浮层（不推挤正文），动画沿用现成配方（0.18s cubic-bezier(0.25,0.1,0.25,1)）。
+const panelOpen = ref(false)
+/** 面板显示哪个方向的内容：悬停项优先，决定面板内容而非当前方向 */
+const panelTab = ref<'library' | 'notes'>('library')
+/** 阅读页右上「全区展开」：true=隐藏竖排（仅阅读时生效，离开阅读复位） */
+const railHidden = ref(false)
+let panelCloseTimer: ReturnType<typeof setTimeout> | undefined
+
+function railEnter(which: 'library' | 'notes'): void {
+  clearTimeout(panelCloseTimer)
+  panelTab.value = which
+  panelOpen.value = true
+}
+
+function railLeave(): void {
+  clearTimeout(panelCloseTimer)
+  panelCloseTimer = setTimeout(() => (panelOpen.value = false), 150)
+}
+
+function panelEnter(): void {
+  clearTimeout(panelCloseTimer)
+  panelOpen.value = true
+}
+
+function panelLeave(): void {
+  clearTimeout(panelCloseTimer)
+  panelCloseTimer = setTimeout(() => (panelOpen.value = false), 150)
+}
+
+/** 点击竖排项：切方向 + 展开面板（阅读中切方向由 watch(tab) 关阅读并记续读） */
+function pickNav(which: 'library' | 'notes'): void {
+  tab.value = which
+  panelTab.value = which
+  panelOpen.value = true
+}
+
+/** 点内容区空白处收起面板（补悬停机制之外的兜底） */
+function onBodyClick(e: MouseEvent): void {
+  const t = e.target as HTMLElement
+  if (!t.closest('.rail') && !t.closest('.rail-panel')) panelOpen.value = false
+}
+
+/** 阅读页「全区展开」开关（右上角按钮转发） */
+function toggleRail(): void {
+  railHidden.value = !railHidden.value
+}
+/** 笔记列表（更新时间序）与当前打开的笔记全文 */
+const notes = ref<OutlineListRow[]>([])
+/** 笔记自定义分类（note_groups；面板内增删改后经 groups-changed 刷新） */
+const noteGroups = ref<NoteGroupRow[]>([])
+const activeOutline = ref<OutlineRow | null>(null)
+/** 笔记快照版本：卸载冲刷后重取快照时 +1，强制编辑器用新数据重挂（防旧快照覆盖） */
+const outlineRev = ref(0)
+/** 笔记左列面板（星标列表切回该方向时刷新） */
+const notesPanelRef = ref<InstanceType<typeof NotesPanel> | null>(null)
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
 const showImport = ref(false)
@@ -122,6 +194,8 @@ const dragging = ref(false)
 const error = ref('')
 const version = ref('')
 const pendingDelete = ref<DocumentRow | null>(null)
+/** 待删除笔记（「⋯」→删除笔记的确认弹窗） */
+const pendingNoteDelete = ref<OutlineRow | null>(null)
 
 /** 全局消息条：导出成功等正向反馈（复用错误条容器，6 秒自动消失） */
 const notice = ref<{ text: string; kind: 'success' | 'warn' } | null>(null)
@@ -133,6 +207,12 @@ let noticeTimer: ReturnType<typeof setTimeout> | undefined
 const deleteMessage = computed(() =>
   pendingDelete.value
     ? `确定删除《${pendingDelete.value.title}》？其条文/段落与全文索引将一并移除，此操作不可撤销。`
+    : ''
+)
+
+const deleteNoteMessage = computed(() =>
+  pendingNoteDelete.value
+    ? `确定删除笔记《${pendingNoteDelete.value.title}》？此操作不可撤销。`
     : ''
 )
 
@@ -172,6 +252,108 @@ async function onGroupsChanged(): Promise<void> {
   await refreshGroups()
   await refreshDocs()
 }
+
+// ---------- 笔记库（阶段2） ----------
+
+async function refreshNotes(): Promise<void> {
+  try {
+    notes.value = await window.lexbench.outlines.list()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function refreshNoteGroups(): Promise<void> {
+  try {
+    noteGroups.value = await window.lexbench.noteGroups.list()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function openNote(id: number): Promise<void> {
+  try {
+    activeOutline.value = await window.lexbench.outlines.get(id)
+  } catch (e) {
+    activeOutline.value = null
+    showError(e)
+  }
+}
+
+async function createNote(groupId?: number | null): Promise<void> {
+  try {
+    const row = await window.lexbench.outlines.create('未命名笔记', groupId ?? null)
+    await refreshNotes()
+    activeOutline.value = row
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** 星标法条入口：直达全页阅读并跳到该条 */
+async function openStarredArticle(payload: { documentId: number; orderIndex: number }): Promise<void> {
+  await openStatuteFull(payload.documentId, { focusOrder: payload.orderIndex })
+}
+
+/** 引用节点右键「在文档库打开来源」（逃生门）：全页阅读跳到该条 */
+async function openSourceFromNote(ref: { docId: number; articleId: number }): Promise<void> {
+  try {
+    const detail = await window.lexbench.library.getArticle(ref.articleId)
+    await openStatuteFull(ref.docId, { focusOrder: detail.article.order_index })
+  } catch (e) {
+    // 来源已被删：提示而非白屏
+    showError(e)
+  }
+}
+
+/** 「⋯」→删除笔记：确认后删库、清选中、刷列表 */
+async function confirmDeleteNote(): Promise<void> {
+  const target = pendingNoteDelete.value
+  pendingNoteDelete.value = null
+  if (!target) return
+  try {
+    await window.lexbench.outlines.remove(target.id)
+    if (activeOutline.value?.id === target.id) activeOutline.value = null
+    await refreshNotes()
+    setNotice('笔记已删除')
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** 编辑器标题改名后列表要重排（updated_at 序）；树的静默保存不触发 */
+async function onNoteListChanged(): Promise<void> {
+  await refreshNotes()
+}
+
+// 切到笔记方向时：刷新星标入口 + 重取当前笔记快照。
+// 快照必须重取——切走时编辑器卸载已 flush 落库，App 手里的 outline 是卸载前的旧数据，
+// 直接重挂会用旧树覆盖刚存的内容。save/get 走同一 renderer→main IPC 队列，main 侧
+// node:sqlite 同步按序处理，get 一定读到 flush 之后的状态（不依赖卸载 emit，那条链不可靠）。
+// 切回文档库方向时：续读契约——离开时在读（resumeDoc 有值）则静默重开该文档恢复位置。
+watch(tab, async (t) => {
+  // 阅读中经竖排切方向：关阅读（卸载冲刷进度 + 记 resumeDoc，回库方向时静默重开）
+  if (reader.value) closeReading()
+  if (t === 'library') {
+    const resume = resumeDoc.value
+    // readerLoading 在途 = 正在打开另一文档（如从笔记面板直接点开）——不抢，留给它
+    if (resume && !reader.value && !readerLoading.value) {
+      resumeDoc.value = null // 一次性消费：再从笔记回来若没再读过 → 回首页
+      if (resume.type === 'statute') await openStatuteFull(resume.id, { silentRestore: true })
+      else await openReading(resume.id, { silentRestore: true })
+    }
+    return
+  }
+  void notesPanelRef.value?.refreshStarred()
+  const cur = activeOutline.value
+  if (!cur) return
+  try {
+    activeOutline.value = await window.lexbench.outlines.get(cur.id)
+    outlineRev.value += 1 // 强制编辑器用新快照重挂
+  } catch {
+    activeOutline.value = null // 笔记已被删（如数据包导入后）
+  }
+})
 
 /** 导入完成（含部分失败）：新文档可能新建/归入分类，文档库与分组计数一并刷新 */
 async function onImported(): Promise<void> {
@@ -243,8 +425,13 @@ function onTopInput(): void {
 /**
  * 沉浸阅读（书籍/案例/资料的段落流；pdf 走页面模式）：
  * hitId（检索命中的 chunk id）/focusPara 用于进入后定位段落。
+ * 打开阅读一律切到文档库方向（顶栏搜索直达/星标入口都从笔记方向也能正确落位）。
  */
-async function openReading(id: number, opts?: { hitId?: number; focusPara?: number }): Promise<void> {
+async function openReading(
+  id: number,
+  opts?: { hitId?: number; focusPara?: number; silentRestore?: boolean }
+): Promise<void> {
+  tab.value = 'library'
   readerLoading.value = true
   try {
     const detail = await window.lexbench.library.getDocument(id)
@@ -252,27 +439,42 @@ async function openReading(id: number, opts?: { hitId?: number; focusPara?: numb
     if (focus === undefined && opts?.hitId !== undefined) {
       focus = detail.chunks.find((c) => c.id === opts.hitId)?.seq
     }
-    reader.value = { type: 'book', data: detail, focusPara: focus }
+    reader.value = {
+      type: 'book',
+      data: detail,
+      focusPara: focus,
+      silentRestore: opts?.silentRestore
+    }
   } catch (e) {
+    // 续读期间文档被删：落回首页 + 提示，不白屏
+    if (opts?.silentRestore) setNotice('上次阅读的文档已不存在，已回到文档库', 'warn')
     showError(e)
   } finally {
     readerLoading.value = false
+    panelOpen.value = false // 阅读打开即收面板，不挡正文
   }
 }
 
 /** 法规全页阅读（文档库/搜索直达统一落点）：focusOrder = 打开时定位到该条 */
-async function openStatuteFull(id: number, opts?: { focusOrder?: number }): Promise<void> {
+async function openStatuteFull(
+  id: number,
+  opts?: { focusOrder?: number; silentRestore?: boolean }
+): Promise<void> {
+  tab.value = 'library'
   readerLoading.value = true
   try {
     reader.value = {
       type: 'statute-full',
       data: await window.lexbench.library.getDocument(id),
-      focusOrder: opts?.focusOrder
+      focusOrder: opts?.focusOrder,
+      silentRestore: opts?.silentRestore
     }
   } catch (e) {
+    if (opts?.silentRestore) setNotice('上次阅读的文档已不存在，已回到文档库', 'warn')
     showError(e)
   } finally {
     readerLoading.value = false
+    panelOpen.value = false
   }
 }
 
@@ -296,9 +498,15 @@ async function openFromLibrary(id: number): Promise<void> {
   return openReading(id)
 }
 
-/** 退出阅读模式：回到文档库 */
+/** 退出阅读模式：回到文档库（记住最近阅读，供续读契约静默恢复；全区态复位） */
 function closeReading(): void {
+  if (reader.value?.type === 'statute-full') {
+    resumeDoc.value = { id: reader.value.data.id, type: 'statute' }
+  } else if (reader.value?.type === 'book') {
+    resumeDoc.value = { id: reader.value.data.id, type: 'book' }
+  }
   reader.value = null
+  railHidden.value = false
 }
 
 /** 阅读模式正向反馈 → 全局消息条 */
@@ -482,6 +690,9 @@ onMounted(() => {
   unsubAiArticle = window.lexbench.aiWindow.onOpenArticle((id) => void openArticleFromAi(id))
   void refreshDocs()
   void refreshGroups()
+  // 笔记两列表首载（此前漏了——首开列表空，直到创建/改名才碰巧刷新）
+  void refreshNotes()
+  void refreshNoteGroups()
   void window.lexbench.app
     .getVersion()
     .then((v) => {
@@ -641,35 +852,49 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
-    <!-- 书籍沉浸阅读：整区替换工作台三栏（返回时恢复原 Tab） -->
-    <main v-if="reader?.type === 'book'" class="reading-full">
-      <ReadingView
-        :key="reader.data.id"
-        :doc="reader.data"
-        :focus-para="reader.focusPara"
-        @back="closeReading"
-        @error="showError"
-        @notice="onReadingNotice"
-      />
-    </main>
+    <!-- 主体：常驻竖排导航 + 悬停浮层面板（覆盖式，热区=导航+面板） + 内容区 -->
+    <div class="body" :class="{ 'rail-off': railHidden }" @click="onBodyClick">
+      <nav class="rail" aria-label="主导航" @mouseleave="railLeave">
+        <button
+          class="rail-item"
+          :class="{ active: tab === 'library' }"
+          title="文档库"
+          @mouseenter="railEnter('library')"
+          @click="pickNav('library')"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+            <rect x="2.5" y="2.5" width="13" height="4.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3" />
+            <rect x="2.5" y="9" width="13" height="4.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.55" />
+            <path d="M5 16h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity="0.35" />
+          </svg>
+          <span class="rail-label">文档库</span>
+          <span class="rail-count">{{ documents.length }}</span>
+        </button>
+        <button
+          class="rail-item"
+          :class="{ active: tab === 'notes' }"
+          title="笔记"
+          @mouseenter="railEnter('notes')"
+          @click="pickNav('notes')"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+            <path d="M4 2.8h10v12.4H4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+            <path d="M6.6 6.4h4.8M6.6 9.2h4.8M6.6 12h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+          </svg>
+          <span class="rail-label">笔记</span>
+          <span class="rail-count">{{ notes.length }}</span>
+        </button>
+      </nav>
 
-    <!-- 法规全页阅读：文档库卡片 / 搜索直达统一落点，目录+连续正文+批注 -->
-    <main v-else-if="reader?.type === 'statute-full'" class="reading-full">
-      <StatuteReadingView
-        :key="reader.data.id"
-        :doc="reader.data"
-        :focus-order="reader.focusOrder"
-        @back="closeReading"
-        @error="showError"
-        @notice="setNotice"
-        @doc-changed="reloadStatuteDoc"
-      />
-    </main>
-
-    <!-- 首页 = 文档库（专题退场后唯一的常驻板块；笔记库在后续阶段加入左导航） -->
-    <main v-else class="main">
-      <aside class="side">
+      <!-- 悬停浮层面板：覆盖式滑入（配方时长 0.18s/缓动同 menu-pop），DOM 常驻控显隐 -->
+      <aside
+        class="rail-panel"
+        :class="{ open: panelOpen }"
+        @mouseenter="panelEnter"
+        @mouseleave="panelLeave"
+      >
         <DocLibrary
+          v-show="panelTab === 'library'"
           :documents="documents"
           :groups="groups"
           @open="openFromLibrary"
@@ -679,8 +904,73 @@ onBeforeUnmount(() => {
           @docs-changed="refreshDocs"
           @error="showError"
         />
+        <NotesPanel
+          v-show="panelTab === 'notes'"
+          ref="notesPanelRef"
+          :notes="notes"
+          :note-groups="noteGroups"
+          :active-id="activeOutline?.id ?? null"
+          @open="openNote"
+          @create="(gid) => createNote(gid)"
+          @open-starred="openStarredArticle"
+          @error="showError"
+          @groups-changed="refreshNoteGroups"
+          @imported="refreshNotes"
+        />
       </aside>
-    </main>
+
+      <!-- 书籍沉浸阅读（竖排常驻，右上可切全区） -->
+      <main v-if="reader?.type === 'book'" class="reading-full">
+        <ReadingView
+          :key="reader.data.id"
+          :doc="reader.data"
+          :focus-para="reader.focusPara"
+          :silent-restore="reader.silentRestore"
+          @back="closeReading"
+          @error="showError"
+          @notice="onReadingNotice"
+          @toggle-rail="toggleRail"
+        />
+      </main>
+
+      <!-- 法规全页阅读：文档库卡片 / 搜索直达统一落点，目录+连续正文+批注 -->
+      <main v-else-if="reader?.type === 'statute-full'" class="reading-full">
+        <StatuteReadingView
+          :key="reader.data.id"
+          :doc="reader.data"
+          :focus-order="reader.focusOrder"
+          :silent-restore="reader.silentRestore"
+          @back="closeReading"
+          @error="showError"
+          @notice="setNotice"
+          @doc-changed="reloadStatuteDoc"
+          @toggle-rail="toggleRail"
+        />
+      </main>
+
+      <!-- 内容区：笔记编辑 / 库方向空态（浏览界面收进悬停面板，空间留给正文） -->
+      <main v-else class="main">
+        <section v-if="tab === 'notes' && activeOutline" class="notes-main">
+          <OutlineEditor
+            :key="`${activeOutline.id}:${outlineRev}`"
+            :outline="activeOutline"
+            @error="showError"
+            @list-changed="onNoteListChanged"
+            @open-source="openSourceFromNote"
+            @delete-request="pendingNoteDelete = activeOutline"
+            @notice="setNotice"
+          />
+        </section>
+        <section v-else-if="tab === 'notes'" class="notes-main notes-empty">
+          <p class="notes-empty-title">选择或新建一篇笔记</p>
+          <p class="notes-empty-line">大纲式笔记：Enter 新行，Tab 缩进，可插入文档库法条引用</p>
+        </section>
+        <section v-else class="lib-home">
+          <p class="lib-home-title">从左侧「文档库」选择文档开始阅读</p>
+          <p class="lib-home-line">悬停竖排项展开列表；右上角「导入文档」可添加新资料</p>
+        </section>
+      </main>
+    </div>
 
     <ImportDialog
       v-model:visible="showImport"
@@ -712,6 +1002,16 @@ onBeforeUnmount(() => {
       confirm-text="删除"
       @confirm="confirmDelete"
       @cancel="pendingDelete = null"
+    />
+
+    <ConfirmModal
+      :visible="pendingNoteDelete !== null"
+      title="删除笔记"
+      :message="deleteNoteMessage"
+      danger
+      confirm-text="删除"
+      @confirm="confirmDeleteNote"
+      @cancel="pendingNoteDelete = null"
     />
 
     <div v-if="dragging" class="drag-overlay">
@@ -1144,14 +1444,21 @@ onBeforeUnmount(() => {
   }
 }
 
-/* ---------- 主区布局 ---------- */
+/* ---------- 主体骨架：竖排导航 + 悬停浮层面板 + 内容区 ---------- */
+.body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .main {
   display: flex;
   flex: 1;
   min-height: 0;
 }
 
-/* 书籍沉浸阅读：整区替换（侧栏/阅读器均由 ReadingView 自管） */
+/* 书籍沉浸阅读（竖排常驻；rail-off 时隐藏 rail 占满正文） */
 .reading-full {
   display: flex;
   flex-direction: column;
@@ -1159,14 +1466,160 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-.side {
-  width: 340px;
+/* ---------- 常驻竖排导航 ---------- */
+.rail {
+  width: 60px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 10px;
+  background: var(--lb-panel);
+  border-right: 1px solid var(--lb-border);
+  z-index: 30; /* 压住浮层面板左沿（面板展开时不留缝） */
+}
+
+.rail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  margin: 0 6px;
+  padding: 10px 2px 8px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: var(--lb-muted);
+}
+
+.rail-item:hover {
+  background: #f0f0f6;
+  color: var(--lb-text);
+}
+
+.rail-item.active {
+  background: var(--lb-accent-soft);
+  color: var(--lb-accent);
+}
+
+.rail-label {
+  font-size: 12px;
+}
+
+.rail-item.active .rail-label {
+  font-weight: 600;
+}
+
+.rail-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--lb-muted);
+}
+
+.rail-item.active .rail-count {
+  color: var(--lb-accent);
+}
+
+/* ---------- 悬停浮层面板（覆盖式，不推挤正文） ----------
+   面板压在正文上（z 20 < rail 30），DOM 常驻、CSS 控显隐；
+   进 0.18s / 出 0.16s，时长与缓动照 menu-pop 配方 */
+.rail-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 60px;
+  width: 340px;
   display: flex;
   flex-direction: column;
   min-height: 0;
   background: var(--lb-panel);
   border-right: 1px solid var(--lb-border);
+  box-shadow: 14px 0 36px rgba(0, 0, 0, 0.1);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-8px);
+  pointer-events: none;
+  /* 压过阅读页标题栏（sv-top 20）与阅读态弹层（批注 300 / 书批注 330 / 法内搜索 420）——
+     用户反馈文档标题曾遮挡面板；仅让位于全局对话框与拖拽遮罩（500/600） */
+  z-index: 450;
+}
+
+.rail-panel.open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rail-panel {
+    transition:
+      opacity 0.16s cubic-bezier(0.25, 0.1, 0.25, 1),
+      transform 0.16s cubic-bezier(0.25, 0.1, 0.25, 1),
+      visibility 0s linear 0.16s; /* 隐藏等过渡收完再切，淡出不被截断 */
+  }
+
+  .rail-panel.open {
+    transition:
+      opacity 0.18s cubic-bezier(0.25, 0.1, 0.25, 1),
+      transform 0.18s cubic-bezier(0.25, 0.1, 0.25, 1),
+      visibility 0s;
+  }
+}
+
+/* 全区阅读：隐藏竖排 */
+.body.rail-off .rail {
+  display: none;
+}
+
+/* ---------- 库方向空态（浏览界面已收进悬停面板） ---------- */
+.lib-home {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.lib-home-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--lb-text);
+}
+
+.lib-home-line {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--lb-muted);
+}
+
+/* ---------- 笔记编辑区 ---------- */
+.notes-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--lb-panel);
+}
+
+.notes-empty {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.notes-empty-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--lb-text);
+}
+
+.notes-empty-line {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--lb-muted);
 }
 
 /* 顶栏「✦ AI 助手」按下态（配方同 sv-top-btn.on：accent 边+柔底） */

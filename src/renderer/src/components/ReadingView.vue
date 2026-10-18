@@ -13,6 +13,8 @@ const props = defineProps<{
   doc: DocumentDetail
   /** 进入时定位的段落 seq（检索命中传入，定位后短暂高亮）；缺省走阅读进度恢复 */
   focusPara?: number
+  /** 续读契约的静默重开（恢复位置但不弹「已回到上次位置」提示） */
+  silentRestore?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +23,8 @@ const emit = defineEmits<{
   error: [message: string]
   /** 导出成功等正向反馈，转全局消息条 */
   notice: [text: string]
+  /** 右上「全区」：隐藏/显示左侧竖排导航 */
+  'toggle-rail': []
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
@@ -453,9 +457,11 @@ async function loadPdf(): Promise<void> {
       if (prog && prog.paraIndex >= 0) {
         pdfPage.value = prog.paraIndex + 1
         notePageInput.value = prog.paraIndex + 1
-        backHint.value = true
-        clearTimeout(backHintTimer)
-        backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+        if (!props.silentRestore) {
+          backHint.value = true
+          clearTimeout(backHintTimer)
+          backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+        }
       }
     }
     rebuildBlobUrl()
@@ -539,9 +545,11 @@ onMounted(async () => {
       if (prog) {
         lastSaved = prog.paraIndex
         scrollToSeq(prog.paraIndex, 'start')
-        backHint.value = true
-        clearTimeout(backHintTimer)
-        backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+        if (!props.silentRestore) {
+          backHint.value = true
+          clearTimeout(backHintTimer)
+          backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+        }
       }
     } catch (e) {
       emit('error', errText(e))
@@ -552,7 +560,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
+  // 续读契约：防抖未到期也要冲刷进度（切去笔记等场景不丢最后半秒位置）
   clearTimeout(progTimer)
+  void saveProgressNow()
   clearTimeout(backHintTimer)
   clearTimeout(sideFlashTimer)
   clearTimeout(noteFlashTimer)
@@ -602,6 +612,9 @@ onBeforeUnmount(() => {
           @click="showSide = !showSide"
         >
           ☰
+        </button>
+        <button class="rv-top-btn" title="隐藏左侧导航（全区阅读；再点恢复）" @click="emit('toggle-rail')">
+          ⛶ 全区
         </button>
       </div>
     </header>

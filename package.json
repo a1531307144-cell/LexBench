@@ -17,6 +17,7 @@
     "docx": "^9.7.1",
     "dompurify": "^3.4.15",
     "electron-updater": "^6.8.9",
+    "jsmind": "^0.9.1",
     "lxgw-wenkai-webfont": "^1.7.0",
     "mammoth": "^1.12.3",
     "marked": "^18.0.13",

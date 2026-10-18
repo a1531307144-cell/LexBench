@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { buildHighlightTerms, highlightText } from '@shared/highlight'
+import { shortLawName } from '@shared/lawName'
 import { parseLocateQuery } from '@shared/locate'
 import { buildStatuteToc, type StatuteTocEntry, type StatuteTocLevel } from '@shared/statuteToc'
 import type { AnnotationRow, DocumentDetail } from '@shared/types'
@@ -15,6 +16,8 @@ const props = defineProps<{
   doc: DocumentDetail
   /** 搜索直达 / AI 引用跳转：定位到该 order_index 并高亮；不传则按阅读进度恢复 */
   focusOrder?: number
+  /** 续读契约的静默重开（恢复位置但不弹「已回到上次位置」提示） */
+  silentRestore?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,6 +27,8 @@ const emit = defineEmits<{
   notice: [message: string]
   /** 条文修正保存后请求 App 重新拉取文档（content 变了，批注偏移已在主进程重定位） */
   'doc-changed': []
+  /** 右上「全区」：隐藏/显示左侧竖排导航 */
+  'toggle-rail': []
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
@@ -145,6 +150,35 @@ const activeNo = computed(() => {
   const i = hits.value.findIndex((h) => h.order === activeOrder.value)
   return i < 0 ? 0 : i + 1
 })
+
+// ---------- 星标（轻量临时收集；笔记库左列有星标入口） ----------
+
+const starredIds = ref<Set<number>>(new Set())
+
+async function loadStars(): Promise<void> {
+  try {
+    const all = await window.lexbench.outlines.listStarred()
+    starredIds.value = new Set(
+      all.filter((s) => s.document_id === props.doc.id).map((s) => s.article_id)
+    )
+  } catch {
+    /* 星标失败不打扰阅读 */
+  }
+}
+
+async function toggleStar(articleId: number): Promise<void> {
+  const on = !starredIds.value.has(articleId)
+  try {
+    await window.lexbench.outlines.setStarred(articleId, on)
+    const next = new Set(starredIds.value)
+    if (on) next.add(articleId)
+    else next.delete(articleId)
+    starredIds.value = next
+    emit('notice', on ? '已星标，笔记库左列可见' : '已取消星标')
+  } catch (e) {
+    emit('error', errText(e))
+  }
+}
 
 // ---------- 批注（锚定法条选区的永久眉批；★ 常驻标记） ----------
 
@@ -447,6 +481,36 @@ function tryAddFromSelection(): void {
   void nextTick(() => annoPopEl.value?.focus())
 }
 
+/**
+ * 右键菜单「复制引用」（读→写唯一通道）：《法规》第X条 + 选中原文写剪贴板。
+ * text/plain 给任意应用干净文本；text/html 在条名上带 ref 元数据——
+ * 笔记编辑器粘贴时据此生成引用节点（可右键「在文档库打开来源」）。
+ */
+function tryCopyRefFromSelection(): void {
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+  const range = sel.getRangeAt(0)
+  const startEl = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement
+  const articleEl = startEl?.closest('.sv-article')
+  if (!articleEl) return
+  const order = Number(articleEl.getAttribute('data-order'))
+  const article = props.doc.articles.find((x) => x.order_index === order)
+  if (!article) return
+  const quote = sel.toString().trim()
+  if (!quote) return
+  const citeText = `《${shortLawName(props.doc.title)}》${article.article_label}`
+  const esc = (s: string): string =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const refAttr = esc(JSON.stringify({ docId: props.doc.id, articleId: article.id }))
+  void window.lexbench.clipboard
+    .writeRef({
+      text: `${citeText}\n${quote}`,
+      html: `<span data-lb-ref="${refAttr}">${esc(citeText)}</span><br>${esc(quote)}`
+    })
+    .then(() => emit('notice', '已复制引用，可粘贴到笔记'))
+    .catch((e: unknown) => emit('error', errText(e)))
+}
+
 /** 点 ★ / 点批注正文：打开已有批注 */
 function openAnnoById(id: number): void {
   const an = annos.value.find((x) => x.id === id)
@@ -618,15 +682,18 @@ async function saveProgressNow(): Promise<void> {
 
 // ---------- 生命周期 ----------
 
-/** 右键菜单「添加批注」通知的退订 */
+/** 右键菜单「添加批注 / 复制引用」通知的退订 */
 let unsubAddRequest: (() => void) | null = null
+let unsubCopyRef: (() => void) | null = null
 
 onMounted(async () => {
   document.addEventListener('click', onDocClickForStatute)
-  // 批注上下文：本页在场时主进程右键菜单才追加「添加批注」
+  // 批注上下文：本页在场时主进程右键菜单才追加「添加批注 / 复制引用」
   window.lexbench.annotations.setActive(true)
   unsubAddRequest = window.lexbench.annotations.onAddRequest(() => tryAddFromSelection())
+  unsubCopyRef = window.lexbench.reading.onCopyRefRequest(() => tryCopyRefFromSelection())
   void loadAnnos()
+  void loadStars()
   await nextTick()
   try {
     if (props.focusOrder !== undefined && props.focusOrder >= 0 && props.doc.articles.length) {
@@ -638,9 +705,11 @@ onMounted(async () => {
     if (prog && prog.paraIndex >= 0 && props.doc.articles.length) {
       lastSaved = prog.paraIndex
       scrollTo(prog.paraIndex, undefined, 'start')
-      backHint.value = true
-      clearTimeout(backHintTimer)
-      backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+      if (!props.silentRestore) {
+        backHint.value = true
+        clearTimeout(backHintTimer)
+        backHintTimer = setTimeout(() => (backHint.value = false), 4000)
+      }
     }
   } catch (e) {
     emit('error', errText(e))
@@ -652,7 +721,11 @@ onBeforeUnmount(() => {
   window.lexbench.annotations.setActive(false)
   unsubAddRequest?.()
   unsubAddRequest = null
+  unsubCopyRef?.()
+  unsubCopyRef = null
+  // 续读契约：防抖未到期也要冲刷进度（切去笔记等场景不丢最后半秒位置）
   clearTimeout(progTimer)
+  void saveProgressNow()
   clearTimeout(backHintTimer)
   clearTimeout(flashTimer)
   clearTimeout(qTimer)
@@ -718,6 +791,13 @@ onBeforeUnmount(() => {
         >
           ☰ 目录
         </button>
+        <button
+          class="sv-top-btn"
+          title="隐藏左侧导航（全区阅读；再点恢复）"
+          @click="emit('toggle-rail')"
+        >
+          ⛶ 全区
+        </button>
       </div>
     </header>
 
@@ -759,6 +839,14 @@ onBeforeUnmount(() => {
               >
                 <div class="sv-label-row">
                   <span class="sv-label">{{ a.article_label }}</span>
+                  <button
+                    class="sv-star-btn"
+                    :class="{ on: starredIds.has(a.id) }"
+                    :title="starredIds.has(a.id) ? '取消星标' : '星标本条（笔记库星标入口可见）'"
+                    @click.stop="toggleStar(a.id)"
+                  >
+                    {{ starredIds.has(a.id) ? '★' : '☆' }}
+                  </button>
                   <button
                     class="sv-fix-btn"
                     title="修正本条条文"
@@ -1251,6 +1339,34 @@ onBeforeUnmount(() => {
   opacity: 1;
   color: var(--lb-accent);
   background: var(--lb-accent-soft);
+}
+
+/* 星标开关：未星标随悬停浮现，已星标常驻可见（点亮态用 warn 金——区别于批注★的 accent） */
+.sv-star-btn {
+  border: none;
+  background: transparent;
+  color: var(--lb-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.sv-article:hover .sv-star-btn {
+  opacity: 0.75;
+}
+
+.sv-star-btn.on {
+  opacity: 1;
+  color: var(--lb-warn-fg);
+}
+
+.sv-star-btn:hover {
+  opacity: 1;
+  color: var(--lb-warn-fg);
+  background: var(--lb-warn-bg);
 }
 
 .sv-article:first-child .sv-label-row {

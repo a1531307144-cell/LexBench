@@ -322,6 +322,48 @@ ALTER TABLE ai_messages_v3 RENAME TO ai_messages;
 CREATE INDEX IF NOT EXISTS idx_ai_messages_article ON ai_messages(article_id, id);
 `
 
+// 017_outlines_star：笔记库（阶段2）——大纲树单表 + 法条星标列。
+// - outlines：一篇笔记一行，tree 存整棵嵌套 JSON（节点 {id,text,children,fold?,ref?}），
+//   百级节点量级直接整树落库，不拆表；
+// - articles.starred：轻量临时收集标记（0/1），不进笔记模型，笔记库侧只做列表入口。
+const MIGRATION_017_OUTLINES_STAR = `-- 017_outlines_star
+
+CREATE TABLE IF NOT EXISTS outlines (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL DEFAULT '',
+    tree       TEXT NOT NULL DEFAULT '[]',        -- JSON: OutlineNode[]（整树）
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+ALTER TABLE articles ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;
+`
+
+// 018_note_groups_view_mode：笔记自定义分类 + 笔记级默认视图（大纲/导图）。
+// - note_groups：笔记库左列分类文件夹（配方对齐文档库分类：删除归入「未分类」而非连坐）；
+// - outlines.group_id：ON DELETE SET NULL——删分类笔记回未分类；
+// - outlines.view_mode：记住该笔记上次是大纲还是导图（⇄ 一键切换后重开保持）。
+const MIGRATION_018_NOTE_GROUPS = `-- 018_note_groups_view_mode
+
+CREATE TABLE IF NOT EXISTS note_groups (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+ALTER TABLE outlines ADD COLUMN group_id INTEGER REFERENCES note_groups(id) ON DELETE SET NULL;
+ALTER TABLE outlines ADD COLUMN view_mode TEXT NOT NULL DEFAULT 'outline';
+`
+
+// 019_outlines_source_key：通用大纲导入器的去重键（阶段3）。
+// source_key = 导入源文件的内容摘要（sha1）：同文件重复导入可识别；可空（手建笔记无键）；
+// 部分唯一索引只约束非空值（SQLite partial index）。
+const MIGRATION_019_SOURCE_KEY = `-- 019_outlines_source_key
+
+ALTER TABLE outlines ADD COLUMN source_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outlines_source_key ON outlines(source_key) WHERE source_key IS NOT NULL;
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -339,7 +381,10 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 13, sql: MIGRATION_013_DOC_ORDER },
   { version: 14, sql: MIGRATION_014_ARTICLE_SUBBRANCH },
   { version: 15, sql: MIGRATION_015_ANNOTATIONS_TOPIC_DROP },
-  { version: 16, sql: MIGRATION_016_AI_GENERAL }
+  { version: 16, sql: MIGRATION_016_AI_GENERAL },
+  { version: 17, sql: MIGRATION_017_OUTLINES_STAR },
+  { version: 18, sql: MIGRATION_018_NOTE_GROUPS },
+  { version: 19, sql: MIGRATION_019_SOURCE_KEY }
 ]
 
 /** 全局唯一连接（单例） */

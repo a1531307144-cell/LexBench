@@ -22,11 +22,17 @@ import type {
   DocumentRow,
   ExportFormat,
   ExportResult,
+  ImportPreviewItem,
   ImportResultItem,
+  ImportRunItem,
   ImportTypeChoice,
+  NoteGroupRow,
+  OutlineListRow,
+  OutlineRow,
   ReadingProgress,
   SearchMode,
-  SearchOutcome
+  SearchOutcome,
+  StarredArticleRow
 } from '../shared/types'
 
 /**
@@ -50,6 +56,11 @@ const api = {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
     /** 数据包导入后重启软件使新数据生效 */
     relaunch: (): Promise<void> => invoke('app:relaunch')
+  },
+  clipboard: {
+    /** 「复制引用」：plain 干净文本 + html 带 ref 元数据（笔记粘贴时生成引用节点） */
+    writeRef: (payload: { text: string; html: string }): Promise<void> =>
+      invoke('clipboard:writeRef', payload)
   },
   win: {
     /** 无边框窗口自绘控制按钮（─ □ ✕） */
@@ -178,6 +189,68 @@ const api = {
       }
     }
   },
+  outlines: {
+    /** 笔记列表（更新时间序；keyword 标题过滤；groupId 分类过滤——null=只看未分类，undefined=全部） */
+    list: (keyword?: string, groupId?: number | null): Promise<OutlineListRow[]> =>
+      invoke('outlines:list', keyword, groupId),
+    get: (id: number): Promise<OutlineRow> => invoke('outlines:get', id),
+    create: (title: string, groupId?: number | null): Promise<OutlineRow> =>
+      invoke('outlines:create', title, groupId),
+    /** 归类 / 记住视图（与树保存互不覆盖） */
+    setGroup: (id: number, groupId: number | null): Promise<void> =>
+      invoke('outlines:setGroup', id, groupId),
+    setViewMode: (id: number, mode: string): Promise<void> =>
+      invoke('outlines:setViewMode', id, mode),
+    /** 自动保存（编辑器防抖整树落库）；title 传了顺带改名 */
+    save: (id: number, tree: string, title?: string): Promise<void> =>
+      invoke('outlines:save', id, tree, title),
+    remove: (id: number): Promise<void> => invoke('outlines:delete', id),
+    /** 导出笔记（md/docx）：弹保存对话框，取消返回 {canceled:true} */
+    export: (id: number, format: ExportFormat): Promise<ExportResult> =>
+      invoke('outlines:export', id, format),
+    /** 通用大纲导入（业界通用格式）：选文件 → 预检（解析不落库）→ runImport 执行 */
+    pickImportFiles: (): Promise<{ canceled: boolean; paths: string[] }> =>
+      invoke('outlines:pickImportFiles'),
+    previewImport: (paths: string[]): Promise<ImportPreviewItem[]> =>
+      invoke('outlines:previewImport', paths),
+    /** 执行导入；duplicates：'skip'=重复跳过 / 'append'=仍然导入（标题加后缀） */
+    runImport: (paths: string[], duplicates: string): Promise<ImportRunItem[]> =>
+      invoke('outlines:runImport', paths, duplicates),
+    /** 仅开发模式存在：跳过对话框直接写到指定路径（自测用） */
+    __testExport: (id: number, format: ExportFormat, outPath: string): Promise<ExportResult> =>
+      invoke('outlines:__testExport', id, format, outPath),
+    /** 星标法条列表（笔记库左列入口） */
+    listStarred: (): Promise<StarredArticleRow[]> => invoke('articles:listStarred'),
+    /** 点亮/熄灭法条星标 */
+    setStarred: (articleId: number, starred: boolean): Promise<void> =>
+      invoke('articles:setStarred', articleId, starred),
+    /** 引用行按下右键时先报 ref（主进程菜单据此追加「在文档库打开来源」） */
+    setRefContext: (ref: { docId: number; articleId: number } | null): void =>
+      ipcRenderer.send('outlines:setRefContext', ref),
+    /** 主菜单「在文档库打开来源」点击通知；返回退订函数 */
+    onOpenSource: (cb: (ref: { docId: number; articleId: number }) => void): (() => void) => {
+      const handler = (_e: unknown, ref: { docId: number; articleId: number }): void => cb(ref)
+      ipcRenderer.on('outlines:openSource', handler)
+      return () => {
+        ipcRenderer.removeListener('outlines:openSource', handler)
+      }
+    }
+  },
+  noteGroups: {
+    list: (): Promise<NoteGroupRow[]> => invoke('noteGroups:list'),
+    create: (name: string): Promise<NoteGroupRow> => invoke('noteGroups:create', name),
+    rename: (id: number, name: string): Promise<void> => invoke('noteGroups:rename', id, name),
+    reorder: (ids: number[]): Promise<void> => invoke('noteGroups:reorder', ids),
+    /** 删除分类：其中笔记归「未分类」 */
+    remove: (id: number): Promise<void> => invoke('noteGroups:remove', id)
+  },
+  attachments: {
+    /** 贴图保存：base64（无 data: 前缀）+ 扩展名 → attachments 相对文件名 */
+    saveImage: (b64: string, ext: string): Promise<string> =>
+      invoke('attachments:saveImage', b64, ext),
+    /** 贴图读取：文件名 → 字节流（渲染层转 Blob URL 显示） */
+    read: (fileName: string): Promise<ArrayBuffer> => invoke('attachments:read', fileName)
+  },
   export: {
     /** 读书笔记导出：引用 + 批注成对列出 */
     saveBookNotes: (documentId: number, format: ExportFormat): Promise<ExportResult> =>
@@ -204,7 +277,15 @@ const api = {
       invoke('reading:getPdfData', documentId),
     /** PDF 原件本机路径（优先归档副本）——内置 PDF 阅读器以 file:// 加载 */
     getPdfPath: (documentId: number): Promise<string> =>
-      invoke('reading:getPdfPath', documentId)
+      invoke('reading:getPdfPath', documentId),
+    /** 主进程菜单「复制引用」点击通知（法规阅读页有选区时出现）；返回退订函数 */
+    onCopyRefRequest: (cb: () => void): (() => void) => {
+      const handler = (): void => cb()
+      ipcRenderer.on('reading:copyRefRequest', handler)
+      return () => {
+        ipcRenderer.removeListener('reading:copyRefRequest', handler)
+      }
+    }
   },
   backup: {
     /** 弹出保存对话框 → 打包全部数据（数据库+原件+AI 配置）→ 写盘 */

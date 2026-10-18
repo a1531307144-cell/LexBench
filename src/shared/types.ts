@@ -46,6 +46,8 @@ export interface ArticleRow {
   section: string
   content: string
   order_index: number
+  /** 星标（轻量临时收集，0/1；笔记库星标入口读取，不进笔记模型） */
+  starred?: number
   /** JOIN documents 带出的冗余展示字段 */
   title?: string
   category?: string
@@ -144,6 +146,91 @@ export interface AnnotationRow {
   content_md: string
   created_at: string
   updated_at: string
+}
+
+// ---------- 笔记库（阶段2） ----------
+
+/** 引用节点元数据：法条引用（右键逃生门「在文档库打开来源」与插入浮层复用） */
+export interface OutlineRef {
+  docId: number
+  articleId: number
+}
+
+/** 大纲树节点：嵌套结构整树存 JSON（拍平成行列表是渲染层的事） */
+export interface OutlineNode {
+  id: string
+  text: string
+  children: OutlineNode[]
+  /** 折叠态（有子节点才生效） */
+  fold?: boolean
+  /** 引用节点（《法规名》第X条）才有 */
+  ref?: OutlineRef
+  /** 贴图：attachments 目录内文件名（相对引用，随数据包备份） */
+  image?: string
+}
+
+/** 笔记行（outlines 表）；tree 为 JSON 字符串，解析后是 OutlineNode[] */
+export interface OutlineRow {
+  id: number
+  title: string
+  tree: string
+  group_id: number | null
+  /** 默认视图：outline=大纲 / map=导图（⇄ 切换后记住） */
+  view_mode: string
+  /** 导入去重键（源文件内容 sha1；手建笔记为 null） */
+  source_key?: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** 导入预检项（解析不落库） */
+export interface ImportPreviewItem {
+  path: string
+  name: string
+  title: string
+  format: string
+  nodeCount: number
+  imageCount: number
+  /** 同 source_key 的笔记已存在 */
+  duplicate: boolean
+  /** 预检失败（不支持的格式/解析错误） */
+  error?: string
+}
+
+/** 导入执行结果项 */
+export interface ImportRunItem {
+  path: string
+  status: 'imported' | 'skipped' | 'replaced' | 'failed'
+  noteId?: number
+  message?: string
+  /** 图片下载失败数（保留原 URL 不阻断） */
+  imagesFailed?: number
+}
+
+/** 笔记列表项（不含 tree，列表页轻载） */
+export interface OutlineListRow {
+  id: number
+  title: string
+  group_id: number | null
+  updated_at: string
+}
+
+/** 笔记自定义分类（note_groups；删除后笔记归未分类） */
+export interface NoteGroupRow {
+  id: number
+  name: string
+  sort_order: number
+  /** 该分类下笔记数（列表查询带出） */
+  note_count: number
+}
+
+/** 星标法条列表项（笔记库左列「☆ 星标法条」入口；order_index 供打开阅读直达该条） */
+export interface StarredArticleRow {
+  article_id: number
+  document_id: number
+  article_label: string
+  doc_title: string
+  order_index: number
 }
 
 // ---------- 阅读模式（阶段2.5，并入 v0.4.0） ----------

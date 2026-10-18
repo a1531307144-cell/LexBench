@@ -36,6 +36,11 @@ function filesDirPath(): string {
   return join(app.getPath('userData'), 'files')
 }
 
+/** 笔记贴图目录（userData/attachments；随数据包备份——设计稿 §3 定案） */
+function attachmentsDirPath(): string {
+  return join(app.getPath('userData'), 'attachments')
+}
+
 /** app.getPath('temp') 下的一次性工作目录（用完由调用方在 finally 里清理） */
 function makeTempDir(prefix: string): string {
   const dir = join(
@@ -63,7 +68,7 @@ function vacuumInto(targetPath: string): void {
 
 // ---------- 导出 ----------
 
-/** 组包并写盘：manifest.json + lexbench.db（快照）+ files/（全部原件，流式引用不读进内存） */
+/** 组包并写盘：manifest.json + lexbench.db（快照）+ files/（原件）+ attachments/（笔记贴图） */
 function doExport(outPath: string): ExportResult {
   const tmpDir = makeTempDir('export')
   try {
@@ -85,6 +90,8 @@ function doExport(outPath: string): ExportResult {
     zip.addLocalFile(snapshotPath) // 条目名 = 文件名 lexbench.db
     const filesDir = filesDirPath()
     if (existsSync(filesDir)) zip.addLocalFolder(filesDir, 'files')
+    const attDir = attachmentsDirPath()
+    if (existsSync(attDir)) zip.addLocalFolder(attDir, 'attachments')
     zip.writeZip(outPath)
     return { canceled: false, path: outPath }
   } finally {
@@ -148,6 +155,8 @@ function backupCurrentData(): void {
   vacuumInto(join(backupDir, 'lexbench.db'))
   const filesDir = filesDirPath()
   if (existsSync(filesDir)) cpSync(filesDir, join(backupDir, 'files'), { recursive: true })
+  const attDir = attachmentsDirPath()
+  if (existsSync(attDir)) cpSync(attDir, join(backupDir, 'attachments'), { recursive: true })
 }
 
 /** 换装：关库 → 覆盖 lexbench.db → 清空重建 files/ → 重开新库并验证能查询 documents（全程同步无 await，不给其它 handler 插队机会） */
@@ -167,6 +176,12 @@ function swapIn(packDbPath: string, tmpDir: string): void {
     mkdirSync(filesDir, { recursive: true })
     const packFilesDir = join(tmpDir, 'files')
     if (existsSync(packFilesDir)) cpSync(packFilesDir, filesDir, { recursive: true })
+    // 贴图同理（旧数据包无 attachments 条目则保持空目录——向后兼容）
+    const attDir = attachmentsDirPath()
+    rmSync(attDir, { recursive: true, force: true })
+    mkdirSync(attDir, { recursive: true })
+    const packAttDir = join(tmpDir, 'attachments')
+    if (existsSync(packAttDir)) cpSync(packAttDir, attDir, { recursive: true })
     // 重开新库（getDb 自动按 user_version 补跑迁移），并验证能查询 documents
     getDb().prepare('SELECT id FROM documents LIMIT 1').get()
   } catch (e) {
