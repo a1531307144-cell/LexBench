@@ -521,6 +521,7 @@ let mapZoomOk = false
 let mapChromeOk = false
 let mapEditorGrowOk = false
 let mapImageOk = false
+let mapBalanceOk = false
 {
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -543,6 +544,23 @@ let mapImageOk = false
   await sleep(400)
   await evalJs(`[...document.querySelectorAll('.np-item')].find(b => b.textContent.includes('拖动自测'))?.click()`)
   await until(() => document.querySelectorAll('jmnode').length >= 4)
+  await sleep(800)
+  // 顶层分支智能分侧：两侧都要有节点，不能全部挤在右边
+  mapBalanceOk = await evalJs(`(() => {
+    const root = [...document.querySelectorAll('jmnode')].find(n => n.classList.contains('root'))
+    if (!root) return false
+    const rr = root.getBoundingClientRect()
+    const rc = rr.x + rr.width / 2
+    let left = 0
+    let right = 0
+    for (const n of document.querySelectorAll('jmnode')) {
+      if (n === root) continue
+      const r = n.getBoundingClientRect()
+      if (r.x + r.width / 2 < rc) left++
+      else right++
+    }
+    return left > 0 && right > 0
+  })()`)
   const dragSent = await evalJs(`(() => {
     const nodes = [...document.querySelectorAll('jmnode')]
     const a = nodes.find(n => n.textContent === 'A')
@@ -763,6 +781,7 @@ const checks = [
   ['导图：白底且无底部工具条', mapChromeOk],
   ['导图：编辑框随输入扩展', mapEditorGrowOk],
   ['导图：节点内插入图片', mapImageOk],
+  ['导图：顶层分支智能分侧', mapBalanceOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],

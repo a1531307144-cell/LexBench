@@ -57,12 +57,46 @@ function toJsMindNode(n: OutlineNode): Record<string, unknown> {
   }
 }
 
+/** 折叠态按 1 行算；未折叠按叶子数估算分支占用的纵向空间 */
+function branchWeight(node: OutlineNode): number {
+  if (!node.children?.length || node.fold) return 1
+  return node.children.reduce((sum, child) => sum + branchWeight(child), 0)
+}
+
+/**
+ * 顶层分支智能分侧：第一个分支留在右侧作主阅读方向，其余按子树重量贪心分到较轻一侧，
+ * 避免所有方框挤在一边；只有一个分支时保持右侧。
+ */
+function rootDirections(nodes: OutlineNode[]): ('left' | 'right')[] {
+  const n = nodes.length
+  const dirs: ('left' | 'right')[] = new Array(n).fill('right')
+  if (n <= 1) return dirs
+  const weights = nodes.map(branchWeight)
+  let leftLoad = 0
+  let rightLoad = weights[0] ?? 1
+  const rest = Array.from({ length: n - 1 }, (_, i) => i + 1).sort(
+    (a, b) => (weights[b] ?? 1) - (weights[a] ?? 1)
+  )
+  for (const i of rest) {
+    const w = weights[i] ?? 1
+    if (leftLoad <= rightLoad) {
+      dirs[i] = 'left'
+      leftLoad += w
+    } else {
+      rightLoad += w
+    }
+  }
+  // 贪心偏差兜底：至少让第二个分支去左侧（两个以上分支时不出现单侧堆积）
+  if (!dirs.slice(1).includes('left')) dirs[1] = 'left'
+  return dirs
+}
+
 function toJsMind(nodes: OutlineNode[]): Record<string, unknown> {
+  const dirs = rootDirections(nodes)
   return {
     id: VIRTUAL_ROOT_ID,
     topic: props.title || '笔记',
-    // 顶层默认为右向展开（与主流导图默认结构一致；避免左右分裂）
-    children: nodes.map((n) => ({ ...toJsMindNode(n), direction: 'right' }))
+    children: nodes.map((n, i) => ({ ...toJsMindNode(n), direction: dirs[i] ?? 'right' }))
   }
 }
 
@@ -344,12 +378,27 @@ function moveSelection(key: string): void {
 
 // ---------- 结构操作（工具条 / 右键菜单 / 键位共用） ----------
 
+/** 根节点新增子主题时优先放到较轻的一侧，保持左右数量/空间平衡 */
+function lighterRootSide(): 'left' | 'right' {
+  if (!jm) return 'right'
+  const root = jm.get_root()
+  let left = 0
+  let right = 0
+  for (const child of root.children) {
+    const meta = metaById.get(child.id)
+    const w = meta ? branchWeight(meta) : 1
+    if (child.direction === -1) left += w
+    else right += w
+  }
+  return left < right ? 'left' : 'right'
+}
+
 function addChild(topic = '新主题'): void {
   if (!jm) return
   const sel = ensureSelected()
   if (!sel) return
   const id = newOutlineId()
-  jm.add_node(sel.id, id, topic, undefined, sel.isroot ? 'right' : sel.direction)
+  jm.add_node(sel.id, id, topic, undefined, sel.isroot ? lighterRootSide() : sel.direction)
   jm.expand_node(sel.id)
   jm.select_node(id)
   syncToParent()
@@ -740,7 +789,7 @@ function onPointerUp(): void {
       if (from && target) {
         if (mode === 'child') {
           jm.expand_node(target.id)
-          jm.move_node(from.id, undefined, target.id, target.isroot ? 'right' : target.direction)
+          jm.move_node(from.id, undefined, target.id, target.isroot ? lighterRootSide() : target.direction)
         } else if (!target.isroot && target.parent) {
           const parent = target.parent
           const idx = parent.children.findIndex((c) => c.id === target.id)
