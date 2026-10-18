@@ -1948,6 +1948,7 @@ onBeforeUnmount(() => {
       :title="displayTitle"
       @change="onMapChange"
       @error="(e) => emit('error', e)"
+      @notice="(t) => emit('notice', t)"
       @rename="onMapRename"
       @undo="undo"
       @redo="redo"
