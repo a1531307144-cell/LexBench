@@ -520,6 +520,7 @@ let mapDragOk = false
 let mapZoomOk = false
 let mapChromeOk = false
 let mapEditorGrowOk = false
+let mapImageOk = false
 {
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -604,6 +605,40 @@ let mapEditorGrowOk = false
     })()`)
     await sleep(500)
   }
+
+  // 导图节点内插入图片（根节点选中时也要能落图）
+  await evalJs(`(() => {
+    const n = document.querySelector('jmnode[nodeid="a"]')
+    if (!n) return false
+    const r = n.getBoundingClientRect()
+    n.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    return true
+  })()`)
+  await sleep(250)
+  await evalJs(`(() => {
+    const host = document.querySelector('.ol-mind')
+    host?.focus()
+    const bin = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    const file = new File([arr], 'x.png', { type: 'image/png' })
+    const dt = new DataTransfer()
+    dt.items.add(file)
+    host?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+    return true
+  })()`)
+  const mapImageUi = await until(() => !!document.querySelector('jmnode[nodeid="a"] .mm-node-img'))
+  const mapImageDb = await until(() => {
+    return window.lexbench.outlines.list().then(async (l) => {
+      const n = l.find((x) => x.title === '拖动自测')
+      if (!n) return false
+      const d = await window.lexbench.outlines.get(n.id)
+      const a = JSON.parse(d.tree).find((x) => x.id === 'a')
+      return !!a && (!!a.image || (a.images?.length ?? 0) > 0)
+    })
+  })
+  mapImageOk = mapImageUi && mapImageDb
 
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -727,6 +762,7 @@ const checks = [
   ['导图：缩放控件', mapZoomOk],
   ['导图：白底且无底部工具条', mapChromeOk],
   ['导图：编辑框随输入扩展', mapEditorGrowOk],
+  ['导图：节点内插入图片', mapImageOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],

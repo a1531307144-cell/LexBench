@@ -77,16 +77,29 @@ function fromJsMind(data: unknown): OutlineNode[] {
         data?: Record<string, unknown>
         expanded?: boolean
         children?: unknown[]
+        ref?: OutlineRef
+        note?: string
+        task?: 1 | 2
+        heading?: 1 | 2 | 3
+        images?: string[]
+        image?: string
+        html?: string
       }
+      // jsMind 的 NodeTreeFormat 输出会把 node.data 摊平到节点顶层（不是嵌套 data），
+      // 新节点的元数据必须从这里读；嵌套 data 仅作兼容兜底。
+      const bag = it.data ?? {}
       const fallback = metaById.get(it.id)
       const topic = (it.topic ?? '').trim() === '' ? '' : (it.topic ?? '')
-      const ref = (it.data?.['ref'] as OutlineRef | undefined) ?? fallback?.ref
-      const note = (it.data?.['note'] as string | undefined) ?? fallback?.note
-      const task = (it.data?.['task'] as 1 | 2 | undefined) ?? fallback?.task
-      const heading = (it.data?.['heading'] as 1 | 2 | 3 | undefined) ?? fallback?.heading
-      const images = (it.data?.['images'] as string[] | undefined) ?? fallback?.images
-      const image = (it.data?.['image'] as string | undefined) ?? fallback?.image
-      const html = topic === (fallback?.text ?? topic) ? (it.data?.['html'] as string | undefined) ?? fallback?.html : undefined
+      const ref = it.ref ?? (bag['ref'] as OutlineRef | undefined) ?? fallback?.ref
+      const note = it.note ?? (bag['note'] as string | undefined) ?? fallback?.note
+      const task = it.task ?? (bag['task'] as 1 | 2 | undefined) ?? fallback?.task
+      const heading = it.heading ?? (bag['heading'] as 1 | 2 | 3 | undefined) ?? fallback?.heading
+      const images = it.images ?? (bag['images'] as string[] | undefined) ?? fallback?.images
+      const image = it.image ?? (bag['image'] as string | undefined) ?? fallback?.image
+      const html =
+        topic === (fallback?.text ?? topic)
+          ? it.html ?? (bag['html'] as string | undefined) ?? fallback?.html
+          : undefined
       const node: OutlineNode = {
         id: it.id,
         text: topic,
@@ -133,9 +146,15 @@ function syncToParent(): void {
   }
 }
 
-function loadTree(nodes: OutlineNode[]): void {
+let loadSeq = 0
+
+async function loadTree(nodes: OutlineNode[]): Promise<void> {
   if (!jm) return
+  const seq = ++loadSeq
   metaById = indexTree(nodes)
+  // 图片先转成 Blob URL 再渲染：自定义节点渲染是同步的，URL 没就绪会只剩文字
+  await preloadImages(nodes)
+  if (seq !== loadSeq || !jm) return
   jm.show({
     meta: { name: 'lexbench-note', author: 'lexbench', version: '1.0' },
     format: 'node_tree',
@@ -143,7 +162,6 @@ function loadTree(nodes: OutlineNode[]): void {
   } as never)
   jm.select_node(jm.get_root())
   scheduleResize()
-  void paintImages(nodes)
   paintDecorations()
   if (!initialFitDone) {
     initialFitDone = true
@@ -162,9 +180,10 @@ function scheduleResize(): void {
   resizeTimers.push(setTimeout(() => jm?.resize(), 300))
 }
 
-// ---------- 节点贴图（背景缩略图） ----------
+// ---------- 节点贴图（节点内缩略图，不再用会被文字遮住的背景图） ----------
 
 const imageUrls = new Map<string, string>()
+const imageSizes = new Map<string, { w: number; h: number }>()
 
 async function ensureUrl(fileName: string): Promise<string | null> {
   const hit = imageUrls.get(fileName)
@@ -179,37 +198,63 @@ async function ensureUrl(fileName: string): Promise<string | null> {
   }
 }
 
-async function paintImages(nodes: OutlineNode[]): Promise<void> {
-  if (!jm) return
-  const targets: { id: string; image: string }[] = []
+/** 解码图片并记下原始尺寸：自定义渲染时先给 img 宽高，布局测量才不会按 0 高度算 */
+function decodeImage(fileName: string, url: string): Promise<void> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      imageSizes.set(fileName, { w: img.naturalWidth || img.width, h: img.naturalHeight || img.height })
+      resolve()
+    }
+    img.onerror = () => resolve()
+    img.src = url
+  })
+}
+
+async function preloadImages(nodes: OutlineNode[]): Promise<void> {
+  const names = new Set<string>()
   const walk = (ns: OutlineNode[]): void => {
     for (const n of ns) {
-      const imgs = nodeImages(n)
-      if (imgs[0]) targets.push({ id: n.id, image: imgs[0] })
+      for (const img of nodeImages(n)) names.add(img)
       walk(n.children ?? [])
     }
   }
   walk(nodes)
-  for (const t of targets) {
-    const url = await ensureUrl(t.image)
-    if (!url || !jm) continue
-    await new Promise<void>((resolve) => {
-      const img = new Image()
-      img.onload = () => {
-        if (!jm) return resolve()
-        const maxH = 110
-        const scale = img.height > maxH ? maxH / img.height : 1
-        try {
-          jm.set_node_background_image(t.id, url, Math.round(img.width * scale), Math.round(img.height * scale))
-        } catch {
-          /* 节点已被删等边缘态忽略 */
-        }
-        resolve()
-      }
-      img.onerror = () => resolve()
-      img.src = url
+  await Promise.all(
+    [...names].map(async (name) => {
+      const url = await ensureUrl(name)
+      if (url) await decodeImage(name, url)
     })
+  )
+}
+
+/** 自定义节点渲染：文字 + 节点内图片缩略图（图片随节点一起撑开尺寸） */
+function renderNodeWithImage(_jm: unknown, el: HTMLElement, node: { topic?: string; data?: Record<string, unknown> }): boolean {
+  const image = node.data?.['image'] as string | undefined
+  if (!image) return false
+  const url = imageUrls.get(image)
+  if (!url) return false
+  el.textContent = node.topic ?? ''
+  const img = document.createElement('img')
+  img.className = 'mm-node-img'
+  const size = imageSizes.get(image)
+  if (size) {
+    const scale = Math.min(1, 180 / Math.max(1, size.w), 130 / Math.max(1, size.h))
+    img.width = Math.max(1, Math.round(size.w * scale))
+    img.height = Math.max(1, Math.round(size.h * scale))
   }
+  img.src = url
+  img.alt = ''
+  img.draggable = false
+  el.appendChild(img)
+  const count = (node.data?.['images'] as string[] | undefined)?.length ?? 1
+  if (count > 1) {
+    const badge = document.createElement('span')
+    badge.className = 'mm-img-count'
+    badge.textContent = `+${count - 1}`
+    el.appendChild(badge)
+  }
+  return true
 }
 
 // ---------- 节点装饰（任务/备注） ----------
@@ -223,7 +268,6 @@ function paintDecorations(): void {
     el.classList.toggle('mm-task', !!node?.task)
     el.classList.toggle('mm-task-done', node?.task === 2)
     el.classList.toggle('mm-has-note', !!node?.note)
-    el.classList.toggle('mm-has-image', !!node && nodeImages(node).length > 0)
     const jsnode = jm.mind.nodes[id]
     el.title = jsnode?.isroot ? '拖动空白处平移画布' : '拖动调整层级（松手到目标上/下缘=同级）'
   }
@@ -482,10 +526,32 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
+/**
+ * 图片落点：优先当前选中主题；若当前是中心主题/没有选中，就新建一个图片子主题。
+ * （中心主题是虚拟 root，不承载图片；此前直接 return 导致用户点「插入图片」毫无反应。）
+ */
+function ensureImageTarget(): MNode | null {
+  if (!jm) return null
+  let sel = jm.get_selected_node()
+  if (!sel) {
+    jm.select_node(jm.get_root())
+    sel = jm.get_root()
+  }
+  if (sel.isroot) {
+    const id = newOutlineId()
+    jm.add_node(sel.id, id, '图片', undefined, 'right')
+    jm.expand_node(sel.id)
+    jm.select_node(id)
+    syncToParent()
+    sel = jm.get_selected_node()
+  }
+  return sel
+}
+
 async function attachImages(files: File[]): Promise<void> {
   if (!jm || !files.length) return
-  const sel = ensureSelected()
-  if (!sel || sel.isroot) return
+  const sel = ensureImageTarget()
+  if (!sel) return
   const meta = metaById.get(sel.id)
   const list = meta ? nodeImages(meta) : []
   for (const file of files) {
@@ -505,22 +571,15 @@ async function attachImages(files: File[]): Promise<void> {
     meta.image = list[0]
   }
   const url = await ensureUrl(list[0]!)
-  if (url && jm) {
-    const img = new Image()
-    img.onload = () => {
-      if (!jm) return
-      const maxH = 110
-      const scale = img.height > maxH ? maxH / img.height : 1
-      try {
-        jm.set_node_background_image(sel.id, url, Math.round(img.width * scale), Math.round(img.height * scale))
-      } catch {
-        /* ignore */
-      }
-    }
-    img.src = url
-  }
+  if (url) await decodeImage(list[0]!, url)
+  if (!jm) return
+  // 自定义节点渲染：重画节点（文字 + 图片缩略图），并按新尺寸重新布局
+  jm.update_node(sel.id, sel.topic)
+  jm.layout.layout()
+  jm.view.relayout()
   paintDecorations()
   syncToParent()
+  nextTick(() => jm?.scroll_node_to_center(sel.id))
 }
 
 async function onPickImages(ev: Event): Promise<void> {
@@ -793,6 +852,48 @@ function fitView(): void {
   scheduleResize()
 }
 
+// ---------- 连线：直角肘形（类似组织架构图，圆角过渡） ----------
+
+function renderElbowLine(arg: {
+  ctx: CanvasRenderingContext2D | SVGPathElement
+  start_point: { x: number; y: number }
+  end_point: { x: number; y: number }
+}): void {
+  const ctx = arg.ctx as CanvasRenderingContext2D
+  if (typeof ctx.beginPath !== 'function') return
+  const s = arg.start_point
+  const e = arg.end_point
+  ctx.beginPath()
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  if (Math.abs(e.y - s.y) < 1) {
+    ctx.moveTo(s.x, s.y)
+    ctx.lineTo(e.x, e.y)
+    ctx.stroke()
+    return
+  }
+  const dir = e.y > s.y ? 1 : -1
+  const r = Math.min(6, Math.abs(e.y - s.y) / 2)
+  const offset = Math.max(14, Math.min(28, Math.abs(e.x - s.x) / 2))
+  ctx.moveTo(s.x, s.y)
+  if (e.x >= s.x) {
+    const midX = s.x + offset
+    ctx.lineTo(midX - r, s.y)
+    ctx.quadraticCurveTo(midX, s.y, midX, s.y + dir * r)
+    ctx.lineTo(midX, e.y - dir * r)
+    ctx.quadraticCurveTo(midX, e.y, midX + r, e.y)
+    ctx.lineTo(e.x, e.y)
+  } else {
+    const midX = s.x - offset
+    ctx.lineTo(midX + r, s.y)
+    ctx.quadraticCurveTo(midX, s.y, midX, s.y + dir * r)
+    ctx.lineTo(midX, e.y - dir * r)
+    ctx.quadraticCurveTo(midX, e.y, midX - r, e.y)
+    ctx.lineTo(e.x, e.y)
+  }
+  ctx.stroke()
+}
+
 // ---------- 键盘 ----------
 
 function onKeydown(ev: KeyboardEvent): void {
@@ -892,24 +993,27 @@ onMounted(() => {
       container: hostEl.value,
       editable: true,
       theme: null,
+      support_html: false,
       view: {
         engine: 'canvas',
-        hmargin: 52,
-        vmargin: 18,
+        hmargin: 60,
+        vmargin: 24,
         line_width: 1.6,
         line_color: '#b3bdc8',
         line_style: 'curved',
+        custom_line_render: renderElbowLine,
+        custom_node_render: renderNodeWithImage,
         draggable: true,
         hide_scrollbars_when_draggable: true,
         node_overflow: 'wrap',
         zoom: { min: 0.4, max: 2, step: 0.1, mask_key: 17 }
       },
-      layout: { hspace: 46, vspace: 14, pspace: 8, cousin_space: 8 },
+      layout: { hspace: 64, vspace: 26, pspace: 10, cousin_space: 16 },
       shortcut: {
         enable: false
       }
     })
-    loadTree(props.tree)
+    void loadTree(props.tree)
     jm.add_event_listener((type, data) => {
       if (!jm) return
       if (type === jsMind.event_type.edit) {
@@ -997,7 +1101,7 @@ watch(
       paintDecorations()
       return
     }
-    loadTree(t)
+    void loadTree(t)
   }
 )
 
@@ -1145,14 +1249,14 @@ onBeforeUnmount(() => {
 .ol-mind jmnode {
   background: #fff;
   color: var(--lb-text);
-  border: 1px solid #e3e7ec;
-  border-radius: 16px;
-  box-shadow: 0 1px 3px rgba(20, 24, 38, 0.07);
+  border: 1px solid #e7ebf0;
+  border-radius: 22px;
+  box-shadow: 0 1px 2px rgba(20, 24, 38, 0.05);
   font-family: var(--lb-sans);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.55;
-  padding: 7px 13px;
-  max-width: 260px;
+  padding: 8px 15px;
+  max-width: 280px;
   white-space: normal;
   cursor: grab;
   transition:
@@ -1182,9 +1286,9 @@ onBeforeUnmount(() => {
 .ol-mind jmnode.root {
   font-size: 18px;
   font-weight: 600;
-  border-radius: 18px;
-  padding: 10px 18px;
-  border-color: rgba(0, 113, 227, 0.28);
+  border-radius: 24px;
+  padding: 11px 20px;
+  border-color: rgba(0, 113, 227, 0.24);
 }
 
 .ol-mind jmnode.root.selected {
@@ -1224,9 +1328,27 @@ onBeforeUnmount(() => {
   vertical-align: 1px;
 }
 
-.ol-mind jmnode.mm-has-image {
-  background-size: cover;
-  background-position: center bottom;
+.ol-mind jmnode .mm-node-img {
+  display: block;
+  max-width: 180px;
+  max-height: 130px;
+  margin: 7px auto 1px;
+  border-radius: 10px;
+  object-fit: cover;
+  user-select: none;
+  pointer-events: none;
+}
+
+.ol-mind jmnode .mm-img-count {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(43, 47, 54, 0.72);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
 }
 
 .ol-mind jmexpander {
