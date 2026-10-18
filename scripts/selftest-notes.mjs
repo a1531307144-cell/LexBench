@@ -1,5 +1,5 @@
-// 阶段2 笔记库 CDP 自测：大纲编辑器（键位/折叠/自动保存/往返快照）+ 引用通道
-// （复制引用粘贴/插入浮层连加/逃生门）+ 星标 + 续读契约（卸载冲刷/静默重开）
+// 笔记库 CDP 自测：大纲编辑器（contenteditable 键位/折叠/自动保存/往返快照）+ 多选/拖拽
+// + 引用通道 + 星标 + 续读契约 + 分类/贴图 + 思维导图（编辑/拖动/缩放/往返）+ 通用导入。
 // 前提：npm run dev 已启动（开发模式开放 9222）。用法：node scripts/selftest-notes.mjs
 const errors = []
 
@@ -50,7 +50,7 @@ const evalJs = async (expression) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 // 轮询助手：隐藏页定时器节流（lessons #2），断言等待一律轮询不固定短睡
-const until = async (fn, tries = 20) => {
+const until = async (fn, tries = 24) => {
   for (let i = 0; i < tries; i++) {
     const v = await evalJs(`(${fn})()`)
     if (v === true) return true
@@ -59,14 +59,15 @@ const until = async (fn, tries = 20) => {
   return false
 }
 
-let mounted = false
-for (let i = 0; i < 20; i++) {
-  if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) {
-    mounted = true
-    break
+async function waitMounted() {
+  for (let i = 0; i < 24; i++) {
+    if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) return true
+    await sleep(400)
   }
-  await sleep(500)
+  return false
 }
+
+let mounted = await waitMounted()
 if (!mounted) {
   console.log('FAIL: 应用未挂载')
   console.log(errors.join('\n') || '(无控制台错误)')
@@ -75,7 +76,38 @@ if (!mounted) {
 await send('Page.bringToFront', {})
 console.log('=== 1. UI 挂载 OK ===')
 
-// 清场：清掉上轮残留（笔记/星标/分类——分类残留会让面板过滤卡在已删分类上），再 reload 彻底重置 UI 状态
+// 浏览器侧小工具（contenteditable 输入 / 键位 / 取值）。
+// 必须在每次 Page.reload 之后注入（reload 会清掉 window 上的临时函数）。
+const injectHelpers = () =>
+  evalJs(`(() => {
+  window.__ltSet = (idx, text, caret = 'end') => {
+    const el = document.querySelectorAll('.ol-text')[idx]
+    if (!el) return false
+    el.focus()
+    el.textContent = text
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+    const sel = window.getSelection()
+    const r = document.createRange()
+    r.selectNodeContents(el)
+    if (caret === 'start') r.collapse(true)
+    else r.collapse(false)
+    sel.removeAllRanges()
+    sel.addRange(r)
+    return true
+  }
+  window.__ltKey = (idx, key, extra = {}) => {
+    const el = document.querySelectorAll('.ol-text')[idx]
+    if (!el) return false
+    el.focus()
+    el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...extra }))
+    return true
+  }
+  window.__ltVals = () => [...document.querySelectorAll('.ol-text')].map((e) => e.textContent)
+  window.__ltRows = () => [...document.querySelectorAll('.ol-row')].map((r) => ({ id: r.dataset.rowId, depth: Number(r.dataset.depth), text: r.querySelector('.ol-text')?.textContent ?? '' }))
+  return true
+})()`)
+
+// 清场：清掉上轮残留（笔记/星标/分类），再 reload 彻底重置 UI 状态
 await evalJs(`(() => { const b = document.querySelector('.sv-back, .rv-back'); if (b) b.click(); return true })()`)
 await until(`() => !!document.querySelector('.rail')`)
 await evalJs(`(async () => {
@@ -88,21 +120,12 @@ await evalJs(`(async () => {
   return true
 })()`)
 await send('Page.reload', {})
-await new Promise((r) => setTimeout(r, 2500))
-{
-  let remounted = false
-  for (let i = 0; i < 20; i++) {
-    if ((await evalJs(`!!document.querySelector('#app .topbar')`)) === true) {
-      remounted = true
-      break
-    }
-    await sleep(400)
-  }
-  if (!remounted) {
-    console.log('FAIL: reload 后未挂载')
-    process.exit(1)
-  }
+await sleep(2500)
+if (!(await waitMounted())) {
+  console.log('FAIL: reload 后未挂载')
+  process.exit(1)
 }
+await injectHelpers()
 
 // ---------- 编辑器：新建 + 键位 ----------
 console.log('=== 2. 编辑器键位（Enter/Tab/Shift+Tab/Backspace）===')
@@ -119,73 +142,96 @@ if (!editorUp) {
 // 标题
 await evalJs(`(() => {
   const el = document.querySelector('.ol-title')
-  el.value = '自测笔记'
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+  setter.call(el, '自测笔记')
   el.dispatchEvent(new Event('input', { bubbles: true }))
 })()`)
 await sleep(700)
 
 // Enter 分行
-await evalJs(`(() => {
-  const ta = document.querySelector('.ol-text')
-  ta.focus(); ta.value = '第一行'
-  ta.dispatchEvent(new Event('input', { bubbles: true }))
-  ta.setSelectionRange(3, 3)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-})()`)
-await sleep(150)
-const enterOk = await evalJs(`JSON.stringify([...document.querySelectorAll('.ol-text')].map(t => t.value)) === JSON.stringify(['第一行',''])`)
+await evalJs(`window.__ltSet(0, '第一行')`)
+await sleep(120)
+await evalJs(`window.__ltKey(0, 'Enter')`)
+await sleep(200)
+const enterOk = await evalJs(`JSON.stringify(window.__ltVals()) === JSON.stringify(['第一行', ''])`)
 
-// 第二行输入 + Tab 缩进（行首）
-await evalJs(`(() => {
-  const ta = document.querySelectorAll('.ol-text')[1]
-  ta.focus(); ta.value = '子行'
-  ta.dispatchEvent(new Event('input', { bubbles: true }))
-  ta.setSelectionRange(0, 0)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
-})()`)
-await sleep(150)
-const indentOk = await evalJs(`parseInt(document.querySelectorAll('.ol-row')[1]?.style.paddingLeft) === 40`)
+// 第二行输入 + Tab 缩进
+await evalJs(`window.__ltSet(1, '子行')`)
+await sleep(120)
+await evalJs(`window.__ltKey(1, 'Tab')`)
+await sleep(200)
+const indentOk = await evalJs(`window.__ltRows()[1]?.depth === 1 && document.querySelectorAll('.ol-row')[1]?.querySelectorAll('.ol-indent').length === 1`)
 
 // Shift+Tab 反缩进
-await evalJs(`(() => {
-  const ta = document.querySelectorAll('.ol-text')[1]
-  ta.focus(); ta.setSelectionRange(0, 0)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true, shiftKey: true }))
-})()`)
-await sleep(150)
-const outdentOk = await evalJs(`parseInt(document.querySelectorAll('.ol-row')[1]?.style.paddingLeft) === 16`)
+await evalJs(`window.__ltKey(1, 'Tab', { shiftKey: true })`)
+await sleep(200)
+const outdentOk = await evalJs(`window.__ltRows()[1]?.depth === 0`)
 
 // 行首 Backspace（非空）→ 并入上一行
+await evalJs(`window.__ltSet(1, '子行', 'start')`)
+await sleep(120)
+await evalJs(`window.__ltKey(1, 'Backspace')`)
+await sleep(250)
+const mergeOk = await evalJs(`JSON.stringify(window.__ltVals()) === JSON.stringify(['第一行子行'])`)
+
+// 多选（圆点 Ctrl+点击）：选中第 1 行后再 Ctrl 点第 2 行
+await evalJs(`window.__ltSet(0, '甲')`)
+await sleep(100)
+await evalJs(`window.__ltKey(0, 'Enter')`)
+await sleep(200)
+await evalJs(`window.__ltSet(1, '乙')`)
+await sleep(120)
 await evalJs(`(() => {
-  const ta = document.querySelectorAll('.ol-text')[1]
-  ta.focus(); ta.setSelectionRange(0, 0)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }))
+  const rows = [...document.querySelectorAll('.ol-row')]
+  const clickBullet = (row, ctrl) => {
+    const b = row.querySelector('.ol-bullet')
+    const r = b.getBoundingClientRect()
+    b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, ctrlKey: ctrl, clientX: r.x + 5, clientY: r.y + 5 }))
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: r.x + 5, clientY: r.y + 5 }))
+  }
+  clickBullet(rows[0], false)
+  clickBullet(rows[1], true)
+  return true
 })()`)
-await sleep(150)
-const mergeOk = await evalJs(`JSON.stringify([...document.querySelectorAll('.ol-text')].map(t => t.value)) === JSON.stringify(['第一行子行'])`)
+await sleep(300)
+const multiSelectOk = await evalJs(`document.querySelectorAll('.ol-row.selected').length === 2`)
+// 清掉多选（Esc）再拖拽：否则拖的是整块选择，落点又在块内，按规则会被拒绝
+await evalJs(`(() => { const el = document.querySelectorAll('.ol-text')[0]; el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true })()`)
+await sleep(200)
+
+// 拖拽（大纲）：把第 2 行拖到第 1 行中部 → 成为子级
+const outlineDragOk = await evalJs(`(() => {
+  const rows = [...document.querySelectorAll('.ol-row')]
+  if (rows.length < 2) return false
+  const from = rows[1]; const to = rows[0]
+  const b = from.querySelector('.ol-bullet'); const br = b.getBoundingClientRect()
+  const tr = to.getBoundingClientRect()
+  b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: br.x + 5, clientY: br.y + 5 }))
+  for (let i = 1; i <= 10; i++) {
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: br.x + 5 + (tr.x + tr.width / 2 - br.x - 5) * i / 10, clientY: br.y + 5 + (tr.y + tr.height / 2 - br.y - 5) * i / 10 }))
+  }
+  window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: tr.x + tr.width / 2, clientY: tr.y + tr.height / 2 }))
+  return true
+})()`)
+await sleep(700)
+const outlineDragTreeOk = await until(`() => {
+  return window.lexbench.outlines.list().then(async (l) => {
+    const n = l.find((x) => x.title === '自测笔记')
+    if (!n) return false
+    const d = await window.lexbench.outlines.get(n.id)
+    const t = JSON.parse(d.tree)
+    return t.length === 1 && (t[0].children ?? []).length === 1
+  })
+}`)
 
 // ---------- 折叠 ----------
 console.log('=== 3. 折叠/展开 ===')
-await evalJs(`(() => {
-  const ta = document.querySelector('.ol-text')
-  ta.focus(); ta.setSelectionRange(5, 5)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-})()`)
-await sleep(150)
-await evalJs(`(() => {
-  const ta = document.querySelectorAll('.ol-text')[1]
-  ta.focus(); ta.value = '子行2'
-  ta.dispatchEvent(new Event('input', { bubbles: true }))
-  ta.setSelectionRange(0, 0)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
-})()`)
-await sleep(150)
 await evalJs(`document.querySelector('.ol-fold')?.click()`)
 const foldOk = await until(`() => !!document.querySelector('.ol-count')`)
 await evalJs(`document.querySelector('.ol-fold')?.click()`)
 const unfoldOk = await until(`() => !document.querySelector('.ol-count') && document.querySelectorAll('.ol-text').length >= 2`)
 
-// ---------- 自动保存落库（含 ref 之后的树） ----------
+// ---------- 自动保存落库 ----------
 console.log('=== 4. 自动保存落库 ===')
 const titleSaved = await until(`() => {
   return window.lexbench.outlines.list().then(l => l.some(n => n.title === '自测笔记'))
@@ -195,32 +241,30 @@ const treeSaved = await until(`() => {
     const n = l.find(x => x.title === '自测笔记')
     if (!n) return false
     const d = await window.lexbench.outlines.get(n.id)
-    return JSON.parse(d.tree).some(x => x.text === '第一行子行')
+    const walk = (ns) => ns.some((x) => x.text === '甲' || walk(x.children ?? []))
+    return walk(JSON.parse(d.tree))
   })
 }`)
 
-// ---------- 往返快照（切走→切回标题不回退） ----------
-console.log('=== 5. 往返快照（续读式重挂不丢数据）===')
+// ---------- 往返快照 ----------
+console.log('=== 5. 往返快照（切走→切回不丢数据）===')
 await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('文档库'))?.click()`)
 await sleep(400)
-// 续读契约：切回文档库方向可能静默重开上次阅读（整区替换，tab 不在 DOM）——先退回首页
 await evalJs(`(() => { const b = document.querySelector('.sv-back, .rv-back'); if (b) b.click(); return true })()`)
 await until(`() => !!document.querySelector('.rail')`)
 await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
 await sleep(400)
 const roundtripOk = await until(`() => !!document.querySelector('.ol-title') && document.querySelector('.ol-title').value === '自测笔记'`)
 
-// ---------- 插入浮层（＋连加） ----------
+// ---------- 插入浮层 ----------
 console.log('=== 6. 插入引用浮层（/ 唤出 + 连加）===')
 await evalJs(`document.querySelector('.ol-append')?.click()`)
 await sleep(300)
-await evalJs(`(() => {
-  const tas = document.querySelectorAll('.ol-text')
-  const ta = tas[tas.length - 1]
-  ta.focus(); ta.setSelectionRange(0, 0)
-  ta.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }))
-})()`)
-const pickerOpen = await until(`() => !!document.querySelector('.ol-picker-card')`)
+const pickerOpen = await (async () => {
+  const idx = await evalJs(`document.querySelectorAll('.ol-text').length - 1`)
+  await evalJs(`window.__ltKey(${idx}, '/')`)
+  return until(`() => !!document.querySelector('.ol-picker-card')`)
+})()
 await evalJs(`(() => {
   const el = document.querySelector('.ol-picker-input')
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -244,13 +288,12 @@ if (pickerHits) {
   secondOk = after2 > after1
 }
 await evalJs(`document.querySelector('.ol-picker-close')?.click()`)
-// 隐藏页 rAF 节流：leave 过渡可能不跑完（lessons #2）——关闭触发（leave 类）或 DOM 消失即算过
 const pickerClosed = await until(`() => {
   const ov = document.querySelector('.ol-picker')
   return !ov || ov.className.includes('menu-pop-leave')
 }`)
 
-// ---------- 引用节点：落库 ref + 粘贴生成 ----------
+// ---------- 引用节点 ----------
 console.log('=== 7. 引用节点（浮层插入落库 / 粘贴生成）===')
 const refSaved = await until(`() => {
   return window.lexbench.outlines.list().then(async (l) => {
@@ -261,27 +304,26 @@ const refSaved = await until(`() => {
     return walk(JSON.parse(d.tree))
   })
 }`)
-// 粘贴生成引用节点（模拟「复制引用」的剪贴板双格式）
 await evalJs(`document.querySelector('.ol-append')?.click()`)
 await sleep(300)
-await evalJs(`(() => {
+const pasteRefOk = await evalJs(`(() => {
   const tas = document.querySelectorAll('.ol-text')
   const ta = tas[tas.length - 1]
+  if (!ta) return false
   ta.focus()
   const dt = new DataTransfer()
   dt.setData('text/plain', '《自测法》第一条\\n自测引用原文')
   dt.setData('text/html', '<span data-lb-ref="{&quot;docId&quot;:1,&quot;articleId&quot;:1}">《自测法》第一条</span><br>自测引用原文')
   ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+  return true
 })()`)
-await sleep(400)
-const pasteRefOk = await evalJs(`(() => {
-  // 注意：浮层已插入过引用行——按粘贴进去的特征文本精确定位，别误命中浮层行
+await sleep(600)
+const pasteRefRowOk = await evalJs(`(() => {
   const row = [...document.querySelectorAll('.ol-row')].find(
-    r => r.classList.contains('is-ref') && r.querySelector('.ol-text').value.includes('《自测法》')
+    r => r.classList.contains('is-ref') && r.querySelector('.ol-text').textContent.includes('《自测法》')
   )
-  return !!row && row.querySelector('.ol-gutter').textContent === '📖'
+  return !!row && row.querySelector('.ol-bullet').textContent.includes('📖')
 })()`)
-// 逃生门 API 齐备 + 引用行 contextmenu 派发
 const escapeOk = await evalJs(`(() => {
   const row = [...document.querySelectorAll('.ol-row')].find(r => r.classList.contains('is-ref'))
   if (!row) return false
@@ -289,7 +331,7 @@ const escapeOk = await evalJs(`(() => {
   return typeof window.lexbench.outlines.setRefContext === 'function' && typeof window.lexbench.outlines.onOpenSource === 'function'
 })()`)
 
-// ---------- 星标：阅读页点亮 → 笔记左列入口 ----------
+// ---------- 星标 ----------
 console.log('=== 8. 星标链路 ===')
 await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('文档库'))?.click()`)
 await sleep(300)
@@ -303,7 +345,7 @@ if (inReading) {
   starDbOk = await evalJs(`window.lexbench.outlines.listStarred().then(r => r.length >= 1)`)
 }
 
-// ---------- 续读契约：滚动→返回→笔记→切回静默重开恢复位置 ----------
+// ---------- 续读契约 ----------
 console.log('=== 9. 续读契约（静默重开 + 位置恢复）===')
 const scrolledOrder = await evalJs(`(() => {
   const sc = document.querySelector('.sv-scroll')
@@ -314,7 +356,6 @@ const scrolledOrder = await evalJs(`(() => {
   sc.dispatchEvent(new Event('scroll'))
   return Number(target.getAttribute('data-order'))
 })()`)
-// 防抖落库后再走（隐藏页节流下多等几轮）
 await sleep(1200)
 await evalJs(`document.querySelector('.sv-back')?.click()`)
 const backOk = await until(`() => !!document.querySelector('.rail')`)
@@ -339,18 +380,16 @@ if (resumeOk && typeof scrolledOrder === 'number' && scrolledOrder > 0) {
   silentOk = await evalJs(`![...document.querySelectorAll('*')].some(el => el.children.length === 0 && el.textContent?.includes('已回到上次阅读位置'))`)
 }
 
-// ---------- 导出（md 自测专用通道，不弹对话框） ----------
+// ---------- 导出 ----------
 console.log('=== 10. 导出 md ===')
 let exportOk = false
 {
-  // 回笔记方向（若在阅读页先返回）
   await evalJs(`(() => { const b = document.querySelector('.sv-back'); if (b) b.click(); return true })()`)
   await until(`() => !!document.querySelector('.rail')`)
   await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
   await sleep(400)
   await evalJs(`[...document.querySelectorAll('.np-item')].find(b => b.textContent.includes('自测笔记'))?.click()`)
   await until(`() => !!document.querySelector('.ol-title')`)
-  // __testExport 跳过对话框直接写盘（Public 目录任何用户可写；收尾删除）
   exportOk = await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
     const n = l.find(x => x.title === '自测笔记')
@@ -362,8 +401,8 @@ let exportOk = false
   })()`)
 }
 
-// ---------- 第2批：自定义分类 + 贴图 + 导图 ----------
-console.log('=== 11. 分类 / 贴图 / 导图 ===')
+// ---------- 分类 / 贴图 / 导图 ----------
+console.log('=== 11. 分类 / 贴图 / 导图编辑 ===')
 let catOk = false
 let catFilterOk = false
 let imgOk = false
@@ -375,7 +414,6 @@ let mapModeOk = false
 {
   await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
   await sleep(400)
-  // 分类：走面板 UI 新建（IPC 直连不刷新界面——lessons #1）
   await evalJs(`(() => { const b = document.querySelector('.gr-new'); if (b) { b.click(); return true } return false })()`)
   await sleep(300)
   await evalJs(`(() => {
@@ -388,24 +426,14 @@ let mapModeOk = false
     return 'ok'
   })()`)
   catOk = await until(() => [...document.querySelectorAll('.gr')].some((g) => g.textContent.includes('自测分类')))
-  // 选中该分类 → ＋新建（落进当前分类）
   await evalJs(`(() => { const g = [...document.querySelectorAll('.gr')].find((x) => x.textContent.includes('自测分类')); g?.click(); return !!g })()`)
   await sleep(300)
   await evalJs(`document.querySelector('.np-new')?.click()`)
   await until(() => !!document.querySelector('.ol-title'))
   catFilterOk = await evalJs(`window.lexbench.outlines.list().then((l) => l.some((n) => n.group_id !== null))`)
 
-  // 先写一行文本（导图编辑断言的载体；纯图空文本节点属边缘态不在断言范围）
-  await evalJs(`(() => {
-    const ta = document.querySelector('.ol-text')
-    if (!ta) return false
-    ta.focus()
-    ta.value = '贴图载体行'
-    ta.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  })()`)
+  await evalJs(`window.__ltSet(0, '贴图载体行')`)
   await sleep(300)
-  // 贴图：构造剪贴板图片 paste（1x1 PNG）
   imgOk = await evalJs(`(() => {
     const ta = document.querySelector('.ol-text')
     if (!ta) return false
@@ -425,12 +453,11 @@ let mapModeOk = false
       const n = l.find((x) => x.group_id !== null)
       if (!n) return false
       const d = await window.lexbench.outlines.get(n.id)
-      return JSON.parse(d.tree).some((x) => !!x.image)
+      return JSON.parse(d.tree).some((x) => !!(x.image || x.images?.length))
     })
   })
 
-  // 导图：⇄ 切换渲染 → 双击编辑（keyCode 13）→ 切回大纲回写
-  await evalJs(`(() => { const b = [...document.querySelectorAll('.ol-insert-btn')].find((x) => x.textContent.includes('导图')); b?.click(); return !!b })()`)
+  await evalJs(`[...document.querySelectorAll('.ol-view-switch button')].find((x) => x.textContent.includes('导图'))?.click()`)
   mapOk = await until(() => document.querySelectorAll('jmnode').length >= 2)
   await evalJs(`(() => { const n = [...document.querySelectorAll('jmnode')].find((x) => !x.classList.contains('root') && x.textContent.includes('贴图载体行')); n?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); return !!n })()`)
   const editing = await until(() => !!document.querySelector('.ol-mind .jsmind-editor'))
@@ -445,22 +472,18 @@ let mapModeOk = false
       inp.dispatchEvent(ke)
       return true
     })()`)
-    await sleep(700)
+    await sleep(800)
   }
-  await evalJs(`(() => { const b = [...document.querySelectorAll('.ol-insert-btn')].find((x) => x.textContent.includes('大纲')); b?.click(); return !!b })()`)
-  await sleep(500)
-  mapEditOk =
-    editing &&
-    (await evalJs(`[...document.querySelectorAll('.ol-text')].some((t) => t.value.includes('导图自测节点'))`))
-  // 导图往返后贴图元数据保留（data 字段/id 回查兜底）
+  await evalJs(`[...document.querySelectorAll('.ol-view-switch button')].find((x) => x.textContent.includes('大纲'))?.click()`)
+  await sleep(600)
+  mapEditOk = editing && (await evalJs(`[...document.querySelectorAll('.ol-text')].some((t) => t.textContent.includes('导图自测节点'))`))
   mapImageKept = await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
     const n = l.find((x) => x.group_id !== null)
     if (!n) return false
     const d = await window.lexbench.outlines.get(n.id)
-    return JSON.parse(d.tree).some((x) => !!x.image)
+    return JSON.parse(d.tree).some((x) => !!(x.image || x.images?.length))
   })()`)
-  // view_mode 记忆（刚切回大纲 → outline 已由 setViewMode 落库）
   mapModeOk = await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
     const n = l.find((x) => x.group_id !== null)
@@ -470,38 +493,90 @@ let mapModeOk = false
   })()`)
 }
 
-// ---------- 通用导入（OPML / HTML / Markdown） ----------
+// ---------- 导图拖动 / 缩放（用户点名的核心交互） ----------
+console.log('=== 11b. 导图拖动 + 缩放 ===')
+let mapDragOk = false
+let mapZoomOk = false
+{
+  await evalJs(`(async () => {
+    const l = await window.lexbench.outlines.list()
+    for (const n of l) if (n.title === '拖动自测') await window.lexbench.outlines.remove(n.id)
+    const row = await window.lexbench.outlines.create('拖动自测', null)
+    const tree = [
+      { id: 'a', text: 'A', children: [{ id: 'a1', text: 'A1', children: [] }] },
+      { id: 'b', text: 'B', children: [] },
+      { id: 'c', text: 'C', children: [] }
+    ]
+    await window.lexbench.outlines.save(row.id, JSON.stringify(tree))
+    await window.lexbench.outlines.setViewMode(row.id, 'map')
+    return true
+  })()`)
+  await send('Page.reload', {})
+  await sleep(2500)
+  await waitMounted()
+  await injectHelpers()
+  await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
+  await sleep(400)
+  await evalJs(`[...document.querySelectorAll('.np-item')].find(b => b.textContent.includes('拖动自测'))?.click()`)
+  await until(() => document.querySelectorAll('jmnode').length >= 4)
+  const dragSent = await evalJs(`(() => {
+    const nodes = [...document.querySelectorAll('jmnode')]
+    const a = nodes.find(n => n.textContent === 'A')
+    const b = nodes.find(n => n.textContent === 'B')
+    if (!a || !b) return false
+    const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect()
+    b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: br.x + br.width / 2, clientY: br.y + br.height / 2 }))
+    for (let i = 1; i <= 12; i++) {
+      window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: br.x + br.width / 2 + (ar.x + ar.width / 2 - br.x - br.width / 2) * i / 12, clientY: br.y + br.height / 2 + (ar.y + ar.height / 2 - br.y - br.height / 2) * i / 12 }))
+    }
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: ar.x + ar.width / 2, clientY: ar.y + ar.height / 2 }))
+    return true
+  })()`)
+  mapDragOk = dragSent && (await until(() => {
+    return window.lexbench.outlines.list().then(async (l) => {
+      const n = l.find((x) => x.title === '拖动自测')
+      if (!n) return false
+      const d = await window.lexbench.outlines.get(n.id)
+      const t = JSON.parse(d.tree)
+      const a = t.find((x) => x.id === 'a')
+      return !!a && (a.children ?? []).some((c) => c.id === 'b')
+    })
+  }))
+  const zoomBefore = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
+  // 小图在 100% 时缩小会被 jsMind 拒绝（图比视口还小），用放大断言控件链路
+  await evalJs(`[...document.querySelectorAll('.mm-zoom button')].find(b => (b.title || '').includes('放大'))?.click()`)
+  await sleep(350)
+  const zoomAfter = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
+  mapZoomOk = !!zoomBefore && !!zoomAfter && zoomBefore !== zoomAfter
+  await evalJs(`(async () => {
+    const l = await window.lexbench.outlines.list()
+    for (const n of l) if (n.title === '拖动自测') await window.lexbench.outlines.remove(n.id)
+    return true
+  })()`)
+}
+
+// ---------- 通用导入 ----------
 console.log('=== 12. 通用导入 ===')
 let importPreviewOk = false
 let importRunOk = false
 let importDupOk = false
 let importTreeOk = false
 {
-  // 造 fixture（测试侧落盘，模拟源软件导出的通用格式文件）
   const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const fixDir = mkdtempSync(join(tmpdir(), 'lexbench-import-'))
-  const fixPaths = [
-    join(fixDir, '套件OPML.opml'),
-    join(fixDir, '套件HTML.html'),
-    join(fixDir, '套件MD.md')
-  ]
+  const fixPaths = [join(fixDir, '套件OPML.opml'), join(fixDir, '套件HTML.html'), join(fixDir, '套件MD.md')]
   writeFileSync(
     fixPaths[0],
     '<?xml version="1.0"?><opml version="2.0"><head><title>套件OPML大纲</title></head><body>' +
       '<outline text="第一章"><outline text="任务项" _complete="true"/></outline><outline text="第二章"/></body></opml>',
     'utf8'
   )
-  writeFileSync(
-    fixPaths[1],
-    '<html><head><title>套件HTML大纲</title></head><body><ul><li>甲<ul><li>乙</li></ul></li><li>丙</li></ul></body></html>',
-    'utf8'
-  )
+  writeFileSync(fixPaths[1], '<html><head><title>套件HTML大纲</title></head><body><ul><li>甲<ul><li>乙</li></ul></li><li>丙</li></ul></body></html>', 'utf8')
   writeFileSync(fixPaths[2], '# 套件MD大纲\n- 上一\n  - 下一\n', 'utf8')
   const fixJson = JSON.stringify(fixPaths.map((p) => p.split('\\').join('/')))
 
-  // 预检（IPC 直连，UI 列表刷新用断言库层即可——lessons #1 已知）
   const preview = await evalJs(`window.lexbench.outlines.previewImport(${fixJson})`)
   importPreviewOk =
     Array.isArray(preview) &&
@@ -511,16 +586,12 @@ let importTreeOk = false
     preview[1].format === 'html' &&
     preview[2].format === 'md'
 
-  // 执行导入
   const run = await evalJs(`window.lexbench.outlines.runImport(${fixJson}, 'skip')`)
-  importRunOk =
-    Array.isArray(run) && run.length === 3 && run.every((r) => r.status === 'imported')
+  importRunOk = Array.isArray(run) && run.length === 3 && run.every((r) => r.status === 'imported')
 
-  // 重复导入 → skip
   const rerun = await evalJs(`window.lexbench.outlines.runImport(${fixJson}, 'skip')`)
   importDupOk = Array.isArray(rerun) && rerun.every((r) => r.status === 'skipped')
 
-  // 树结构抽查（OPML：任务前缀 + 嵌套）
   importTreeOk = await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
     const n = l.find((x) => x.title === '套件OPML大纲')
@@ -530,7 +601,6 @@ let importTreeOk = false
     return t.length === 2 && t[0].children[0].text.includes('[✓]') && t[1].text === '第二章'
   })()`)
 
-  // 清 fixture 与导入数据
   rmSync(fixDir, { recursive: true, force: true })
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -539,7 +609,7 @@ let importTreeOk = false
   })()`)
 }
 
-// ---------- 收尾：清数据 ----------
+// ---------- 收尾 ----------
 console.log('=== 13. 收尾清理 ===')
 await evalJs(`(async () => {
   const s = await window.lexbench.outlines.listStarred()
@@ -550,7 +620,6 @@ await evalJs(`(async () => {
   for (const x of g) await window.lexbench.noteGroups.remove(x.id)
   return (await window.lexbench.outlines.list()).length === 0
 })()`)
-// 导出自测文件删除
 try {
   const { rmSync } = await import('node:fs')
   rmSync('C:\\Users\\Public\\lexbench-notes-selftest.md', { force: true })
@@ -567,6 +636,8 @@ const checks = [
   ['Tab 缩进（行首）', indentOk],
   ['Shift+Tab 反缩进', outdentOk],
   ['行首 Backspace 并入上一行', mergeOk],
+  ['圆点多选（Ctrl+点击）', multiSelectOk],
+  ['大纲拖动改挂载', outlineDragOk && outlineDragTreeOk],
   ['折叠 + 计数', foldOk],
   ['展开恢复', unfoldOk],
   ['标题自动保存落库', titleSaved],
@@ -579,7 +650,7 @@ const checks = [
   ['第二条继续插入', secondOk],
   ['✕ 关闭浮层', pickerClosed],
   ['引用节点 ref 落库', refSaved],
-  ['粘贴生成引用节点', pasteRefOk],
+  ['粘贴生成引用节点', pasteRefOk && pasteRefRowOk],
   ['逃生门 API + contextmenu 派发', escapeOk],
   ['打开法规阅读页', inReading],
   ['星标按钮点亮', starClickOk],
@@ -595,6 +666,8 @@ const checks = [
   ['导图：编辑回写大纲', mapEditOk],
   ['导图往返贴图元数据保留', mapImageKept],
   ['view_mode 记忆落库', mapModeOk],
+  ['导图：节点拖动改挂载', mapDragOk],
+  ['导图：缩放控件', mapZoomOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],

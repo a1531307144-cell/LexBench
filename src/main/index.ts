@@ -59,6 +59,12 @@ function createWindow(): void {
     if (details.url.startsWith('https://')) shell.openExternal(details.url)
     return { action: 'deny' }
   })
+  // 富文本里的 <a href> 若触发整页跳转，会把应用界面替换掉——一律拦截，https 交给系统浏览器
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url === win.webContents.getURL()) return
+    e.preventDefault()
+    if (url.startsWith('https://')) shell.openExternal(url)
+  })
 
   // 右键上下文菜单（Electron 默认没有 → 此前右键毫无反应，「选中后复制不了」的根因）：
   // 输入框给 剪切/复制/粘贴，正文选中给 复制，其它给 全选——右键永远有可用项；

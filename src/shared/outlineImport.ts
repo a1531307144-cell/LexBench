@@ -108,7 +108,7 @@ export function parseOpml(content: string, fallbackTitle: string): ImportedDoc {
     }
     const attrs = parseOutlineAttrs(m[1] ?? '')
     const text = (attrs['text'] ?? attrs['title'] ?? '').trim()
-    const rawImgs = attrs['_mubu_images'] ?? attrs['images'] ?? ''
+    const rawImgs = attrs['images'] ?? attrs['_images'] ?? ''
     const images = rawImgs ? extractImageUrls(rawImgs) : []
     imageCount += images.length
     let nodeText = text

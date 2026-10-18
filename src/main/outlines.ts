@@ -177,13 +177,37 @@ async function generateOutlineFile(
   if (format === 'docx') {
     const children: Paragraph[] = [new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 })]
     for (const line of flattenOutline(tree)) {
-      if (!line.text.trim()) continue
-      children.push(
-        new Paragraph({
-          children: [new TextRun({ text: `${'　'.repeat(line.depth)}${line.isRef ? '' : '· '}${line.text}` })],
-          spacing: { after: 60 }
-        })
-      )
+      if (!line.text.trim() && !line.note) continue
+      const taskMark = line.task === 2 ? '☑ ' : line.task === 1 ? '☐ ' : ''
+      if (line.text.trim()) {
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `${'　'.repeat(line.depth)}${line.isRef ? '' : '· '}${taskMark}${line.text}`,
+                bold: !!line.heading,
+                size: line.heading ? 30 - line.heading * 2 : 24
+              })
+            ],
+            spacing: { after: line.note ? 20 : 60 }
+          })
+        )
+      }
+      if (line.note) {
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `${'　'.repeat(line.depth + 1)}${line.note.replace(/\r?\n/g, ' ')}`,
+                italics: true,
+                color: '666666',
+                size: 20
+              })
+            ],
+            spacing: { after: 60 }
+          })
+        )
+      }
     }
     const doc = new Document({
       styles: { default: { document: { run: { font: 'Times New Roman', size: 24 } } } },

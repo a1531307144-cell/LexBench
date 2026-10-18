@@ -156,17 +156,31 @@ export interface OutlineRef {
   articleId: number
 }
 
-/** 大纲树节点：嵌套结构整树存 JSON（拍平成行列表是渲染层的事） */
+/**
+ * 大纲树节点：嵌套结构整树存 JSON（拍平成行列表是渲染层的事）。
+ * 除 text 外全部可选——历史笔记（纯文本树）无需迁移，读出来缺省即是普通正文行。
+ */
 export interface OutlineNode {
   id: string
+  /** 纯文本镜像（检索/导出兜底/导图主题）；富文本时与 html 同步维护 */
   text: string
   children: OutlineNode[]
   /** 折叠态（有子节点才生效） */
   fold?: boolean
   /** 引用节点（《法规名》第X条）才有 */
   ref?: OutlineRef
-  /** 贴图：attachments 目录内文件名（相对引用，随数据包备份） */
+  /** 贴图：attachments 目录内文件名（相对引用，随数据包备份）；兼容旧字段，等于 images[0] */
   image?: string
+  /** 多图：attachments 目录内文件名列表（旧笔记只有 image 时按单图处理） */
+  images?: string[]
+  /** 富文本内容（消毒后的行内 HTML）；无格式时省略，节省体积 */
+  html?: string
+  /** 行下备注（小字，另一条编辑通道） */
+  note?: string
+  /** 标题级别：1/2/3=小标题 1/2/3；缺省=正文 */
+  heading?: 1 | 2 | 3
+  /** 任务状态：1=待办，2=已完成；缺省=普通行 */
+  task?: 1 | 2
 }
 
 /** 笔记行（outlines 表）；tree 为 JSON 字符串，解析后是 OutlineNode[] */
