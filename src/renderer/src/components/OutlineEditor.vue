@@ -67,6 +67,9 @@ if (tree.value.length === 0) tree.value = [createOutlineNode('')]
 const title = ref(props.outline.title)
 const displayTitle = computed(() => title.value.trim() || '未命名笔记')
 const viewMode = ref<'outline' | 'map'>(props.outline.view_mode === 'map' ? 'map' : 'outline')
+/** 大纲页面缩放（触控板双指捏合 / Ctrl+滚轮 / Ctrl+= / Ctrl+-） */
+const pageZoom = ref(1)
+const rootEl = ref<HTMLElement | null>(null)
 /** 外部改内容（撤销/合并/自动格式）后让所有行重设 DOM；打字本身不 bump，避免光标跳 */
 const renderEpoch = ref(0)
 function bumpRender(): void {
@@ -105,6 +108,30 @@ const scrollEl = ref<HTMLElement | null>(null)
 function scrollToTop(): void {
   nextTick(() => scrollEl.value?.scrollTo({ top: 0 }))
 }
+
+function setPageZoom(next: number): void {
+  pageZoom.value = Math.min(2, Math.max(0.6, Math.round(next * 100) / 100))
+}
+
+/** 左右留出的可平移空间默认居中；缩放后重新居中，触控板横向滑动才有意义 */
+function centerOutlineScroll(): void {
+  nextTick(() => {
+    const el = scrollEl.value
+    if (!el) return
+    const max = Math.max(0, el.scrollWidth - el.clientWidth)
+    el.scrollLeft = Math.round(max / 2)
+  })
+}
+
+function onOutlineWheel(ev: WheelEvent): void {
+  if (viewMode.value !== 'outline' || !(ev.ctrlKey || ev.metaKey)) return
+  // 触控板双指捏合在 Chromium 里就是 ctrl+wheel；拦掉默认页面缩放，改缩放大纲页
+  ev.preventDefault()
+  const factor = Math.exp(-ev.deltaY * 0.0015)
+  setPageZoom(pageZoom.value * factor)
+}
+
+watch(pageZoom, () => centerOutlineScroll())
 
 // ---------- 选择（结构多选） ----------
 
@@ -199,13 +226,12 @@ function editorFor(id: string | null): TextEditorApi | null {
   return id ? textRefs.get(id) ?? null : null
 }
 
-function focusNode(id: string, offset: number | 'end' | 'start' = 'end', structural = false): void {
+function focusNode(id: string, offset: number | 'end' | 'start' = 'end'): void {
   const hit = findNode(tree.value, id)
   if (!hit) return
   expandAncestors(tree.value, id)
+  // 聚焦文字永远不点亮整行：高光只保留鼠标悬停与编辑框内的文字选区
   selected.clear()
-  // 打字光标不点亮整行（与主流大纲工具一致）；结构操作后可以显式选中
-  if (structural) selected.add(id)
   anchorId.value = id
   focusedId.value = id
   nextTick(() => {
@@ -308,7 +334,6 @@ function applySnapshot(s: string): void {
     if (id) {
       focusedId.value = id
       selected.clear()
-      selected.add(id)
       anchorId.value = id
       editorFor(id)?.focusOffset('end')
     }
@@ -383,7 +408,7 @@ function addChild(row: { node: OutlineNode }, index?: number): void {
   insertChild(tree.value, row.node.id, created, index)
   pushHistory()
   scheduleSave()
-  focusNode(created.id, 'end', true)
+  focusNode(created.id, 'end')
 }
 
 function addSibling(row: { node: OutlineNode }, before = false): void {
@@ -393,7 +418,7 @@ function addSibling(row: { node: OutlineNode }, before = false): void {
   else insertAfter(tree.value, row.node.id, created)
   pushHistory()
   scheduleSave()
-  focusNode(created.id, 'end', true)
+  focusNode(created.id, 'end')
 }
 
 function appendRow(): void {
@@ -402,7 +427,7 @@ function appendRow(): void {
   rootNodes.value.push(created)
   pushHistory()
   scheduleSave()
-  focusNode(created.id, 'end', true)
+  focusNode(created.id, 'end')
 }
 
 function handleEnter(row: { node: OutlineNode; hasChildren: boolean }, editor: TextEditorApi): void {
@@ -421,8 +446,8 @@ function handleEnter(row: { node: OutlineNode; hasChildren: boolean }, editor: T
   const created = splitOutlineNode(tree.value, node.id, parts)
   pushHistory()
   scheduleSave()
-  if (created) focusNode(created.id, 0, true)
-  else focusNode(node.id, 'end', true)
+  if (created) focusNode(created.id, 0)
+  else focusNode(node.id, 'end')
 }
 
 function handleTab(row: { node: OutlineNode }, editor: TextEditorApi, outdent: boolean): void {
@@ -432,7 +457,7 @@ function handleTab(row: { node: OutlineNode }, editor: TextEditorApi, outdent: b
   if (!ok) return
   pushHistory()
   scheduleSave()
-  focusNode(row.node.id, offset, true)
+  focusNode(row.node.id, offset)
 }
 
 function handleBackspace(row: { node: OutlineNode; parent: OutlineNode | null }, editor: TextEditorApi): void {
@@ -489,7 +514,7 @@ function deleteSelected(): void {
   if (rootNodes.value.length === 0) rootNodes.value.push(createOutlineNode(''))
   bumpRender()
   const nextId = fallback && findNode(tree.value, fallback) ? fallback : rows.value[0]?.node.id
-  if (nextId) focusNode(nextId, 'end', true)
+  if (nextId) focusNode(nextId, 'end')
 }
 
 function moveUp(row: { node: OutlineNode }, editor: TextEditorApi): void {
@@ -498,7 +523,7 @@ function moveUp(row: { node: OutlineNode }, editor: TextEditorApi): void {
   if (!moveNodeUp(tree.value, row.node.id)) return
   pushHistory()
   scheduleSave()
-  focusNode(row.node.id, Math.min(offset, row.node.text.length), true)
+  focusNode(row.node.id, Math.min(offset, row.node.text.length))
 }
 
 function moveDown(row: { node: OutlineNode }, editor: TextEditorApi): void {
@@ -507,7 +532,7 @@ function moveDown(row: { node: OutlineNode }, editor: TextEditorApi): void {
   if (!moveNodeDown(tree.value, row.node.id)) return
   pushHistory()
   scheduleSave()
-  focusNode(row.node.id, Math.min(offset, row.node.text.length), true)
+  focusNode(row.node.id, Math.min(offset, row.node.text.length))
 }
 
 function targetIds(): string[] {
@@ -535,7 +560,7 @@ function duplicateSelected(): void {
   }
   pushHistory()
   scheduleSave()
-  if (createdIds.length) focusNode(createdIds[0]!, 'end', true)
+  if (createdIds.length) focusNode(createdIds[0]!, 'end')
 }
 
 function setHeading(row: { node: OutlineNode }, level: 0 | 1 | 2 | 3): void {
@@ -604,7 +629,7 @@ function pasteNodes(): boolean {
   }
   pushHistory()
   scheduleSave()
-  if (created.length) focusNode(created[0]!, 'end', true)
+  if (created.length) focusNode(created[0]!, 'end')
   return true
 }
 
@@ -628,7 +653,26 @@ function isMod(ev: KeyboardEvent): boolean {
 
 function onKeydown(ev: KeyboardEvent): void {
   if (ev.isComposing) return
+  // 导图有自己的键位/缩放；大纲的快捷键不再从导图冒泡上来重复处理
+  if (viewMode.value !== 'outline') return
   const target = ev.target as HTMLElement | null
+
+  // 页面缩放（与触控板双指捏合同一套状态）
+  if (isMod(ev) && (ev.key === '=' || ev.key === '+')) {
+    ev.preventDefault()
+    setPageZoom(pageZoom.value + 0.1)
+    return
+  }
+  if (isMod(ev) && ev.key === '-') {
+    ev.preventDefault()
+    setPageZoom(pageZoom.value - 0.1)
+    return
+  }
+  if (isMod(ev) && ev.key === '0') {
+    ev.preventDefault()
+    pageZoom.value = 1
+    return
+  }
 
   // 备注框
   if (target?.closest('.ol-note-input')) {
@@ -1182,7 +1226,7 @@ function onDragUp(): void {
   if (moveNodesRelative(tree.value, ids, targetId, mode)) {
     pushHistory()
     scheduleSave()
-    focusNode(ids[0]!, 'end', true)
+    focusNode(ids[0]!, 'end')
   }
 }
 
@@ -1431,7 +1475,7 @@ async function onPaste(ev: ClipboardEvent, row: { node: OutlineNode; hasChildren
       insertAfter(tree.value, row.node.id, citeNode)
       pushHistory()
       scheduleSave()
-      focusNode(citeNode.id, 0, true)
+      focusNode(citeNode.id, 0)
     } catch {
       /* 元数据损坏时按普通文本走 */
     }
@@ -1483,7 +1527,7 @@ async function onPaste(ev: ClipboardEvent, row: { node: OutlineNode; hasChildren
   bumpRender()
   scheduleSave()
   const last = created[created.length - 1]
-  if (last) focusNode(last.id, 'end', true)
+  if (last) focusNode(last.id, 'end')
 }
 
 // ---------- 引用插入浮层 ----------
@@ -1556,7 +1600,7 @@ async function insertRefFromPicker(hit: SearchHit): Promise<void> {
     picker.value.anchorId = citeNode.id
     pushHistory()
     scheduleSave()
-    focusNode(citeNode.id, 'end', true)
+    focusNode(citeNode.id, 0)
     emit('notice', '已插入法条引用')
   } catch (e) {
     emit('error', e)
@@ -1586,6 +1630,7 @@ async function setView(mode: 'outline' | 'map'): Promise<void> {
     if (!isMissingNoteError(e)) emit('error', e)
   }
   if (mode === 'outline') {
+    centerOutlineScroll()
     nextTick(() => {
       const id = focusedId.value && findNode(tree.value, focusedId.value) ? focusedId.value : rows.value[0]?.node.id
       if (id) editorFor(id)?.focusOffset('end')
@@ -1675,6 +1720,8 @@ onMounted(() => {
   document.addEventListener('selectionchange', onSelectionChange)
   document.addEventListener('click', onDocClick)
   window.addEventListener('scroll', onScrollHideToolbar, true)
+  rootEl.value?.addEventListener('wheel', onOutlineWheel, { passive: false })
+  centerOutlineScroll()
   nextTick(() => {
     if (rows.value.length === 1 && !rows.value[0]!.node.text) {
       // 新笔记：光标直接给标题，用户先写标题
@@ -1690,6 +1737,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', onSelectionChange)
   document.removeEventListener('click', onDocClick)
   window.removeEventListener('scroll', onScrollHideToolbar, true)
+  rootEl.value?.removeEventListener('wheel', onOutlineWheel)
   window.removeEventListener('pointermove', onDragMove)
   document.body.classList.remove('ol-dragging')
   window.lexbench.outlines.setRefContext(null)
@@ -1702,7 +1750,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="ol" :class="{ 'in-map': viewMode === 'map' }" @keydown="onKeydown">
+  <div ref="rootEl" class="ol" :class="{ 'in-map': viewMode === 'map' }" @keydown="onKeydown">
     <div v-if="drilledId" class="ol-breadcrumb">
       <button class="ol-crumb" @click="drilledId = null">全部</button>
       <template v-for="(item, i) in breadcrumb" :key="item.id">
@@ -1735,6 +1783,14 @@ onBeforeUnmount(() => {
           <button :class="{ on: viewMode === 'outline' }" title="大纲视图" @click="setView('outline')">大纲</button>
           <button :class="{ on: viewMode === 'map' }" title="思维导图（可拖动节点）" @click="setView('map')">导图</button>
         </div>
+        <button
+          v-if="pageZoom !== 1"
+          class="ol-zoom-reset"
+          title="重置页面缩放（Ctrl+0）"
+          @click="pageZoom = 1"
+        >
+          {{ Math.round(pageZoom * 100) }}%
+        </button>
         <div class="ol-menu-wrap">
           <button class="ol-more" title="更多操作" @click.stop="headMenuOpen = !headMenuOpen">⋯</button>
           <Transition name="menu-pop">
@@ -1765,8 +1821,9 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-if="viewMode === 'outline'" ref="scrollEl" class="ol-scroll">
-      <div class="ol-page">
-        <div class="ol-tree">
+      <div class="ol-lane">
+        <div class="ol-page" :style="{ zoom: pageZoom }">
+          <div class="ol-tree">
           <div
             v-for="row in rows"
             :key="row.node.id"
@@ -1879,6 +1936,7 @@ onBeforeUnmount(() => {
           <button class="ol-append" @click="appendRow">
             <span class="ol-append-plus">＋</span> 新建一行
           </button>
+        </div>
         </div>
       </div>
       <div class="ol-tail" @click="appendRow"></div>
@@ -2192,6 +2250,21 @@ onBeforeUnmount(() => {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
+.ol-zoom-reset {
+  padding: 3px 8px;
+  border: 1px solid var(--lb-border);
+  border-radius: 8px;
+  background: var(--lb-chip);
+  color: var(--lb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ol-zoom-reset:hover {
+  color: var(--lb-accent);
+  border-color: var(--lb-accent-2);
+}
+
 .ol-menu-wrap {
   position: relative;
 }
@@ -2275,12 +2348,23 @@ onBeforeUnmount(() => {
 .ol-scroll {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
   background: var(--lb-panel);
 }
 
+/* 页面左右留出可平移空间：双指横滑也有内容可动 */
+.ol-lane {
+  display: flex;
+  justify-content: center;
+  width: max-content;
+  min-width: calc(100% + 200px);
+  min-height: 100%;
+}
+
 .ol-page {
-  max-width: 872px;
+  flex: 0 0 auto;
+  width: 872px;
+  max-width: calc(100vw - 140px);
   margin: 0 auto;
   padding: 26px 52px 0;
   min-height: calc(100% - 26px);
@@ -2316,14 +2400,6 @@ onBeforeUnmount(() => {
 
 .ol-row:hover > .ol-indent::before {
   border-color: var(--lb-border-strong);
-}
-
-.ol-row.selected > .ol-indent::before {
-  border-color: transparent;
-}
-
-.ol-row.selected > .ol-indent {
-  background: linear-gradient(to right, transparent 12px, var(--lb-accent-soft) 12px);
 }
 
 .ol-node {

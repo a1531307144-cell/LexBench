@@ -161,6 +161,15 @@ await sleep(120)
 await evalJs(`window.__ltKey(1, 'Tab')`)
 await sleep(200)
 const indentOk = await evalJs(`window.__ltRows()[1]?.depth === 1 && document.querySelectorAll('.ol-row')[1]?.querySelectorAll('.ol-indent').length === 1`)
+// 缩进后仍在编辑态：不能出现整行/缩进列高光
+const editHighlightOk = await evalJs(`(() => {
+  const rows = [...document.querySelectorAll('.ol-row')]
+  const row = rows[1]
+  const ind = row?.querySelector('.ol-indent')
+  return document.querySelectorAll('.ol-row.selected').length === 0 &&
+    !!row && getComputedStyle(row.querySelector('.ol-content')).backgroundColor === 'rgba(0, 0, 0, 0)' &&
+    (!ind || getComputedStyle(ind).backgroundColor === 'rgba(0, 0, 0, 0)')
+})()`)
 
 // Shift+Tab 反缩进
 await evalJs(`window.__ltKey(1, 'Tab', { shiftKey: true })`)
@@ -173,6 +182,20 @@ await sleep(120)
 await evalJs(`window.__ltKey(1, 'Backspace')`)
 await sleep(250)
 const mergeOk = await evalJs(`JSON.stringify(window.__ltVals()) === JSON.stringify(['第一行子行'])`)
+
+// 大纲页面触控板捏合缩放 + 横向可平移空间
+await evalJs(`(() => { document.querySelector('.ol')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -150, ctrlKey: true, bubbles: true, cancelable: true })); return true })()`)
+await sleep(350)
+const outlineZoomOk = await evalJs(`(() => {
+  const p = document.querySelector('.ol-page')
+  return !!p && parseFloat(getComputedStyle(p).zoom) > 1 && !!document.querySelector('.ol-zoom-reset')
+})()`)
+await evalJs(`document.querySelector('.ol-zoom-reset')?.click()`)
+await sleep(350)
+const outlinePanSpaceOk = await evalJs(`(() => {
+  const s = document.querySelector('.ol-scroll')
+  return !!s && s.scrollWidth > s.clientWidth && s.scrollLeft > 0
+})()`)
 
 // 多选（圆点 Ctrl+点击）：选中第 1 行后再 Ctrl 点第 2 行
 await evalJs(`window.__ltSet(0, '甲')`)
@@ -522,6 +545,7 @@ let mapChromeOk = false
 let mapEditorGrowOk = false
 let mapImageOk = false
 let mapBalanceOk = false
+let mapElasticOk = false
 {
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -545,6 +569,22 @@ let mapBalanceOk = false
   await evalJs(`[...document.querySelectorAll('.np-item')].find(b => b.textContent.includes('拖动自测'))?.click()`)
   await until(() => document.querySelectorAll('jmnode').length >= 4)
   await sleep(800)
+  // 空白画布弹性 + 平移（小图也要有四个方向的可拖动空间）
+  const mapPan = await evalJs(`(() => {
+    const host = document.querySelector('.ol-mind')
+    const inner = document.querySelector('.jsmind-inner')
+    if (!host || !inner) return null
+    const elastic = inner.scrollWidth > inner.clientWidth && inner.scrollHeight > inner.clientHeight
+    const r = host.getBoundingClientRect()
+    const sx = r.x + 20, sy = r.y + 20
+    const before = { l: inner.scrollLeft, t: inner.scrollTop }
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: sx, clientY: sy }))
+    host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: sx - 80, clientY: sy - 60 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, clientX: sx - 80, clientY: sy - 60 }))
+    return { elastic, before, after: { l: inner.scrollLeft, t: inner.scrollTop } }
+  })()`)
+  mapElasticOk = !!mapPan && mapPan.elastic && (mapPan.after.l > mapPan.before.l || mapPan.after.t > mapPan.before.t)
+
   // 顶层分支智能分侧：两侧都要有节点，不能全部挤在右边
   mapBalanceOk = await evalJs(`(() => {
     const root = [...document.querySelectorAll('jmnode')].find(n => n.classList.contains('root'))
@@ -744,8 +784,11 @@ const checks = [
   ['编辑器出现', editorUp],
   ['Enter 分行', enterOk],
   ['Tab 缩进（行首）', indentOk],
+  ['缩进编辑时无高光', editHighlightOk],
   ['Shift+Tab 反缩进', outdentOk],
   ['行首 Backspace 并入上一行', mergeOk],
+  ['大纲页面触控板缩放', outlineZoomOk],
+  ['大纲横向可平移空间', outlinePanSpaceOk],
   ['圆点多选（Ctrl+点击）', multiSelectOk],
   ['大纲拖动改挂载', outlineDragOk && outlineDragTreeOk],
   ['折叠 + 计数', foldOk],
@@ -782,6 +825,7 @@ const checks = [
   ['导图：编辑框随输入扩展', mapEditorGrowOk],
   ['导图：节点内插入图片', mapImageOk],
   ['导图：顶层分支智能分侧', mapBalanceOk],
+  ['导图：空白画布四向平移', mapElasticOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],

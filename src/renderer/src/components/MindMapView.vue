@@ -30,6 +30,7 @@ let jm: jsMind | null = null
 let pendingSelf = false
 let metaById = new Map<string, OutlineNode>()
 let resizeTimers: ReturnType<typeof setTimeout>[] = []
+let centerTimer: ReturnType<typeof setTimeout> | undefined
 let initialFitDone = false
 
 const VIRTUAL_ROOT_ID = '_lb_root_'
@@ -197,10 +198,15 @@ async function loadTree(nodes: OutlineNode[]): Promise<void> {
   jm.select_node(jm.get_root())
   scheduleResize()
   paintDecorations()
+  // 初次进入/重载把视口放在额外画布中间，四向都有可拖空间
+  nextTick(() => centerViewport())
+  scheduleCenter()
   if (!initialFitDone) {
     initialFitDone = true
     nextTick(() => {
       fitView()
+      centerViewport()
+      scheduleCenter()
       jm?.select_node(jm.get_root())
     })
   }
@@ -212,6 +218,21 @@ function scheduleResize(): void {
   resizeTimers = []
   resizeTimers.push(setTimeout(() => jm?.resize(), 0))
   resizeTimers.push(setTimeout(() => jm?.resize(), 300))
+}
+
+/** 等 resize/布局完成后把视口放回中间（不被 scheduleResize 清掉） */
+function scheduleCenter(): void {
+  clearTimeout(centerTimer)
+  centerTimer = setTimeout(centerViewport, 380)
+}
+
+/** 把视口滚到额外画布的中间：小图也能向四个方向平移 */
+function centerViewport(): void {
+  if (!jm) return
+  const p = jm.view.e_panel
+  if (!p) return
+  p.scrollLeft = Math.max(0, Math.round((p.scrollWidth - p.clientWidth) / 2))
+  p.scrollTop = Math.max(0, Math.round((p.scrollHeight - p.clientHeight) / 2))
 }
 
 // ---------- 节点贴图（节点内缩略图，不再用会被文字遮住的背景图） ----------
@@ -665,10 +686,25 @@ const drag = reactive({
 let pendingDrag: { id: string; x: number; y: number } | null = null
 let viewDraggableWasOn = false
 
+/** 空白处按下 = 平移画布：只负责把光标切换成「抓住」，实际滚动由 jsMind 处理 */
+function startPanCursor(): void {
+  document.body.classList.add('mm-panning')
+  const end = (): void => {
+    document.body.classList.remove('mm-panning')
+    window.removeEventListener('pointerup', end)
+    window.removeEventListener('pointercancel', end)
+  }
+  window.addEventListener('pointerup', end, { once: true })
+  window.addEventListener('pointercancel', end, { once: true })
+}
+
 function onPointerDown(ev: PointerEvent): void {
   if (!jm || ev.button !== 0 || jm.view.is_editing()) return
   const el = (ev.target as HTMLElement).closest('jmnode') as HTMLElement | null
-  if (!el) return
+  if (!el) {
+    startPanCursor()
+    return
+  }
   const id = jm.view.get_binded_nodeid(el)
   if (!id) return
   const node = jm.mind.nodes[id]
@@ -1046,8 +1082,8 @@ onMounted(() => {
       support_html: false,
       view: {
         engine: 'canvas',
-        hmargin: 60,
-        vmargin: 24,
+        hmargin: 640,
+        vmargin: 480,
         line_width: 1.6,
         line_color: '#b3bdc8',
         line_style: 'curved',
@@ -1180,6 +1216,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onPointerMove)
   for (const t of resizeTimers) clearTimeout(t)
   resizeTimers = []
+  clearTimeout(centerTimer)
   if (jm) {
     jm.clear_event_listener()
     jm = null
@@ -1294,6 +1331,14 @@ onBeforeUnmount(() => {
   outline: none;
   background: #fff;
   position: relative;
+  cursor: grab;
+}
+
+body.mm-panning .ol-mind,
+body.mm-panning .ol-mind *,
+body.mm-dragging .ol-mind,
+body.mm-dragging .ol-mind * {
+  cursor: grabbing !important;
 }
 
 .ol-mind jmnode {
