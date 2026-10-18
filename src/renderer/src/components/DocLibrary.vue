@@ -703,7 +703,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   background: var(--lb-panel);
 }
 
-/* 悬停上浮 + 渐次进入（Apple 手感） */
+/* 悬停上浮 + 渐次进入（悬停手感） */
 @media (prefers-reduced-motion: no-preference) {
   .doc-card {
     transition:

@@ -384,7 +384,7 @@ void jsMind
   outline: none;
 }
 
-/* 节点皮肤贴合全局 Apple 风（白底/细边/圆角/accent 选中） */
+/* 节点皮肤贴合全局浅色风（白底/细边/圆角/accent 选中） */
 .ol-mind jmnode {
   background: #fff;
   border: 1px solid var(--lb-border-strong);

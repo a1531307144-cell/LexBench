@@ -315,7 +315,7 @@ const typeNames: Record<string, string> = {
   overflow: hidden;
 }
 
-/* 关键词高亮全搜索面统一：Apple 式柔和琥珀底（--lb-hit），不再用蓝色加粗文字 */
+/* 关键词高亮全搜索面统一：柔和浅蓝底（--lb-hit），不再用蓝色加粗文字 */
 .item :deep(em) {
   font-style: normal;
   font-weight: 600;

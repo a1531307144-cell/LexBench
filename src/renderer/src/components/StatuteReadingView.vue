@@ -1177,7 +1177,7 @@ onBeforeUnmount(() => {
   color: var(--lb-muted);
 }
 
-/* 候选下拉关键词标记：与全局结果列表同款 Apple 琥珀（--lb-hit）；v-html 内容无 scoped 位 → :deep */
+/* 候选下拉关键词标记：与全局结果列表同款高亮（--lb-hit）；v-html 内容无 scoped 位 → :deep */
 .sv-search-pop :deep(em) {
   font-style: normal;
   font-weight: 600;
@@ -1188,7 +1188,7 @@ onBeforeUnmount(() => {
   margin: 0 -1px;
 }
 
-/* 正文全篇命中高亮：同一琥珀令牌，Apple 式柔和底、去蓝色下划线 */
+/* 正文全篇命中高亮：同一琥珀令牌，柔和底、去蓝色下划线 */
 .sv-scroll mark.sv-hit {
   background: var(--lb-hit);
   color: inherit;

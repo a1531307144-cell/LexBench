@@ -109,7 +109,7 @@ onBeforeUnmount(() => {
   background: var(--lb-panel);
 }
 
-/* ---------- 自绘标题栏：配方逐项照抄主窗口（Apple 浅色导航：与无边框窗口融合） ---------- */
+/* ---------- 自绘标题栏：配方逐项照抄主窗口（浅色导航：与无边框窗口融合） ---------- */
 .ai-win-top {
   display: flex;
   align-items: center;

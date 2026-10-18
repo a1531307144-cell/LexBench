@@ -124,7 +124,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   filter: brightness(1.06);
 }
 
-/* 危险操作：Apple 红确认键（仅删除等破坏性操作使用） */
+/* 危险操作：警示红确认键（仅删除等破坏性操作使用） */
 .cm-btn.confirm.danger {
   border-color: #d70015;
   background: #ff3b30;
@@ -135,7 +135,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   filter: none;
 }
 
-/* Apple 弹窗动效：遮罩淡入 + 对话框缩放浮现 */
+/* 弹窗动效：遮罩淡入 + 对话框缩放浮现 */
 @media (prefers-reduced-motion: no-preference) {
   .cm-fade-enter-active {
     transition: opacity 0.2s ease;

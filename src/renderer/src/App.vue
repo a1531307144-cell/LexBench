@@ -1030,7 +1030,7 @@ onBeforeUnmount(() => {
   background: var(--lb-bg);
 }
 
-/* ---------- 顶栏（Apple 浅色导航：与无边框窗口融合） ---------- */
+/* ---------- 顶栏（浅色导航：与无边框窗口融合） ---------- */
 .topbar {
   display: flex;
   align-items: center;
@@ -1200,7 +1200,7 @@ onBeforeUnmount(() => {
   transition: border-color 0.25s, box-shadow 0.25s;
 }
 
-/* ---------- 检索模式下拉（Apple 风格弹出菜单） ---------- */
+/* ---------- 检索模式下拉（浅色弹出菜单） ---------- */
 .mode-menu {
   position: relative;
   flex-shrink: 0;
@@ -1388,7 +1388,7 @@ onBeforeUnmount(() => {
   color: var(--lb-warn-fg);
 }
 
-/* ---------- 消息条滑入滑出（Apple：顶部推入而非突然出现） ---------- */
+/* ---------- 消息条滑入滑出（顶部推入而非突然出现） ---------- */
 @media (prefers-reduced-motion: no-preference) {
   .bar-slide-enter-active,
   .bar-slide-leave-active {

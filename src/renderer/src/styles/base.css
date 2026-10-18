@@ -34,7 +34,7 @@ button {
   cursor: pointer;
 }
 
-/* Apple 手感：按钮颜色/位移平滑过渡，按下轻微缩小 */
+/* 按钮手感：按钮颜色/位移平滑过渡，按下轻微缩小 */
 button {
   transition:
     background 0.12s ease,
@@ -71,7 +71,7 @@ select {
   }
 }
 
-/* Apple 弹窗动效：遮罩淡入 + 对话框缩放浮现（mask 的直接子元素即对话框本体） */
+/* 弹窗动效：遮罩淡入 + 对话框缩放浮现（mask 的直接子元素即对话框本体） */
 .dlg-fade-enter-from,
 .dlg-fade-leave-to {
   opacity: 0;
@@ -102,7 +102,7 @@ select {
   }
 }
 
-/* Apple 风格滚动条：细、半透明、悬浮加深 */
+/* 细滚动条：细、半透明、悬浮加深 */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
