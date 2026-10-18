@@ -74,9 +74,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   width: 400px;
   max-width: calc(100vw - 60px);
   background: var(--lb-panel);
-  border-radius: var(--lb-radius-l);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
   padding: 20px 22px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--lb-shadow-3);
 }
 
 .cm-title {

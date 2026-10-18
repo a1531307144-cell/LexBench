@@ -195,9 +195,10 @@ onBeforeUnmount(() => unsubscribe?.())
   width: 420px;
   max-width: calc(100vw - 40px);
   background: var(--lb-panel);
-  border-radius: var(--lb-radius-l);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  box-shadow: var(--lb-shadow-3);
 }
 
 .ab-body {
@@ -216,7 +217,7 @@ onBeforeUnmount(() => unsubscribe?.())
   justify-content: center;
   width: 42px;
   height: 42px;
-  border-radius: 10px;
+  border-radius: var(--lb-radius-s);
   background: var(--lb-accent);
   color: #fff;
   font-size: 21px;
@@ -299,14 +300,14 @@ onBeforeUnmount(() => unsubscribe?.())
 .ab-dl {
   margin-top: 10px;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--lb-radius-micro);
   background: var(--lb-chip, #e8e8ed);
   overflow: hidden;
 }
 
 .ab-dl-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--lb-radius-micro);
   background: var(--lb-accent);
   transition: width 0.3s ease;
 }
@@ -324,7 +325,7 @@ onBeforeUnmount(() => unsubscribe?.())
 
 .ab-btn {
   padding: 7px 16px;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-s);
   font-size: 13px;
   border: 1px solid transparent;
 }

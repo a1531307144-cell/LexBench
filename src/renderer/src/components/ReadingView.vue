@@ -763,9 +763,27 @@ onBeforeUnmount(() => {
   gap: 14px;
   height: 52px;
   padding: 0 16px;
-  border-bottom: 1px solid var(--lb-border);
   flex-shrink: 0;
   background: var(--lb-panel);
+  position: relative;
+}
+
+/* 阅读顶栏底边：两端 32px 渐隐，避免整条直线过抢 */
+.rv-top::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    rgba(0, 0, 0, 0.06) 32px,
+    rgba(0, 0, 0, 0.06) calc(100% - 32px),
+    transparent 100%
+  );
 }
 
 .rv-back {
@@ -809,7 +827,7 @@ onBeforeUnmount(() => {
   color: var(--lb-ok-fg);
   background: var(--lb-ok-bg);
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
 }
 
 .rv-fade-enter-active,
@@ -882,7 +900,7 @@ onBeforeUnmount(() => {
   color: var(--lb-text);
   margin: 0 0 10px;
   text-indent: 2em;
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
 }
 
 .para-flash {
@@ -906,7 +924,7 @@ onBeforeUnmount(() => {
   background: var(--lb-warn-bg);
   color: inherit;
   padding: 1px 0;
-  border-radius: 3px;
+  border-radius: var(--lb-radius-micro);
   box-shadow: inset 0 -2px 0 #e9c98d;
   cursor: pointer;
   text-indent: 0;
@@ -960,7 +978,7 @@ onBeforeUnmount(() => {
 .rv-side-count {
   min-width: 20px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   color: var(--lb-muted);
   font-size: 12px;
@@ -1050,7 +1068,7 @@ onBeforeUnmount(() => {
   color: var(--lb-muted);
   font-size: 12px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .rv-note-btn:hover {
@@ -1062,7 +1080,7 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--lb-accent-2);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   font-family: inherit;
   font-size: 13px;
   line-height: 1.7;
@@ -1086,7 +1104,8 @@ onBeforeUnmount(() => {
   background: var(--lb-panel);
   border: 1px solid var(--lb-border-strong);
   border-radius: var(--lb-radius-l);
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
   display: flex;
   flex-direction: column;
 }
@@ -1101,7 +1120,7 @@ onBeforeUnmount(() => {
   max-height: 92px;
   overflow-y: auto;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-warn-bg);
   color: var(--lb-warn-fg);
   font-family: var(--lb-serif);
@@ -1115,7 +1134,7 @@ onBeforeUnmount(() => {
   margin-top: 10px;
   padding: 8px 10px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   font-family: inherit;
   font-size: 13px;
   line-height: 1.7;
@@ -1145,7 +1164,7 @@ onBeforeUnmount(() => {
   height: 28px;
   padding: 0 14px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
   color: var(--lb-text);
   font-size: 12px;
@@ -1204,7 +1223,7 @@ onBeforeUnmount(() => {
   width: 56px;
   padding: 3px 6px;
   border: 1px solid var(--lb-border);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   font-size: 12px;
   color: #24242e;
   text-align: center;
@@ -1213,7 +1232,7 @@ onBeforeUnmount(() => {
 .rv-note-page {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-warn-bg);
   color: var(--lb-warn-fg);
   font-size: 12px;

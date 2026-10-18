@@ -116,10 +116,28 @@ onBeforeUnmount(() => {
   gap: 18px;
   height: 54px;
   padding: 0 8px 0 20px;
-  background: #fbfbfd;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--lb-chrome);
   flex-shrink: 0;
   -webkit-app-region: drag; /* 标题栏空白处可拖动窗口（无边框窗口同主窗口机制） */
+  position: relative;
+}
+
+/* 与主窗顶栏一致：底边两端 32px 渐隐 */
+.ai-win-top::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    rgba(0, 0, 0, 0.08) 32px,
+    rgba(0, 0, 0, 0.08) calc(100% - 32px),
+    transparent 100%
+  );
 }
 
 /* 栏内可交互元素必须排除拖拽，否则无法点击（同主窗口 .topbar 规则） */
@@ -247,7 +265,7 @@ onBeforeUnmount(() => {
   opacity: 0.7;
   font-size: 12px;
   padding: 2px 5px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .win-bar-close:hover {

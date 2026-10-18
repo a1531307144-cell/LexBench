@@ -120,8 +120,9 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
   width: 320px;
   background: #fff;
   border: 1px solid var(--lb-border, rgba(0, 0, 0, 0.08));
-  border-radius: var(--lb-radius-l, 14px);
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
   padding: 16px 18px;
   z-index: 90;
 }
@@ -153,7 +154,7 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
 
 .ub {
   padding: 6px 14px;
-  border-radius: 7px;
+  border-radius: var(--lb-radius-s);
   font-size: 13px;
   border: 1px solid transparent;
 }
@@ -180,14 +181,14 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
 .dl-bar {
   margin-top: 7px;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--lb-radius-micro);
   background: #ececf3;
   overflow: hidden;
 }
 
 .dl-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--lb-radius-micro);
   background: var(--lb-accent, #0071e3);
   transition: width 0.3s ease;
 }

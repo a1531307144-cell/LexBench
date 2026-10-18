@@ -419,7 +419,7 @@ onBeforeUnmount(() => {
   height: 26px;
   padding: 0 12px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-panel);
   color: var(--lb-muted);
   font-size: 12px;
@@ -455,7 +455,7 @@ onBeforeUnmount(() => {
   height: 26px;
   padding: 0 12px;
   border: 1px solid currentColor;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: transparent;
   color: inherit;
   font-size: 12px;
@@ -502,7 +502,8 @@ onBeforeUnmount(() => {
 .ai-answer {
   padding: 12px 14px;
   border: 1px solid var(--lb-border);
-  border-radius: var(--lb-radius-s);
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
   background: #fbfbfe;
   margin-bottom: 14px;
 }
@@ -517,7 +518,7 @@ onBeforeUnmount(() => {
 .ai-task-tag {
   font-size: 11px;
   padding: 1px 9px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-accent-soft);
   color: var(--lb-accent);
 }
@@ -579,14 +580,14 @@ onBeforeUnmount(() => {
 .ai-md :deep(code) {
   background: var(--lb-chip);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
   font-size: 12px;
 }
 
 .ai-md :deep(pre) {
   background: var(--lb-chip);
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   overflow-x: auto;
   margin: 0 0 8px;
 }
@@ -614,7 +615,7 @@ onBeforeUnmount(() => {
 .ai-cite {
   padding: 2px 10px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-accent-soft);
   color: var(--lb-accent);
   font-size: 12px;
@@ -649,7 +650,7 @@ onBeforeUnmount(() => {
   display: inline-block;
   min-width: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   font-size: 11px;
   text-align: center;
@@ -665,12 +666,14 @@ onBeforeUnmount(() => {
 .ai-card {
   padding: 10px 12px;
   border: 1px solid var(--lb-border);
-  border-radius: var(--lb-radius-s);
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
   margin-bottom: 8px;
 }
 
 .ai-card:hover {
   border-color: var(--lb-border-strong);
+  box-shadow: var(--lb-shadow-1);
 }
 
 .ai-card-head {
@@ -682,7 +685,7 @@ onBeforeUnmount(() => {
 .ai-hcard-tag {
   font-size: 11px;
   padding: 1px 9px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   color: var(--lb-muted);
 }
@@ -698,7 +701,7 @@ onBeforeUnmount(() => {
   color: var(--lb-muted);
   font-size: 12px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
   flex-shrink: 0;
 }
 

@@ -218,9 +218,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--lb-panel);
-  border-radius: var(--lb-radius-l);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  box-shadow: var(--lb-shadow-3);
 }
 
 .bd-head {
@@ -245,7 +246,7 @@ onBeforeUnmount(() => {
   color: var(--lb-muted);
   font-size: 14px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .bd-close:hover:not(:disabled) {

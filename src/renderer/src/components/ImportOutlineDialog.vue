@@ -203,8 +203,9 @@ const formatNames: Record<string, string> = { opml: 'OPML', html: 'HTML', md: 'M
   display: flex;
   flex-direction: column;
   background: var(--lb-panel);
-  border-radius: var(--lb-radius-l);
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.22);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-3);
   padding: 18px 20px;
 }
 
@@ -226,7 +227,7 @@ const formatNames: Record<string, string> = { opml: 'OPML', html: 'HTML', md: 'M
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-chip);
   color: var(--lb-muted);
   font-size: 13px;
@@ -258,7 +259,7 @@ const formatNames: Record<string, string> = { opml: 'OPML', html: 'HTML', md: 'M
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-s);
   border: 1px solid transparent;
   cursor: pointer;
 }

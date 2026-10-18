@@ -324,9 +324,10 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   display: flex;
   flex-direction: column;
   background: var(--lb-panel);
-  border-radius: var(--lb-radius-l);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  box-shadow: var(--lb-shadow-3);
 }
 
 .dialog-head {
@@ -347,7 +348,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   color: var(--lb-muted);
   font-size: 14px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .close-btn:hover:not(:disabled) {
@@ -406,7 +407,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   gap: 10px;
   padding: 7px 10px;
   border: 1px solid var(--lb-border);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   margin-bottom: 6px;
   font-size: 13px;
   color: var(--lb-text);
@@ -451,7 +452,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   font-size: 13px;
   color: var(--lb-text);
   outline: none;
@@ -472,7 +473,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   height: 34px;
   padding: 0 8px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   font-size: 13px;
   color: var(--lb-text);
   outline: none;
@@ -492,7 +493,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   align-items: baseline;
   gap: 8px;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   font-size: 13px;
   margin-bottom: 4px;
   background: var(--lb-chip);

@@ -6,6 +6,7 @@ import 'misans/lib/Normal/MiSansVF.min.css'
 import 'lxgw-wenkai-webfont/lxgwwenkai-regular.css'
 import 'lxgw-wenkai-webfont/lxgwwenkai-bold.css'
 import './styles/base.css'
+import './styles/tokens.css'
 
 // 同一份渲染包两个形态：?aiWindow=1 是 AI 独立窗口（主进程 aiWindow.ts 负责创建），其余为主应用
 const isAiWindow = new URLSearchParams(window.location.search).has('aiWindow')

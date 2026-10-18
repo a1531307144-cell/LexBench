@@ -562,7 +562,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   width: 100%;
   padding: 6px 8px 6px 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-text);
   font-size: 13px;
@@ -629,7 +629,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   font-size: 11px;
   line-height: 1;
   padding: 1px 2px;
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
   opacity: 0.7;
 }
 
@@ -645,7 +645,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--lb-accent-2);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: #fff;
   color: var(--lb-text);
   font-size: 13px;
@@ -658,7 +658,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   gap: 4px;
   padding: 3px 10px;
   border: 1px solid var(--lb-border);
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: #fff;
   color: var(--lb-muted);
   font-size: 12px;
@@ -697,7 +697,8 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 .doc-card {
   padding: 8px 9px;
   border: 1px solid var(--lb-border);
-  border-radius: var(--lb-radius-s);
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
   cursor: pointer;
   background: var(--lb-panel);
 }
@@ -714,7 +715,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 
   .doc-card:hover {
     transform: translateY(-1px);
-    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+    box-shadow: var(--lb-shadow-1);
   }
 
   .doc-card:nth-child(1) { animation-delay: 0ms; }
@@ -788,7 +789,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   font-weight: 400;
   color: var(--lb-warn-fg);
   background: var(--lb-warn-bg);
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   padding: 1px 7px;
   margin-left: 6px;
   vertical-align: 1px;
@@ -797,7 +798,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 .type-chip {
   font-size: 11px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   color: var(--lb-muted);
   flex-shrink: 0;
@@ -818,7 +819,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   color: var(--lb-accent);
   font-size: 11px;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   flex-shrink: 0;
 }
 
@@ -832,7 +833,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-muted);
   font-size: 13px;
@@ -849,7 +850,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   height: 26px;
   padding: 0 4px;
   border: 1px solid var(--lb-accent-2);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: #fff;
   color: var(--lb-text);
   font-size: 12px;
@@ -861,7 +862,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-muted);
   font-size: 13px;

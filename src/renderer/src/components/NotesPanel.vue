@@ -326,7 +326,7 @@ defineExpose({ refreshStarred })
 .np-import {
   padding: 4px 10px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
   font-size: 12px;
   color: var(--lb-text);
@@ -341,7 +341,7 @@ defineExpose({ refreshStarred })
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-chip);
   color: var(--lb-text);
   font-size: 15px;
@@ -402,7 +402,7 @@ defineExpose({ refreshStarred })
   width: 100%;
   padding: 6px 8px 6px 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-text);
   font-size: 13px;
@@ -467,7 +467,7 @@ defineExpose({ refreshStarred })
   font-size: 11px;
   color: var(--lb-muted);
   padding: 2px 4px;
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
 }
 
 .gr-act:hover {
@@ -479,7 +479,7 @@ defineExpose({ refreshStarred })
   width: 100%;
   padding: 5px 10px;
   border: 1px solid rgba(0, 113, 227, 0.55);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
   font-size: 13px;
   color: var(--lb-text);
@@ -517,7 +517,7 @@ defineExpose({ refreshStarred })
   width: 100%;
   padding: 7px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-text);
   font-size: 13px;
@@ -573,7 +573,7 @@ defineExpose({ refreshStarred })
   width: 100%;
   padding: 7px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-text);
   font-size: 13px;
@@ -598,7 +598,7 @@ defineExpose({ refreshStarred })
   flex-shrink: 0;
   min-width: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   font-size: 11px;
   text-align: center;
@@ -620,7 +620,7 @@ defineExpose({ refreshStarred })
   width: 100%;
   padding: 5px 10px 5px 32px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   text-align: left;
   font-size: 12px;

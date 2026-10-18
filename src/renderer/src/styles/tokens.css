@@ -1,0 +1,52 @@
+/* 法研台全局设计令牌：主窗口与 AI 独立窗口共用（main.ts 全局引入） */
+:root {
+  /* ---------- 颜色 ---------- */
+  --lb-bg: #f5f5f7;
+  --lb-panel: #ffffff;
+  /* 窗口 chrome 底色：顶栏 / 竖排 / 内容画布外沿留白共用 */
+  --lb-chrome: #fbfbfd;
+  --lb-text: #1d1d1f;
+  --lb-muted: #86868b;
+  --lb-border: rgba(0, 0, 0, 0.07);
+  --lb-border-strong: rgba(0, 0, 0, 0.12);
+  /* 搜索关键词高亮：accent 同源浅蓝胶囊（与 hover/选中态同色相，inline 尺寸） */
+  --lb-hit: rgba(0, 113, 227, 0.14);
+  --lb-accent: #0071e3;
+  --lb-accent-2: #0077ed;
+  --lb-grad: #0071e3; /* 主按钮为纯色，不使用渐变 */
+  --lb-accent-soft: rgba(0, 113, 227, 0.1);
+  --lb-chip: #e8e8ed;
+  --lb-warn-bg: #fdf3e3;
+  --lb-warn-fg: #9a6a15;
+  --lb-err-bg: #fdecea;
+  --lb-err-fg: #8c2b23;
+  --lb-ok-bg: #e8f5ec;
+  --lb-ok-fg: #22763a;
+
+  /* ---------- 字体 ---------- */
+  --lb-serif: 'LXGW WenKai', 'Songti SC', 'STSong', 'SimSun', Georgia, 'Times New Roman', serif;
+
+  /* ---------- 圆角阶梯 ----------
+     沿用既有 -s / -l 命名，避免全量改名；数值按大 R 方案重定义。
+     micro：行内高亮/进度条/滚动条等微角
+     xs   ：小按钮、关闭键、列表行、代码块
+     s    ：按钮、输入、搜索项、列表项、导图节点
+     l    ：卡片、Popover、菜单、Toast
+     xl   ：对话框、大浮层
+     full ：胶囊、Tag、计数徽标、头像/圆形 */
+  --lb-radius-micro: 4px;
+  --lb-radius-xs: 8px;
+  --lb-radius-s: 12px;
+  --lb-radius-l: 18px;
+  --lb-radius-xl: 26px;
+  --lb-radius-full: 999px;
+
+  /* 连续曲率：仅 R >= 18 的矩形表面使用；不继承，需逐表面声明。
+     Electron 44（Chromium 152）原生支持，不支持时自动回退 border-radius。 */
+  --lb-corner-shape: squircle;
+
+  /* ---------- 表面阴影三档（功能性阴影如聚焦环/柔光/插入线不在此列） ---------- */
+  --lb-shadow-1: 0 1px 2px rgba(20, 24, 38, 0.04), 0 4px 12px rgba(20, 24, 38, 0.06);
+  --lb-shadow-2: 0 2px 6px rgba(20, 24, 38, 0.05), 0 10px 28px rgba(20, 24, 38, 0.1);
+  --lb-shadow-3: 0 4px 12px rgba(20, 24, 38, 0.06), 0 24px 64px rgba(20, 24, 38, 0.16);
+}

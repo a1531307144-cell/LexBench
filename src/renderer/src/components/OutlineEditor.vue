@@ -920,7 +920,7 @@ onBeforeUnmount(() => {
   width: 30px;
   height: 30px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
   color: var(--lb-muted);
   font-size: 15px;
@@ -941,8 +941,9 @@ onBeforeUnmount(() => {
   padding: 5px;
   background: var(--lb-panel);
   border: 1px solid var(--lb-border);
-  border-radius: 12px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
 }
 
 .ol-menu-item {
@@ -950,7 +951,7 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: 7px 12px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: none;
   color: var(--lb-text);
   font-size: 13px;
@@ -1022,7 +1023,7 @@ onBeforeUnmount(() => {
   border: none;
   background: none;
   color: var(--lb-muted);
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
   transform: rotate(0deg);
 }
 
@@ -1074,7 +1075,7 @@ onBeforeUnmount(() => {
   color: var(--lb-text);
   padding: 2px 4px;
   margin-top: 1px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .ol-text.is-ref {
@@ -1104,7 +1105,7 @@ onBeforeUnmount(() => {
   width: fit-content;
   max-width: min(360px, 100%);
   max-height: 240px;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-s);
   border: 1px solid var(--lb-border);
   margin: 2px 0 4px;
   display: block;
@@ -1121,7 +1122,7 @@ onBeforeUnmount(() => {
   background: none;
   font-size: 13px;
   color: var(--lb-muted);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .ol-append:hover {
@@ -1146,7 +1147,8 @@ onBeforeUnmount(() => {
   background: var(--lb-panel);
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
   padding: 14px;
 }
 
@@ -1179,7 +1181,7 @@ onBeforeUnmount(() => {
   width: 30px;
   height: 30px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-chip);
   color: var(--lb-muted);
   font-size: 13px;
@@ -1225,7 +1227,7 @@ onBeforeUnmount(() => {
 .ol-picker-item:hover {
   border-color: var(--lb-accent-2);
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+  box-shadow: var(--lb-shadow-1);
 }
 
 .opi-main {
@@ -1256,7 +1258,7 @@ onBeforeUnmount(() => {
   width: 26px;
   height: 26px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
   color: var(--lb-text);
   font-size: 14px;

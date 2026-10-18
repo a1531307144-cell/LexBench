@@ -1022,34 +1022,6 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style>
-/* 视觉令牌：全应用共用，组件内一律引用这些变量（Apple 风格：墨黑/银灰/苹果蓝/云雾灰） */
-:root {
-  --lb-bg: #f5f5f7;
-  --lb-panel: #ffffff;
-  --lb-text: #1d1d1f;
-  --lb-muted: #86868b;
-  --lb-border: rgba(0, 0, 0, 0.07);
-  --lb-border-strong: rgba(0, 0, 0, 0.12);
-  /* 搜索关键词高亮：accent 同源浅蓝胶囊（与 hover/选中态同色相，inline 尺寸），全搜索面统一 */
-  --lb-hit: rgba(0, 113, 227, 0.14);
-  --lb-accent: #0071e3;
-  --lb-accent-2: #0077ed;
-  --lb-grad: #0071e3; /* Apple 主按钮为纯色，不再使用渐变 */
-  --lb-accent-soft: rgba(0, 113, 227, 0.1);
-  --lb-chip: #e8e8ed;
-  --lb-warn-bg: #fdf3e3;
-  --lb-warn-fg: #9a6a15;
-  --lb-err-bg: #fdecea;
-  --lb-err-fg: #8c2b23;
-  --lb-ok-bg: #e8f5ec;
-  --lb-ok-fg: #22763a;
-  --lb-radius-s: 10px;
-  --lb-radius-l: 14px;
-  --lb-serif: 'LXGW WenKai', 'Songti SC', 'STSong', 'SimSun', Georgia, 'Times New Roman', serif;
-}
-</style>
-
 <style scoped>
 .shell {
   display: flex;
@@ -1063,12 +1035,30 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 18px;
+  position: relative;
   height: 54px;
   padding: 0 8px 0 20px;
-  background: #fbfbfd;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--lb-chrome);
   flex-shrink: 0;
   -webkit-app-region: drag; /* 顶栏空白处可拖动窗口 */
+}
+
+/* 顶栏底边：两端渐隐，避免通到底的矩形切割线 */
+.topbar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    rgba(0, 0, 0, 0.08) 32px,
+    rgba(0, 0, 0, 0.08) calc(100% - 32px),
+    transparent 100%
+  );
 }
 
 /* 顶栏内可交互元素必须排除拖拽，否则无法点击 */
@@ -1164,7 +1154,7 @@ onBeforeUnmount(() => {
 
 .brand-ver {
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   font-size: 11px;
   color: var(--lb-muted);
@@ -1193,8 +1183,9 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
   background: var(--lb-panel);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--lb-shadow-2);
 }
 
 .search-group {
@@ -1204,7 +1195,7 @@ onBeforeUnmount(() => {
   max-width: 720px;
   background: var(--lb-panel);
   border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 980px;
+  border-radius: var(--lb-radius-full);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
   transition: border-color 0.25s, box-shadow 0.25s;
 }
@@ -1222,7 +1213,7 @@ onBeforeUnmount(() => {
   height: 40px;
   padding: 0 10px 0 16px;
   border: none;
-  border-radius: 980px;
+  border-radius: var(--lb-radius-full);
   background: transparent;
   color: var(--lb-muted);
   font-size: 13px;
@@ -1250,9 +1241,8 @@ onBeforeUnmount(() => {
   background: var(--lb-panel);
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: var(--lb-radius-l);
-  box-shadow:
-    0 4px 18px rgba(0, 0, 0, 0.1),
-    0 12px 40px rgba(0, 0, 0, 0.08);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
   z-index: 300;
 }
 
@@ -1321,7 +1311,7 @@ onBeforeUnmount(() => {
   margin-right: 4px;
   padding: 0 20px;
   border: none;
-  border-radius: 980px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-accent);
   color: #fff;
   font-size: 13px;
@@ -1342,7 +1332,7 @@ onBeforeUnmount(() => {
   height: 34px;
   padding: 0 16px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 980px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-panel);
   color: var(--lb-text);
   font-size: 13px;
@@ -1379,7 +1369,7 @@ onBeforeUnmount(() => {
   color: inherit;
   font-size: 13px;
   padding: 2px 7px;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
   flex-shrink: 0;
 }
 
@@ -1450,6 +1440,18 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 1;
   min-height: 0;
+  background: var(--lb-chrome);
+}
+
+/* 内容画布：四周留 4px 近白呼吸缝（不回到 8px 灰缝的浮卡观感），
+   26px 连续曲率（左上角即顶栏/竖排交汇处的内凹圆角，保持 26px 不变），
+   与两条 32px 渐隐分割线一起承接窗口动线。 */
+.body > main {
+  margin: 4px;
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
+  overflow: hidden;
+  background: var(--lb-panel);
 }
 
 .main {
@@ -1468,15 +1470,33 @@ onBeforeUnmount(() => {
 
 /* ---------- 常驻竖排导航 ---------- */
 .rail {
+  position: relative;
   width: 60px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding-top: 10px;
-  background: var(--lb-panel);
-  border-right: 1px solid var(--lb-border);
+  background: var(--lb-chrome);
   z-index: 30; /* 压住浮层面板左沿（面板展开时不留缝） */
+}
+
+/* 竖排右边：上下两端渐隐，不做通到底的矩形切割线 */
+.rail::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(0, 0, 0, 0.08) 32px,
+    rgba(0, 0, 0, 0.08) calc(100% - 32px),
+    transparent 100%
+  );
 }
 
 .rail-item {
@@ -1487,7 +1507,7 @@ onBeforeUnmount(() => {
   margin: 0 6px;
   padding: 10px 2px 8px;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--lb-radius-s);
   background: none;
   color: var(--lb-muted);
 }
@@ -1525,16 +1545,20 @@ onBeforeUnmount(() => {
    进 0.18s / 出 0.16s，时长与缓动照 menu-pop 配方 */
 .rail-panel {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 60px;
+  /* 悬浮式面板：与竖排、顶栏、窗口底部各留 8px，四角 26px 连续曲率 */
+  top: 8px;
+  bottom: 8px;
+  left: 68px;
   width: 340px;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
   background: var(--lb-panel);
-  border-right: 1px solid var(--lb-border);
-  box-shadow: 14px 0 36px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
   opacity: 0;
   visibility: hidden;
   transform: translateX(-8px);
@@ -1644,7 +1668,8 @@ onBeforeUnmount(() => {
 .drag-hint {
   padding: 26px 46px;
   border: 2px dashed rgba(255, 255, 255, 0.8);
-  border-radius: 14px;
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
   color: #fff;
   font-size: 18px;
   font-family: var(--lb-serif);

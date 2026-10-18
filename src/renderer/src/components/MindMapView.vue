@@ -388,8 +388,8 @@ void jsMind
 .ol-mind jmnode {
   background: #fff;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 10px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  border-radius: var(--lb-radius-s);
+  box-shadow: var(--lb-shadow-1);
   font-size: 14px;
   color: var(--lb-text);
   font-family: inherit;
@@ -419,7 +419,7 @@ void jsMind
 }
 
 .ol-mind jmnode .image-container img {
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
 }
 
 /* 连接线用 accent 家族浅色 */
@@ -430,7 +430,7 @@ void jsMind
 /* 编辑态输入框贴全局输入风格 */
 .ol-mind .jsmind-editor {
   border: 1px solid rgba(0, 113, 227, 0.55);
-  border-radius: 8px;
+  border-radius: var(--lb-radius-xs);
   box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
   font-size: 14px;
   font-family: inherit;

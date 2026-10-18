@@ -375,9 +375,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   display: flex;
   flex-direction: column;
   background: var(--lb-panel);
-  border-radius: var(--lb-radius-l);
+  border-radius: var(--lb-radius-xl);
+  corner-shape: var(--lb-corner-shape);
   overflow: hidden;
-  box-shadow: 0 12px 36px rgba(24, 28, 55, 0.2);
+  box-shadow: var(--lb-shadow-3);
 }
 
 .as-flex {
@@ -406,7 +407,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   color: var(--lb-muted);
   font-size: 14px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
 }
 
 .as-close:hover:not(:disabled) {
@@ -501,7 +502,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   flex-shrink: 0;
   font-size: 11px;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-ok-bg);
   color: var(--lb-ok-fg);
 }
@@ -512,7 +513,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   color: var(--lb-muted);
   background: var(--lb-chip);
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
 }
 
 .as-row-sub {
@@ -534,7 +535,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   height: 26px;
   padding: 0 10px;
   border: 1px solid var(--lb-border-strong);
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
   color: var(--lb-text);
   font-size: 12px;
@@ -585,7 +586,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   flex: 1;
   height: 26px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--lb-radius-xs);
   background: transparent;
   color: var(--lb-muted);
   font-family: inherit;

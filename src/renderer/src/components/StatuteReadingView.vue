@@ -943,13 +943,30 @@ onBeforeUnmount(() => {
   gap: 14px;
   height: 52px;
   padding: 0 16px;
-  border-bottom: 1px solid var(--lb-border);
   flex-shrink: 0;
   background: var(--lb-panel);
   /* 必须显式抬层：入场动画期间 .sv-top 带 transform（生成层叠上下文），
      搜索下拉的 z-index 会困在顶栏层内被正文盖住——这里让顶栏整体压过正文 */
   position: relative;
   z-index: 20;
+}
+
+/* 阅读顶栏底边：两端 32px 渐隐，避免整条直线过抢 */
+.sv-top::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    rgba(0, 0, 0, 0.06) 32px,
+    rgba(0, 0, 0, 0.06) calc(100% - 32px),
+    transparent 100%
+  );
 }
 
 .sv-back {
@@ -993,7 +1010,7 @@ onBeforeUnmount(() => {
   color: var(--lb-ok-fg);
   background: var(--lb-ok-bg);
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
 }
 
 .sv-fade-enter-active,
@@ -1022,7 +1039,7 @@ onBeforeUnmount(() => {
 .sv-chip-warn {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-warn-bg);
   color: var(--lb-warn-fg);
   white-space: nowrap;
@@ -1104,7 +1121,8 @@ onBeforeUnmount(() => {
   background: var(--lb-panel);
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
 }
 
 .sv-search-item {
@@ -1127,7 +1145,7 @@ onBeforeUnmount(() => {
 .sv-search-item:hover {
   border-color: var(--lb-accent-2);
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+  box-shadow: var(--lb-shadow-1);
 }
 
 .sv-search-item.active {
@@ -1165,7 +1183,7 @@ onBeforeUnmount(() => {
   font-weight: 600;
   background: var(--lb-hit);
   color: var(--lb-text);
-  border-radius: 3px;
+  border-radius: var(--lb-radius-micro);
   padding: 0 2px;
   margin: 0 -1px;
 }
@@ -1175,7 +1193,7 @@ onBeforeUnmount(() => {
   background: var(--lb-hit);
   color: inherit;
   padding: 0 2px;
-  border-radius: 3px;
+  border-radius: var(--lb-radius-micro);
   text-indent: 0;
   box-shadow: none;
 }
@@ -1301,7 +1319,7 @@ onBeforeUnmount(() => {
 /* ---------- 条文 ---------- */
 .sv-article {
   margin: 0 0 6px;
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
 }
 
 .sv-label-row {
@@ -1326,7 +1344,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
   line-height: 1;
   padding: 2px 4px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   opacity: 0;
   transition: opacity 0.15s ease, color 0.12s ease, background 0.12s ease;
 }
@@ -1349,7 +1367,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
   line-height: 1;
   padding: 2px 4px;
-  border-radius: 6px;
+  border-radius: var(--lb-radius-xs);
   opacity: 0;
   transition: opacity 0.15s ease, color 0.12s ease, background 0.12s ease;
 }
@@ -1425,7 +1443,7 @@ onBeforeUnmount(() => {
 .sv-side-count {
   min-width: 20px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   color: var(--lb-muted);
   font-size: 12px;
@@ -1470,7 +1488,7 @@ onBeforeUnmount(() => {
 /* ---------- 批注：点线下划线 + ★（accent 家族，与搜索胶囊区分） ---------- */
 .sv-scroll .sv-anno {
   background: rgba(0, 113, 227, 0.05);
-  border-radius: 2px;
+  border-radius: var(--lb-radius-micro);
   text-decoration: underline;
   text-decoration-style: dotted;
   text-decoration-color: var(--lb-accent-2);
@@ -1487,7 +1505,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   cursor: pointer;
   padding: 0 1px;
-  border-radius: 3px;
+  border-radius: var(--lb-radius-micro);
   transition: background 0.12s ease;
 }
 
@@ -1504,7 +1522,8 @@ onBeforeUnmount(() => {
   background: var(--lb-panel);
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
+  corner-shape: var(--lb-corner-shape);
+  box-shadow: var(--lb-shadow-2);
 }
 
 .sv-anno-input {

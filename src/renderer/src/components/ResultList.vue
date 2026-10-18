@@ -154,7 +154,7 @@ const typeNames: Record<string, string> = {
 .empty-line code {
   background: var(--lb-chip);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--lb-radius-micro);
   font-size: 12px;
   color: var(--lb-accent);
 }
@@ -170,7 +170,7 @@ const typeNames: Record<string, string> = {
 
 .mode-chip {
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   color: var(--lb-muted);
   flex-shrink: 0;
@@ -227,7 +227,7 @@ const typeNames: Record<string, string> = {
 
   .item:hover {
     transform: translateY(-1px);
-    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+    box-shadow: var(--lb-shadow-1);
   }
 
   /* 渐次进入：前 8 项依次浮现（间隔 40ms），之后不再延迟 */
@@ -281,7 +281,7 @@ const typeNames: Record<string, string> = {
   flex-shrink: 0;
   font-size: 11px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--lb-radius-full);
   background: var(--lb-chip);
   color: var(--lb-muted);
 }
@@ -321,7 +321,7 @@ const typeNames: Record<string, string> = {
   font-weight: 600;
   background: var(--lb-hit);
   color: var(--lb-text);
-  border-radius: 3px;
+  border-radius: var(--lb-radius-micro);
   padding: 0 2px;
   margin: 0 -1px;
   box-shadow: none;
