@@ -922,7 +922,8 @@ function renderElbowLine(arg: {
     return
   }
   const dir = e.y > s.y ? 1 : -1
-  const r = Math.min(6, Math.abs(e.y - s.y) / 2)
+  // 拐角只留很小的圆角：分叉处干净利落，不要大弧线
+  const r = Math.min(2, Math.abs(e.y - s.y) / 2)
   const offset = Math.max(14, Math.min(28, Math.abs(e.x - s.x) / 2))
   ctx.moveTo(s.x, s.y)
   if (e.x >= s.x) {

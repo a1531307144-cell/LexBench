@@ -1653,12 +1653,9 @@ function onRowMouseDown(row: ReturnType<typeof flattenOutline>[number], ev: Mous
 }
 
 function onTextFocus(row: { node: OutlineNode }): void {
-  // 直接点进另一行的文字 = 光标移到该行，顺手结束上一轮结构多选。
-  // 由 focusNode 主动聚焦时 focusedId 已等于该行，不会误清刚建立的选择。
-  if (focusedId.value !== row.node.id) {
-    selected.clear()
-    anchorId.value = row.node.id
-  }
+  // 进入文字编辑就结束结构选择：编辑时不再给整行加高亮
+  selected.clear()
+  anchorId.value = row.node.id
   focusedId.value = row.node.id
 }
 
@@ -2131,10 +2128,12 @@ onBeforeUnmount(() => {
   background: var(--lb-chip);
 }
 
-.ol-title:focus {
+/* 编辑标题时不加高光：只留光标 */
+.ol-title:focus,
+.ol-title:hover:focus {
   outline: none;
-  background: var(--lb-chip);
-  box-shadow: inset 0 0 0 1px var(--lb-accent-2);
+  background: transparent;
+  box-shadow: none;
 }
 
 .ol-head-actions {
@@ -2446,6 +2445,11 @@ onBeforeUnmount(() => {
 
 .ol-row:hover .ol-content {
   background: var(--lb-accent-soft);
+}
+
+/* 编辑中的行不因鼠标悬停/结构选择显示底色（用户要求编辑时无高光） */
+.ol-row:focus-within .ol-content {
+  background: transparent !important;
 }
 
 .ol-row.selected .ol-content {
