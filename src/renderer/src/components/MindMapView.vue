@@ -19,6 +19,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'change', tree: OutlineNode[]): void
   (e: 'error', err: unknown): void
+  (e: 'notice', text: string): void
   (e: 'rename', title: string): void
   (e: 'undo'): void
   (e: 'redo'): void
@@ -597,30 +598,20 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 /**
- * 图片落点：优先当前选中主题；若当前是中心主题/没有选中，就新建一个图片子主题。
- * （中心主题是虚拟 root，不承载图片；此前直接 return 导致用户点「插入图片」毫无反应。）
+ * 图片落点：只落在当前选中/正在编辑的主题里，不自动新建方框。
+ * 中心主题是虚拟 root（笔记标题），不能直接承载图片——提示用户先选一个子主题。
  */
 function ensureImageTarget(): MNode | null {
   if (!jm) return null
-  let sel = jm.get_selected_node()
-  if (!sel) {
-    jm.select_node(jm.get_root())
-    sel = jm.get_root()
-  }
-  if (sel.isroot) {
-    const id = newOutlineId()
-    jm.add_node(sel.id, id, '图片', undefined, 'right')
-    jm.expand_node(sel.id)
-    jm.select_node(id)
-    syncToParent()
-    sel = jm.get_selected_node()
-  }
-  return sel
+  const sel = jm.get_selected_node()
+  if (sel && !sel.isroot) return sel
+  emit('notice', '请先选中要插入图片的主题（中心主题不能直接放图）')
+  return null
 }
 
-async function attachImages(files: File[]): Promise<void> {
+async function attachImages(files: File[], target?: MNode | null): Promise<void> {
   if (!jm || !files.length) return
-  const sel = ensureImageTarget()
+  const sel = target && !target.isroot ? target : ensureImageTarget()
   if (!sel) return
   const meta = metaById.get(sel.id)
   const list = meta ? nodeImages(meta) : []
@@ -660,13 +651,20 @@ async function onPickImages(ev: Event): Promise<void> {
 }
 
 async function onHostPaste(ev: ClipboardEvent): Promise<void> {
-  if (!jm || jm.view.is_editing()) return
+  if (!jm) return
   const items = Array.from(ev.clipboardData?.items ?? []).filter(
     (it) => it.kind === 'file' && it.type.startsWith('image/')
   )
   if (!items.length) return
   ev.preventDefault()
   const files = items.map((it) => it.getAsFile()).filter((f): f is File => !!f)
+  // 正在键入节点时粘贴图片 = 插到当前编辑的主题里（不新建方框）
+  if (jm.view.is_editing()) {
+    const editing = jm.view.get_editing_node()
+    if (editing && !editing.isroot) await attachImages(files, editing)
+    else emit('notice', '中心主题不能直接放图，请先选中一个子主题')
+    return
+  }
   await attachImages(files)
 }
 
@@ -1092,7 +1090,8 @@ onMounted(() => {
         draggable: true,
         hide_scrollbars_when_draggable: true,
         node_overflow: 'wrap',
-        zoom: { min: 0.4, max: 2, step: 0.1, mask_key: 17 }
+        // mask_key 是修饰键位掩码：ctrlKey<<12 = 4096（不是 Ctrl 的 keyCode 17）
+        zoom: { min: 0.4, max: 2, step: 0.1, mask_key: 4096 }
       },
       layout: { hspace: 64, vspace: 26, pspace: 10, cousin_space: 16 },
       shortcut: {
@@ -1121,7 +1120,7 @@ onMounted(() => {
     hostEl.value.addEventListener('contextmenu', openMenu)
     hostEl.value.addEventListener('paste', onHostPaste)
     hostEl.value.addEventListener('click', onHostClick)
-    hostEl.value.addEventListener('wheel', onWheelZoom)
+    hostEl.value.addEventListener('wheel', onHostWheel, { passive: false })
     hostEl.value.addEventListener('input', onEditorInput, true)
     hostEl.value.addEventListener('focusin', onEditorFocusIn)
     document.addEventListener('click', onDocumentClick)
@@ -1134,9 +1133,23 @@ function onHostClick(): void {
   hostEl.value?.focus()
 }
 
-/** Ctrl+滚轮缩放由 jsMind 内部处理，这里只负责把百分比刷新回来 */
-function onWheelZoom(): void {
-  setTimeout(updateZoomPercent, 40)
+/**
+ * 触控板：
+ * - 双指捏合 = ctrl+wheel，由 jsMind 缩放（mask_key 4096），这里只刷新百分比；
+ * - 双指滑动 = 普通 wheel，jsMind 不管，这里手动平移画布。
+ */
+function onHostWheel(ev: WheelEvent): void {
+  if (!jm) return
+  if (ev.ctrlKey || ev.metaKey) {
+    setTimeout(updateZoomPercent, 40)
+    return
+  }
+  const p = jm.view.e_panel
+  if (!p) return
+  ev.preventDefault()
+  const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? p.clientHeight : 1
+  p.scrollLeft += ev.deltaX * unit
+  p.scrollTop += ev.deltaY * unit
 }
 
 /** 节点编辑框随输入增长（jsMind 默认固定 70px，长文本会被截住看不见） */
@@ -1209,7 +1222,7 @@ onBeforeUnmount(() => {
   hostEl.value?.removeEventListener('contextmenu', openMenu)
   hostEl.value?.removeEventListener('paste', onHostPaste)
   hostEl.value?.removeEventListener('click', onHostClick)
-  hostEl.value?.removeEventListener('wheel', onWheelZoom)
+  hostEl.value?.removeEventListener('wheel', onHostWheel)
   hostEl.value?.removeEventListener('input', onEditorInput, true)
   hostEl.value?.removeEventListener('focusin', onEditorFocusIn)
   document.removeEventListener('click', onDocumentClick)

@@ -546,6 +546,9 @@ let mapEditorGrowOk = false
 let mapImageOk = false
 let mapBalanceOk = false
 let mapElasticOk = false
+let mapWheelZoomOk = false
+let mapWheelPanOk = false
+let mapEditImageOk = false
 {
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -631,6 +634,18 @@ let mapElasticOk = false
   const zoomAfter = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
   mapZoomOk = !!zoomBefore && !!zoomAfter && zoomBefore !== zoomAfter
 
+  // 触控板捏合 = ctrl+wheel 缩放；双指滑动 = wheel 平移
+  const wheelZ0 = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
+  await evalJs(`(() => { const p = document.querySelector('.jsmind-inner'); p?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true })); return true })()`)
+  await sleep(500)
+  const wheelZ1 = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
+  mapWheelZoomOk = !!wheelZ0 && !!wheelZ1 && wheelZ0 !== wheelZ1
+  const wheelPan0 = await evalJs(`document.querySelector('.jsmind-inner')?.scrollTop ?? -1`)
+  await evalJs(`(() => { const p = document.querySelector('.jsmind-inner'); p?.dispatchEvent(new WheelEvent('wheel', { deltaY: 90, bubbles: true, cancelable: true })); return true })()`)
+  await sleep(300)
+  const wheelPan1 = await evalJs(`document.querySelector('.jsmind-inner')?.scrollTop ?? -1`)
+  mapWheelPanOk = wheelPan0 >= 0 && wheelPan1 > wheelPan0
+
   // 白底 + 不常驻底部工具条（反馈修正）
   mapChromeOk = await evalJs(`(() => {
     const m = document.querySelector('.ol-mind')
@@ -697,6 +712,47 @@ let mapElasticOk = false
     })
   })
   mapImageOk = mapImageUi && mapImageDb
+
+  // 正在键入节点时粘贴图片：挂在当前主题，不新建方框
+  const editImgCount0 = await evalJs(`document.querySelectorAll('jmnode').length`)
+  await evalJs(`(() => {
+    const n = document.querySelector('jmnode[nodeid="b"]')
+    if (!n) return false
+    const r = n.getBoundingClientRect()
+    n.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    const host = document.querySelector('.ol-mind')
+    host?.focus()
+    host?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }))
+    return true
+  })()`)
+  const editImgEditing = await until(`() => !!document.querySelector('.jsmind-editor')`)
+  if (editImgEditing) {
+    await evalJs(`(() => {
+      const inp = document.querySelector('.jsmind-editor')
+      const bin = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      const file = new File([arr], 'z.png', { type: 'image/png' })
+      const dt = new DataTransfer()
+      dt.items.add(file)
+      inp?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+      return true
+    })()`)
+    await sleep(1200)
+  }
+  const editImgCount1 = await evalJs(`document.querySelectorAll('jmnode').length`)
+  const editImgDb = await until(() => {
+    return window.lexbench.outlines.list().then(async (l) => {
+      const n = l.find((x) => x.title === '拖动自测')
+      if (!n) return false
+      const d = await window.lexbench.outlines.get(n.id)
+      // B 已被前面的拖动用例挂到 A 下面，不能只查顶层
+      const walk = (ns) => ns.some((x) => (x.id === 'b' && (!!x.image || (x.images?.length ?? 0) > 0)) || walk(x.children ?? []))
+      return walk(JSON.parse(d.tree))
+    })
+  })
+  mapEditImageOk = editImgEditing && editImgCount1 === editImgCount0 && editImgDb
 
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -826,6 +882,9 @@ const checks = [
   ['导图：节点内插入图片', mapImageOk],
   ['导图：顶层分支智能分侧', mapBalanceOk],
   ['导图：空白画布四向平移', mapElasticOk],
+  ['导图：触控板捏合缩放', mapWheelZoomOk],
+  ['导图：触控板双指平移', mapWheelPanOk],
+  ['导图：编辑中粘贴图片不新建方框', mapEditImageOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],
