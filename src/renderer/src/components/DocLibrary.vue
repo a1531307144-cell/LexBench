@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
+import { nextUntitledName } from '@shared/noteFolders'
 import type { DocGroupRow, DocumentRow, DocType } from '@shared/types'
 
 const props = defineProps<{ documents: DocumentRow[]; groups: DocGroupRow[] }>()
@@ -78,6 +79,8 @@ const typeGroups = computed(() =>
 /** 正在内联新建（输入框） */
 const creating = ref(false)
 const createName = ref('')
+/** 本次内联新建是否已被 Esc 取消（blur 时不再提交） */
+let createCanceled = false
 /** 正在内联改名的文件夹 id */
 const renamingId = ref<number | null>(null)
 const renameName = ref('')
@@ -123,18 +126,37 @@ watch(typeFilter, () => {
 
 function startCreate(): void {
   cancelEditors()
+  createCanceled = false
   createName.value = ''
   creating.value = true
 }
 
-async function confirmCreate(): Promise<void> {
-  if (typeFilter.value === 'all') return
-  const name = createName.value.trim()
+/** Esc 取消：置位标记，避免输入框卸载时触发的 blur 又把它建出来 */
+function cancelCreate(): void {
+  createCanceled = true
   creating.value = false
-  if (!name) return // 空名不发请求（主进程也会拒绝）
+  createName.value = ''
+}
+
+/** 失焦提交：Esc 取消过的不再建；提交本身已把 creating 置 false，重复 blur 直接返回 */
+function onCreateBlur(): void {
+  if (createCanceled) {
+    createCanceled = false
+    return
+  }
+  void commitCreate()
+}
+
+async function commitCreate(): Promise<void> {
+  if (typeFilter.value === 'all') return
+  if (!creating.value) return
+  const typed = createName.value.trim()
+  creating.value = false
+  createName.value = ''
+  // 空名默认「未命名文件夹」；失焦即建，无需回车
+  const name = typed || nextUntitledName(typeGroups.value.map((g) => g.name))
   try {
     const g = await window.lexbench.groups.create(typeFilter.value, name)
-    createName.value = ''
     groupFilter.value = g.id // 新建后自动选中
     emit('groups-changed')
   } catch (e) {
@@ -405,13 +427,13 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
           v-model="createName"
           class="group-input"
           type="text"
-          placeholder="新文件夹名"
+          placeholder="文件夹名（点击别处即创建）"
           @click.stop
-          @keydown.enter.stop.prevent="confirmCreate"
-          @keydown.esc.stop="creating = false"
-          @blur="creating = false"
+          @keydown.enter.stop.prevent="commitCreate"
+          @keydown.esc.stop="cancelCreate"
+          @blur="onCreateBlur"
         />
-        <button v-else class="group-row new-row" @click="startCreate">＋ 新建</button>
+        <button v-else-if="typeFilter !== 'all'" class="group-row new-row" @click="startCreate">＋ 新建</button>
       </div>
 
       <div class="doc-col">

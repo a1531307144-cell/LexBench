@@ -64,8 +64,21 @@ function parseTree(raw: string): OutlineNode[] {
 
 const tree = ref<OutlineNode[]>(parseTree(props.outline.tree))
 if (tree.value.length === 0) tree.value = [createOutlineNode('')]
+/** 导图视图实例：插入引用后点名揭示新节点（选中 + 居中） */
+const mapRef = ref<InstanceType<typeof MindMapView> | null>(null)
 const title = ref(props.outline.title)
 const displayTitle = computed(() => title.value.trim() || '未命名笔记')
+// 列表页改名的回流：本地未在改标题、输入框也没聚焦时同步进来，
+// 否则编辑器手里的旧标题会在卸载冲刷时把面板刚改的名字写回去
+watch(
+  () => props.outline.title,
+  (t) => {
+    if (titleDirty) return
+    const el = document.activeElement
+    if (el instanceof HTMLElement && el.classList.contains('ol-title')) return
+    if (t && t !== title.value) title.value = t
+  }
+)
 const viewMode = ref<'outline' | 'map'>(props.outline.view_mode === 'map' ? 'map' : 'outline')
 /** 大纲页面缩放（触控板双指捏合 / Ctrl+滚轮 / Ctrl+= / Ctrl+-） */
 const pageZoom = ref(1)
@@ -266,9 +279,10 @@ function isMissingNoteError(e: unknown): boolean {
 }
 
 async function saveNow(withTitle: boolean): Promise<void> {
-  clearTimeout(saveTimer)
-  if (!dirty && !withTitle) return
+  // 先算清本次要不要带标题再决定是否早退：否则「只改了标题」时早退已把定时器清掉，标题永远不落盘
   const sendTitle = titleDirty || withTitle
+  clearTimeout(saveTimer)
+  if (!dirty && !sendTitle) return
   dirty = false
   titleDirty = false
   try {
@@ -281,9 +295,18 @@ async function saveNow(withTitle: boolean): Promise<void> {
   } catch (e) {
     if (isMissingNoteError(e)) return
     dirty = true
+    if (sendTitle) titleDirty = true
     emit('error', e)
   }
 }
+
+/** 主进程关窗前调用（App → 编辑器）：把防抖窗口里的树与标题立即落盘。
+ *  只认 titleDirty，不强行写标题——列表页刚改的名字不能被编辑器手里的旧值盖回去 */
+async function flush(): Promise<void> {
+  await saveNow(false)
+}
+
+defineExpose({ flush })
 
 // ---------- 撤销 / 重做（整树快照；文字输入每 700ms 汇总一次） ----------
 
@@ -903,8 +926,16 @@ function onKeydown(ev: KeyboardEvent): void {
     return
   }
 
-  // 引用浮层
-  if ((key === '/' || key === '@') && node.text === '' && editor.caretOffset() === 0) {
+  // 引用浮层：任意位置键入 / 或 @ 即可唤出（选中后在当前行下方插入一条同级引用行）。
+  // 未选中法条就关闭时，被拦下的字符会原样补回光标处（见 closePicker），不影响正常输入 / @。
+  if ((key === '/' || key === '@') && !isMod(ev) && !ev.altKey) {
+    ev.preventDefault()
+    openPicker(node.id, { nodeId: node.id, char: key, offset: editor.caretOffset() })
+    return
+  }
+
+  // Ctrl+K：与 / @ 同一个浮层（键盘党不用记两套键位；导图视图里也是这一组）
+  if (isMod(ev) && !ev.shiftKey && (key === 'k' || key === 'K')) {
     ev.preventDefault()
     openPicker(node.id)
     return
@@ -1538,25 +1569,48 @@ const picker = ref<{
   q: string
   loading: boolean
   results: SearchHit[]
-}>({ open: false, anchorId: null, q: '', loading: false, results: [] })
+  /** 键盘高亮的候选下标；-1 表示无高亮（回车时取首项） */
+  activeIdx: number
+  /** 锚点语义：false=大纲行（插为后续同级行） true=导图节点（插为其子主题） */
+  mapMode: boolean
+}>({ open: false, anchorId: null, q: '', loading: false, results: [], activeIdx: -1, mapMode: false })
 
 const pickerInputEl = ref<HTMLInputElement | null>(null)
+const pickerListEl = ref<HTMLElement | null>(null)
 let pickerTimer: ReturnType<typeof setTimeout> | undefined
 let pickerSeq = 0
 let pickerComposing = false
 
-function openPicker(anchorId: string | null): void {
+/** `/`、`@` 唤出浮层时被拦下的字符及其插入点：未选中法条就关闭时原样补回 */
+let pendingTrigger: { nodeId: string; char: string; offset: number } | null = null
+
+function openPicker(
+  anchorId: string | null,
+  trigger: { nodeId: string; char: string; offset: number } | null = null,
+  mapMode = false
+): void {
+  pendingTrigger = trigger
   picker.value.open = true
   picker.value.anchorId = anchorId
+  picker.value.mapMode = mapMode
   picker.value.q = ''
   picker.value.results = []
+  picker.value.activeIdx = -1
   hideToolbar()
   nextTick(() => pickerInputEl.value?.focus())
 }
 
+/** 关闭浮层：把触发字符补回原行（本次选中法条后关闭时 pendingTrigger 已清空） */
 function closePicker(): void {
   picker.value.open = false
   clearTimeout(pickerTimer)
+  const pend = pendingTrigger
+  pendingTrigger = null
+  if (!pend) return
+  const editor = editorFor(pend.nodeId)
+  if (!editor) return
+  editor.focusOffset(pend.offset)
+  editor.insertHtml(pend.char === '@' ? '@' : '/')
 }
 
 function onPickerInput(): void {
@@ -1565,6 +1619,7 @@ function onPickerInput(): void {
   const q = picker.value.q.trim()
   if (!q) {
     picker.value.results = []
+    picker.value.activeIdx = -1
     return
   }
   picker.value.loading = true
@@ -1577,14 +1632,41 @@ async function runPickerSearch(q: string): Promise<void> {
     const out = await window.lexbench.search.run(q, 'auto')
     if (seq !== pickerSeq) return
     picker.value.results = out.results.filter((r) => r.kind === 'article')
+    picker.value.activeIdx = picker.value.results.length > 0 ? 0 : -1
   } catch {
-    if (seq === pickerSeq) picker.value.results = []
+    if (seq === pickerSeq) {
+      picker.value.results = []
+      picker.value.activeIdx = -1
+    }
   } finally {
     if (seq === pickerSeq) picker.value.loading = false
   }
 }
 
-async function insertRefFromPicker(hit: SearchHit): Promise<void> {
+/** ↑/↓ 移动键盘高亮项（循环），并把当前项滚进可视区 */
+function movePickerActive(delta: number): void {
+  const n = picker.value.results.length
+  if (!n) return
+  const cur = picker.value.activeIdx
+  const next = cur < 0 ? (delta > 0 ? 0 : n - 1) : (cur + delta + n) % n
+  picker.value.activeIdx = next
+  void nextTick(() => {
+    pickerListEl.value?.querySelectorAll('.ol-picker-item')[next]?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+/** 回车插入高亮项：保留浮层与输入焦点、清空关键词，便于连续检索插入 */
+async function onPickerEnter(ev: KeyboardEvent): Promise<void> {
+  // 输入法回车用于上屏候选字，不能当作插入
+  if (ev.isComposing || pickerComposing) return
+  if (!picker.value.results.length) return
+  ev.preventDefault()
+  const idx = picker.value.activeIdx >= 0 ? picker.value.activeIdx : 0
+  const hit = picker.value.results[idx]
+  if (hit) await insertRefFromPicker(hit, true)
+}
+
+async function insertRefFromPicker(hit: SearchHit, keepPickerFocus = false): Promise<void> {
   if (hit.kind !== 'article') return
   try {
     const detail = await window.lexbench.library.getArticle(hit.id)
@@ -1595,16 +1677,44 @@ async function insertRefFromPicker(hit: SearchHit): Promise<void> {
     })
     const anchorId = picker.value.anchorId
     const anchor = anchorId ? findNode(tree.value, anchorId) : null
-    if (anchor) anchor.siblings.splice(anchor.index + 1, 0, citeNode)
-    else rootNodes.value.push(citeNode)
-    picker.value.anchorId = citeNode.id
+    if (picker.value.mapMode) {
+      // 导图语义：插为锚点节点的子主题；锚点保持不变，连续插入即同级顺排
+      const host = anchor?.node
+      if (host) {
+        if (!host.children) host.children = []
+        host.children.push(citeNode)
+      } else {
+        rootNodes.value.push(citeNode)
+      }
+      // 导图按引用对比 props.tree，原地 splice/push 不触发重载：换个顶层引用让画布重建
+      tree.value = [...tree.value]
+      mapRef.value?.revealNode(citeNode.id)
+    } else {
+      if (anchor) anchor.siblings.splice(anchor.index + 1, 0, citeNode)
+      else rootNodes.value.push(citeNode)
+      picker.value.anchorId = citeNode.id
+    }
+    pendingTrigger = null
     pushHistory()
     scheduleSave()
-    focusNode(citeNode.id, 0)
+    if (keepPickerFocus) {
+      // 键盘路径：停在搜索框继续找下一条（大纲锚点已指向新引用，连续插入即同级顺排）
+      picker.value.q = ''
+      picker.value.results = []
+      picker.value.activeIdx = -1
+      void nextTick(() => pickerInputEl.value?.focus())
+    } else if (!picker.value.mapMode) {
+      focusNode(citeNode.id, 0)
+    }
     emit('notice', '已插入法条引用')
   } catch (e) {
     emit('error', e)
   }
+}
+
+/** 导图里敲 / @ Ctrl+K：锚点是导图当前选中节点，插为其子主题 */
+function onMapRefRequest(nodeId: string): void {
+  openPicker(nodeId, null, true)
 }
 
 // ---------- 引用行右键（原生菜单的逃生门） ----------
@@ -1741,8 +1851,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onDragMove)
   document.body.classList.remove('ol-dragging')
   window.lexbench.outlines.setRefContext(null)
-  // 卸载即冲刷；不 emit('saved')（见 lessons-log #11）
-  if (dirty || titleDirty) void saveNow(true)
+  // 卸载即冲刷；不 emit('saved')（见 lessons-log #11）。
+  // 不带 withTitle：标题已由 titleDirty 决定是否落盘，强写会把列表页刚改的名字盖回旧值
+  if (dirty || titleDirty) void saveNow(false)
   for (const url of imageUrls.values()) URL.revokeObjectURL(url)
   imageUrls.clear()
 })
@@ -1944,12 +2055,15 @@ onBeforeUnmount(() => {
 
     <MindMapView
       v-else
+      ref="mapRef"
       :tree="tree"
       :title="displayTitle"
+      :zoom-key="`note:zoom:map:${outline.id}`"
       @change="onMapChange"
       @error="(e) => emit('error', e)"
       @notice="(t) => emit('notice', t)"
       @rename="onMapRename"
+      @ref-request="onMapRefRequest"
       @undo="undo"
       @redo="redo"
     />
@@ -2056,7 +2170,7 @@ onBeforeUnmount(() => {
 
     <!-- 插入引用浮层 -->
     <Transition name="menu-pop">
-      <div v-if="picker.open" class="ol-picker" @click.self="closePicker">
+      <div v-if="picker.open" class="ol-picker" :class="{ 'is-map': picker.mapMode }" @click.self="closePicker">
         <div class="ol-picker-card">
           <div class="ol-picker-head">
             <input
@@ -2069,15 +2183,30 @@ onBeforeUnmount(() => {
               @compositionstart="pickerComposing = true"
               @compositionend="pickerComposing = false; onPickerInput()"
               @keydown.esc="closePicker"
+              @keydown.enter="onPickerEnter"
+              @keydown.down.prevent="movePickerActive(1)"
+              @keydown.up.prevent="movePickerActive(-1)"
             />
             <button class="ol-picker-close" title="关闭" @click="closePicker">✕</button>
           </div>
-          <p class="ol-picker-hint">点 [＋] 插入引用，浮层不关可连续添加</p>
-          <div class="ol-picker-list">
+          <p class="ol-picker-hint">
+            {{
+              picker.mapMode
+                ? '回车插为选中节点的子主题，↑↓ 切换，可连续添加'
+                : '回车插入高亮项，↑↓ 切换，也可点 [＋]；浮层不关可连续添加'
+            }}
+          </p>
+          <div ref="pickerListEl" class="ol-picker-list">
             <p v-if="picker.loading" class="ol-picker-empty">检索中…</p>
             <p v-else-if="!picker.q.trim()" class="ol-picker-empty">输入关键词搜索库内法条</p>
             <p v-else-if="picker.results.length === 0" class="ol-picker-empty">没有命中的法条</p>
-            <div v-for="r in picker.results" :key="`${r.kind}${r.id}`" class="ol-picker-item">
+            <div
+              v-for="(r, idx) in picker.results"
+              :key="`${r.kind}${r.id}`"
+              class="ol-picker-item"
+              :class="{ active: idx === picker.activeIdx }"
+              @mouseenter="picker.activeIdx = idx"
+            >
               <div class="opi-main">
                 <span class="opi-title">{{ r.title }}</span>
                 <span class="opi-label">{{ r.label }}</span>
@@ -2413,9 +2542,12 @@ onBeforeUnmount(() => {
 }
 
 .ol-gutter {
-  flex: 0 0 24px;
+  /* 宽度由内容决定（三角 14 + 圆点 18 + 间隙），避免固定宽把圆点挤扁、与主题贴太近 */
+  flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
+  /* 三角 / 圆点 / 计数之间的呼吸位；三角左侧用负 margin 回拉，保证正文列位置不变 */
+  gap: 13px;
   height: 28px;
   padding-top: 2px;
   user-select: none;
@@ -2432,6 +2564,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   margin-top: 1px;
+  /* 把折叠三角从缩进线一侧挪回中间：左右到缩进线与圆点的距离一致 */
+  margin-left: -4px;
 }
 
 .ol-fold {
@@ -2461,10 +2595,10 @@ onBeforeUnmount(() => {
 }
 
 .ol-bullet {
+  flex: 0 0 18px;
   width: 18px;
   height: 18px;
   margin-top: 3px;
-  margin-left: 2px;
   border-radius: 50%;
   background: transparent;
   transition: background 0.16s ease;
@@ -2892,6 +3026,19 @@ onBeforeUnmount(() => {
   background: rgba(30, 28, 40, 0.18);
 }
 
+/* 导图模式：退成底部命令条、不要遮罩，画布照常能拖能选，边看导图边插 */
+.ol-picker.is-map {
+  align-items: flex-end;
+  padding-top: 0;
+  padding-bottom: 20px;
+  background: none;
+  pointer-events: none;
+}
+
+.ol-picker.is-map .ol-picker-card {
+  pointer-events: auto;
+}
+
 .ol-picker-card {
   width: min(520px, calc(100vw - 48px));
   background: var(--lb-panel);
@@ -2973,7 +3120,8 @@ onBeforeUnmount(() => {
     box-shadow 0.12s ease;
 }
 
-.ol-picker-item:hover {
+.ol-picker-item:hover,
+.ol-picker-item.active {
   border-color: var(--lb-accent-2);
   transform: translateY(-1px);
   box-shadow: var(--lb-shadow-1);
@@ -3014,7 +3162,8 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
-.ol-picker-item:hover .opi-add {
+.ol-picker-item:hover .opi-add,
+.ol-picker-item.active .opi-add {
   border-color: var(--lb-accent-2);
   color: var(--lb-accent);
 }

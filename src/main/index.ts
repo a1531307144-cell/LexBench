@@ -12,12 +12,27 @@ import { applySeedIfNeeded } from './seed'
 import { reindexFtsIfNeeded } from './reindex'
 import { repairSubbranchIfNeeded } from './repairSubbranch'
 import { registerGroupsIpc } from './groups'
+import { registerSettingsIpc } from './settings'
 import { registerAiIpc } from './ai'
 import { registerAiWindowIpc } from './aiWindow'
 import { initDb } from './db'
 
 /** 主窗口引用（AI 独立窗口向它转发引用跳转/可见性同步用） */
 let mainWindow: BrowserWindow | null = null
+
+/** 已答完「关窗前冲刷」的窗口：再收到 close 就直接放行，避免无限拦 */
+const closeFlushAcked = new WeakSet<BrowserWindow>()
+
+/** 关窗前问渲染层要一次落盘（笔记 500ms 防抖窗口内关窗会丢最后一笔）；
+ *  兜底：渲染层卡死/崩溃时 2s 后强制放行，不能变成关不掉 */
+function askRendererFlush(win: BrowserWindow): void {
+  win.webContents.send('app:before-close')
+  setTimeout(() => {
+    if (win.isDestroyed() || closeFlushAcked.has(win)) return
+    closeFlushAcked.add(win)
+    win.close()
+  }, 2000)
+}
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
 function createWindow(): void {
@@ -47,6 +62,11 @@ function createWindow(): void {
   mainWindow = win
   win.on('closed', () => {
     mainWindow = null
+  })
+  win.on('close', (e) => {
+    if (closeFlushAcked.has(win) || win.webContents.isDestroyed()) return
+    e.preventDefault()
+    askRendererFlush(win)
   })
 
   // 自绘标题栏的窗口控制（渲染进程按钮 → IPC）。
@@ -147,6 +167,14 @@ ipcMain.on('win:close', (e) => {
   BrowserWindow.fromWebContents(e.sender)?.close()
 })
 
+// 渲染层答「已落盘」：主进程据此真正关窗（拿不到窗口就当已关，别挂着）
+ipcMain.on('app:flush-done', (e) => {
+  const w = BrowserWindow.fromWebContents(e.sender)
+  if (!w || w.isDestroyed()) return
+  closeFlushAcked.add(w)
+  w.close()
+})
+
 // 数据包导入完成后重启软件（重新加载暂存的数据库与原件）
 ipcMain.handle('app:relaunch', () => {
   app.relaunch()
@@ -167,6 +195,7 @@ app.whenReady().then(async () => {
   registerReadingIpc()
   registerBackupIpc()
   registerGroupsIpc()
+  registerSettingsIpc()
   registerAiIpc()
   registerAnnotationsIpc()
   registerOutlinesIpc()

@@ -364,6 +364,16 @@ ALTER TABLE outlines ADD COLUMN source_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_outlines_source_key ON outlines(source_key) WHERE source_key IS NOT NULL;
 `
 
+// 020_note_group_nest：笔记分类支持嵌套（Finder 式文件夹，可逐层深入）。
+// - parent_id 自引用（NULL=根层）；渲染层按 parent 组织面包屑与网格；
+// - 删除某夹时由 noteGroups:remove 显式把其子夹提升到当前层（parent_id 置 NULL），
+//   不做级联删除（避免误删整棵子树）。
+const MIGRATION_020_NOTE_GROUP_NEST = `-- 020_note_group_nest
+
+ALTER TABLE note_groups ADD COLUMN parent_id INTEGER REFERENCES note_groups(id);
+CREATE INDEX IF NOT EXISTS idx_note_groups_parent ON note_groups(parent_id, sort_order);
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -384,7 +394,8 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 16, sql: MIGRATION_016_AI_GENERAL },
   { version: 17, sql: MIGRATION_017_OUTLINES_STAR },
   { version: 18, sql: MIGRATION_018_NOTE_GROUPS },
-  { version: 19, sql: MIGRATION_019_SOURCE_KEY }
+  { version: 19, sql: MIGRATION_019_SOURCE_KEY },
+  { version: 20, sql: MIGRATION_020_NOTE_GROUP_NEST }
 ]
 
 /** 全局唯一连接（单例） */

@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'ele
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import { flattenOutline, outlineToMarkdown } from '../shared/outlineExport'
 import { parseImportedFile, toOutlineNodes, type ImportedNode } from '../shared/outlineImport'
@@ -143,6 +144,30 @@ function parseTree(tree: string): OutlineNode[] {
   return parsed as OutlineNode[]
 }
 
+/** 搜索命中正文时的上下文摘录：按 DFS 取第一个文本命中的节点，截出关键词前后一小段 */
+function searchSnippet(treeJson: string, kw: string): string | null {
+  let nodes: OutlineNode[]
+  try {
+    nodes = parseTree(treeJson)
+  } catch {
+    return null
+  }
+  const needle = kw.toLowerCase()
+  const stack: OutlineNode[] = [...nodes]
+  while (stack.length) {
+    const n = stack.shift()!
+    const text = (n.text ?? '').trim()
+    const idx = text.toLowerCase().indexOf(needle)
+    if (idx >= 0) {
+      const start = Math.max(0, idx - 8)
+      const end = Math.min(text.length, idx + kw.length + 12)
+      return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '')
+    }
+    if (n.children?.length) stack.push(...n.children)
+  }
+  return null
+}
+
 // ---------- 引用节点右键上下文（照批注 setActive 的既有模式） ----------
 // 渲染层在引用行上按下右键时先送来 ref（DOM contextmenu 先于主进程 context-menu 事件，
 // 同一 IPC 管道保序），主进程拼菜单时据此追加「在文档库打开来源」；菜单关闭即清。
@@ -242,6 +267,7 @@ export function registerOutlinesIpc(): void {
   })
 
   // 笔记列表（更新时间序；列表页不带 tree，轻载；groupId 过滤分类列）
+  // 带 keyword 时同时检索标题与正文（tree JSON 子串命中），并回带命中段落摘录
   ipcMain.handle(
     'outlines:list',
     (_e, keyword?: string, groupId?: number | null): OutlineListRow[] => {
@@ -250,9 +276,10 @@ export function registerOutlinesIpc(): void {
       const where: string[] = []
       const args: (string | number)[] = []
       if (kw) {
-        // LIKE 够用（列表搜索先不做 FTS，见设计稿 §7）
-        where.push(`title LIKE ? ESCAPE '\\'`)
-        args.push(`%${kw.replace(/[%_\\]/g, (m) => `\\${m}`)}%`)
+        // LIKE 够用（列表搜索先不做 FTS，见设计稿 §7）；标题或正文命中都算
+        const like = `%${kw.replace(/[%_\\]/g, (m) => `\\${m}`)}%`
+        where.push(`(title LIKE ? ESCAPE '\\' OR tree LIKE ? ESCAPE '\\')`)
+        args.push(like, like)
       }
       if (groupId !== undefined && groupId !== null) {
         where.push('group_id = ?')
@@ -260,10 +287,17 @@ export function registerOutlinesIpc(): void {
       } else if (groupId === null) {
         where.push('group_id IS NULL')
       }
-      const sql = `SELECT id, title, group_id, updated_at FROM outlines${
+      const cols = kw ? 'id, title, group_id, updated_at, tree' : 'id, title, group_id, updated_at'
+      const sql = `SELECT ${cols} FROM outlines${
         where.length ? ' WHERE ' + where.join(' AND ') : ''
       } ORDER BY updated_at DESC`
-      return db.prepare(sql).all(...args) as unknown as OutlineListRow[]
+      const rows = db.prepare(sql).all(...args) as unknown as (OutlineListRow & { tree?: string })[]
+      return rows.map((r) => {
+        const { tree, ...rest } = r
+        // 摘录只在「标题不中、正文才中」时给（列表行里用它解释为什么命中）
+        const snippet = kw && tree && !rest.title.includes(kw) ? searchSnippet(tree, kw) : null
+        return { ...rest, snippet }
+      })
     }
   )
 
@@ -300,40 +334,75 @@ export function registerOutlinesIpc(): void {
     if (Number(info.changes) === 0) throw new Error('笔记不存在')
   })
 
-  // ---------- 笔记自定义分类（note_groups；配方对齐文档库分类） ----------
+  // 只改标题（列表页重命名走这口）：绝不带 tree，避免与编辑器自动保存互相覆盖
+  ipcMain.handle('outlines:rename', (_e, id: number, title: string): void => {
+    const info = getDb()
+      .prepare("UPDATE outlines SET title = ? WHERE id = ?")
+      .run(String(title ?? '').trim() || '未命名笔记', Number(id))
+    if (Number(info.changes) === 0) throw new Error('笔记不存在')
+  })
+
+  // ---------- 笔记自定义分类（note_groups；支持嵌套，Finder 式文件夹） ----------
+
+  /** 父夹存在性（NULL=根层，合法） */
+  function assertNoteParent(db: DatabaseSync, parentId: number | null): void {
+    if (parentId === null) return
+    const row = db.prepare('SELECT 1 FROM note_groups WHERE id=?').get(Number(parentId))
+    if (row === undefined) throw new Error('父文件夹不存在')
+  }
+
+  /** 同一父层下不允许重名（改名时排除自身）；空名拒绝 */
+  function assertNoteGroupName(
+    db: DatabaseSync,
+    parentId: number | null,
+    name: string,
+    exceptId?: number
+  ): string {
+    const trimmed = String(name ?? '').trim()
+    if (!trimmed) throw new Error('分类名不能为空')
+    const dup = exceptId
+      ? db
+          .prepare('SELECT 1 FROM note_groups WHERE parent_id IS ? AND name=? AND id<>?')
+          .get(parentId, trimmed, exceptId)
+      : db.prepare('SELECT 1 FROM note_groups WHERE parent_id IS ? AND name=?').get(parentId, trimmed)
+    if (dup !== undefined) throw new Error('同层已存在同名文件夹')
+    return trimmed
+  }
 
   ipcMain.handle('noteGroups:list', (): NoteGroupRow[] => {
     return getDb()
       .prepare(
-        `SELECT g.id, g.name, g.sort_order,
+        `SELECT g.id, g.name, g.sort_order, g.parent_id,
                 (SELECT COUNT(*) FROM outlines o WHERE o.group_id = g.id) AS note_count
            FROM note_groups g ORDER BY g.sort_order, g.id`
       )
       .all() as unknown as NoteGroupRow[]
   })
 
-  ipcMain.handle('noteGroups:create', (_e, name: string): NoteGroupRow => {
+  ipcMain.handle('noteGroups:create', (_e, name: string, parentId?: number | null): NoteGroupRow => {
     const db = getDb()
-    const trimmed = String(name ?? '').trim()
-    if (!trimmed) throw new Error('分类名不能为空')
-    const dup = db.prepare('SELECT 1 FROM note_groups WHERE name = ?').get(trimmed)
-    if (dup) throw new Error('同名分类已存在')
-    const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM note_groups').get() as {
-      m: number
-    }
+    const parent = parentId === undefined || parentId === null ? null : Number(parentId)
+    assertNoteParent(db, parent)
+    const trimmed = assertNoteGroupName(db, parent, name)
+    const max = db
+      .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM note_groups WHERE parent_id IS ?')
+      .get(parent) as { m: number }
+    const order = Number(max.m) + 1
     const info = db
-      .prepare('INSERT INTO note_groups(name, sort_order) VALUES(?, ?)')
-      .run(trimmed, Number(max.m) + 1)
-    return { id: Number(info.lastInsertRowid), name: trimmed, sort_order: Number(max.m) + 1, note_count: 0 }
+      .prepare('INSERT INTO note_groups(name, sort_order, parent_id) VALUES(?, ?, ?)')
+      .run(trimmed, order, parent)
+    return { id: Number(info.lastInsertRowid), name: trimmed, sort_order: order, parent_id: parent, note_count: 0 }
   })
 
   ipcMain.handle('noteGroups:rename', (_e, id: number, name: string): void => {
-    const trimmed = String(name ?? '').trim()
-    if (!trimmed) throw new Error('分类名不能为空')
-    const dup = getDb().prepare('SELECT 1 FROM note_groups WHERE name = ? AND id != ?').get(trimmed, id)
-    if (dup) throw new Error('同名分类已存在')
-    const info = getDb().prepare('UPDATE note_groups SET name = ? WHERE id = ?').run(trimmed, id)
-    if (Number(info.changes) === 0) throw new Error('分类不存在')
+    const db = getDb()
+    const groupId = Number(id)
+    const cur = db.prepare('SELECT parent_id FROM note_groups WHERE id=?').get(groupId) as
+      | { parent_id: number | null }
+      | undefined
+    if (!cur) throw new Error('分类不存在')
+    const trimmed = assertNoteGroupName(db, cur.parent_id ?? null, name, groupId)
+    db.prepare('UPDATE note_groups SET name = ? WHERE id = ?').run(trimmed, groupId)
   })
 
   // 拖动排序：按传入 id 顺序整体重排（同 groups:reorder 配方）
@@ -350,15 +419,53 @@ export function registerOutlinesIpc(): void {
     }
   })
 
-  // 删除分类：其中笔记归「未分类」（group_id ON DELETE SET NULL 语义由显式 UPDATE 兜底，
-  // 因为这里删的是 note_groups 行、outlines.group_id 是引用列——SQLite 外键若未开则显式清）
+  // 换归属（拖拽移动文件夹）：禁止移入自身或自身后代，避免出现环
+  ipcMain.handle('noteGroups:move', (_e, id: number, parentId: number | null): void => {
+    const db = getDb()
+    const groupId = Number(id)
+    const parent = parentId === null || parentId === undefined ? null : Number(parentId)
+    assertNoteParent(db, parent)
+    if (parent === groupId) throw new Error('不能移动到自身')
+    if (parent !== null) {
+      const rows = db.prepare('SELECT id, parent_id FROM note_groups').all() as unknown as Array<{
+        id: number
+        parent_id: number | null
+      }>
+      const children = new Map<number, number[]>()
+      for (const g of rows) {
+        const key = g.parent_id ?? -1
+        const list = children.get(key)
+        if (list) list.push(g.id)
+        else children.set(key, [g.id])
+      }
+      const seen = new Set<number>()
+      const stack = [groupId]
+      while (stack.length) {
+        const cur = stack.pop() as number
+        if (seen.has(cur)) continue
+        seen.add(cur)
+        for (const c of children.get(cur) ?? []) stack.push(c)
+      }
+      if (seen.has(parent)) throw new Error('不能移动到自己的子文件夹')
+    }
+    const info = db.prepare('UPDATE note_groups SET parent_id = ? WHERE id = ?').run(parent, groupId)
+    if (Number(info.changes) === 0) throw new Error('分类不存在')
+  })
+
+  // 删除分类：子夹提升到该夹所在层（不做级联删除），直属笔记归「未分类」
+  // （outlines.group_id 是引用列，SQLite 外键若未开则由显式 UPDATE 兜底清空）
   ipcMain.handle('noteGroups:remove', (_e, id: number): void => {
     const db = getDb()
+    const groupId = Number(id)
     db.exec('BEGIN')
     try {
-      db.prepare('UPDATE outlines SET group_id = NULL WHERE group_id = ?').run(id)
-      const info = db.prepare('DELETE FROM note_groups WHERE id = ?').run(id)
-      if (Number(info.changes) === 0) throw new Error('分类不存在')
+      const cur = db.prepare('SELECT parent_id FROM note_groups WHERE id=?').get(groupId) as
+        | { parent_id: number | null }
+        | undefined
+      if (!cur) throw new Error('分类不存在')
+      db.prepare('UPDATE note_groups SET parent_id = ? WHERE parent_id IS ?').run(cur.parent_id ?? null, groupId)
+      db.prepare('UPDATE outlines SET group_id = NULL WHERE group_id = ?').run(groupId)
+      db.prepare('DELETE FROM note_groups WHERE id = ?').run(groupId)
       db.exec('COMMIT')
     } catch (err) {
       db.exec('ROLLBACK')

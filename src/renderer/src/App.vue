@@ -121,6 +121,53 @@ const panelTab = ref<'library' | 'notes'>('library')
 /** 阅读页右上「全区展开」：true=隐藏竖排（仅阅读时生效，离开阅读复位） */
 const railHidden = ref(false)
 let panelCloseTimer: ReturnType<typeof setTimeout> | undefined
+/**
+ * 最后一次指针坐标：mouseleave 在面板内换节点（＋新建分类按钮换输入框）时会整链误报，
+ * 收面板绝不能听事件里的“离开”，一律以指针**真实坐标**判据（几何命中）＋焦点判据。
+ */
+const lastPointer = { x: -1, y: -1 }
+
+function trackPointer(e: MouseEvent): void {
+  lastPointer.x = e.clientX
+  lastPointer.y = e.clientY
+}
+
+/** 指针/焦点是否真的还落在竖排或面板内（不含瞬时失真的 :hover / elementFromPoint） */
+function pointerInHotZone(): boolean {
+  // 1) 焦点豁免：面板里任何控件还在输入态（新建/改名分类、搜索框）就是没离开
+  const active = document.activeElement
+  if (active instanceof HTMLElement && active.closest('.rail, .rail-panel')) return true
+  // 2) 指针几何命中：竖排+面板都是固定竖条，直接拿矩形比对坐标
+  if (lastPointer.x < 0) return false
+  for (const z of document.querySelectorAll<HTMLElement>('.rail, .rail-panel')) {
+    const r = z.getBoundingClientRect()
+    if (
+      lastPointer.x >= r.left && lastPointer.x <= r.right &&
+      lastPointer.y >= r.top && lastPointer.y <= r.bottom
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/** 收面板统一入口：150ms 后复核指针真的离开了热区才收（否则按钮换输入框的假 leave 会把面板误收、输入框连带销毁） */
+function schedulePanelClose(): void {
+  clearTimeout(panelCloseTimer)
+  panelCloseTimer = setTimeout(() => {
+    // 指针已出窗时 mousemove 停止派发、lastPointer 冻结在热区内，几何判据会误判「还在里面」：
+    // 用 :hover 为空反证指针不在窗口内，此时无条件收起
+    const hovered = document.documentElement.querySelector(':hover') != null
+    if (hovered && pointerInHotZone()) return
+    panelOpen.value = false
+  }, 150)
+}
+
+/** 指针直接移出窗口（不经过内容区）时 mouseleave 链只有一次复核，补一条出窗即收的兜底 */
+function onDocumentLeave(): void {
+  clearTimeout(panelCloseTimer)
+  panelOpen.value = false
+}
 
 function railEnter(which: 'library' | 'notes'): void {
   clearTimeout(panelCloseTimer)
@@ -129,8 +176,7 @@ function railEnter(which: 'library' | 'notes'): void {
 }
 
 function railLeave(): void {
-  clearTimeout(panelCloseTimer)
-  panelCloseTimer = setTimeout(() => (panelOpen.value = false), 150)
+  schedulePanelClose()
 }
 
 function panelEnter(): void {
@@ -139,21 +185,22 @@ function panelEnter(): void {
 }
 
 function panelLeave(): void {
-  clearTimeout(panelCloseTimer)
-  panelCloseTimer = setTimeout(() => (panelOpen.value = false), 150)
+  schedulePanelClose()
 }
 
 /** 点击竖排项：切方向 + 展开面板（阅读中切方向由 watch(tab) 关阅读并记续读） */
 function pickNav(which: 'library' | 'notes'): void {
+  clearTimeout(panelCloseTimer)
   tab.value = which
   panelTab.value = which
   panelOpen.value = true
 }
 
-/** 点内容区空白处收起面板（补悬停机制之外的兜底） */
-function onBodyClick(e: MouseEvent): void {
-  const t = e.target as HTMLElement
-  if (!t.closest('.rail') && !t.closest('.rail-panel')) panelOpen.value = false
+/** 点内容区空白处收起面板（补悬停机制之外的兜底）；命中目标可能被瞬时重排（按钮换输入框）重定向到正文，
+ * 此时以指针真实位置为准：仍在热区就不收。 */
+function onBodyClick(): void {
+  if (pointerInHotZone()) return
+  panelOpen.value = false
 }
 
 /** 阅读页「全区展开」开关（右上角按钮转发） */
@@ -169,6 +216,8 @@ const activeOutline = ref<OutlineRow | null>(null)
 const outlineRev = ref(0)
 /** 笔记左列面板（星标列表切回该方向时刷新） */
 const notesPanelRef = ref<InstanceType<typeof NotesPanel> | null>(null)
+/** 关窗前冲刷用：编辑器暴露 flush() */
+const outlineEditorRef = ref<InstanceType<typeof OutlineEditor> | null>(null)
 const reader = ref<ReaderState>(null)
 const readerLoading = ref(false)
 const showImport = ref(false)
@@ -194,8 +243,8 @@ const dragging = ref(false)
 const error = ref('')
 const version = ref('')
 const pendingDelete = ref<DocumentRow | null>(null)
-/** 待删除笔记（「⋯」→删除笔记的确认弹窗） */
-const pendingNoteDelete = ref<OutlineRow | null>(null)
+/** 待删除笔记（「⋯」→删除笔记、列表行 ✕ 共用的确认弹窗；只需要 id + 标题） */
+const pendingNoteDelete = ref<{ id: number; title: string } | null>(null)
 
 /** 全局消息条：导出成功等正向反馈（复用错误条容器，6 秒自动消失） */
 const notice = ref<{ text: string; kind: 'success' | 'warn' } | null>(null)
@@ -328,9 +377,24 @@ async function confirmDeleteNote(): Promise<void> {
   }
 }
 
+/** 笔记列表行 ✕：同一套确认流程 */
+function askDeleteNote(note: { id: number; title: string }): void {
+  pendingNoteDelete.value = note
+}
+
 /** 编辑器标题改名后列表要重排（updated_at 序）；树的静默保存不触发 */
 async function onNoteListChanged(): Promise<void> {
   await refreshNotes()
+}
+
+/** 笔记面板改过名/导入后：刷列表，并把当前打开笔记的标题同步给编辑器
+ *  （否则编辑器手里的旧标题会在卸载冲刷时把刚改的名字写回去） */
+async function onNotesPanelChanged(): Promise<void> {
+  await refreshNotes()
+  const cur = activeOutline.value
+  if (!cur) return
+  const row = notes.value.find((n) => n.id === cur.id)
+  if (row && row.title !== cur.title) cur.title = row.title
 }
 
 // 切到笔记方向时：刷新星标入口 + 重取当前笔记快照。
@@ -682,9 +746,13 @@ watch(showImport, (open) => {
 /** AI 独立窗订阅的退订函数 */
 let unsubAiVis: (() => void) | null = null
 let unsubAiArticle: (() => void) | null = null
+let unsubBeforeClose: (() => void) | null = null
 
 onMounted(() => {
   // 命名监听器，卸载时全部注销（修复旧版 #6）
+  window.addEventListener('mousemove', trackPointer, { passive: true })
+  window.addEventListener('pointerdown', trackPointer, { passive: true, capture: true })
+  document.addEventListener('mouseleave', onDocumentLeave)
   window.addEventListener('dragenter', onDragEnter)
   window.addEventListener('dragleave', onDragLeave)
   window.addEventListener('dragover', onDragOver)
@@ -695,6 +763,17 @@ onMounted(() => {
     aiWinOpen.value = v
   })
   unsubAiArticle = window.lexbench.aiWindow.onOpenArticle((id) => void openArticleFromAi(id))
+  // 关窗前把编辑器防抖窗口里的内容落盘（主进程拦 close，等这条回执）
+  unsubBeforeClose = window.lexbench.app.onBeforeClose(() => {
+    void (async () => {
+      try {
+        await outlineEditorRef.value?.flush()
+      } catch {
+        // 落盘失败不阻断关窗（错误已在编辑器内提示）
+      }
+      window.lexbench.app.flushDone()
+    })()
+  })
   void refreshDocs()
   void refreshGroups()
   // 笔记两列表首载（此前漏了——首开列表空，直到创建/改名才碰巧刷新）
@@ -718,6 +797,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', trackPointer)
+  window.removeEventListener('pointerdown', trackPointer, { capture: true })
+  document.removeEventListener('mouseleave', onDocumentLeave)
   window.removeEventListener('dragenter', onDragEnter)
   window.removeEventListener('dragleave', onDragLeave)
   window.removeEventListener('dragover', onDragOver)
@@ -725,9 +807,11 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClickForMode)
   unsubAiVis?.()
   unsubAiArticle?.()
+  unsubBeforeClose?.()
   clearTimeout(noticeTimer)
   clearTimeout(errorTimer)
   clearTimeout(topTimer)
+  clearTimeout(panelCloseTimer)
 })
 </script>
 
@@ -897,7 +981,7 @@ onBeforeUnmount(() => {
       <!-- 悬停浮层面板：覆盖式滑入（配方时长 0.18s/缓动同 menu-pop），DOM 常驻控显隐 -->
       <aside
         class="rail-panel"
-        :class="{ open: panelOpen }"
+        :class="{ open: panelOpen, wide: panelTab === 'notes' }"
         @mouseenter="panelEnter"
         @mouseleave="panelLeave"
       >
@@ -920,10 +1004,11 @@ onBeforeUnmount(() => {
           :active-id="activeOutline?.id ?? null"
           @open="openNote"
           @create="(gid) => createNote(gid)"
+          @remove="askDeleteNote"
           @open-starred="openStarredArticle"
           @error="showError"
           @groups-changed="refreshNoteGroups"
-          @imported="refreshNotes"
+          @imported="onNotesPanelChanged"
         />
       </aside>
 
@@ -961,6 +1046,7 @@ onBeforeUnmount(() => {
         <section v-if="tab === 'notes' && activeOutline" class="notes-main">
           <OutlineEditor
             :key="`${activeOutline.id}:${outlineRev}`"
+            ref="outlineEditorRef"
             :outline="activeOutline"
             @error="showError"
             @list-changed="onNoteListChanged"
@@ -1557,8 +1643,7 @@ onBeforeUnmount(() => {
   top: 8px;
   bottom: 8px;
   left: 68px;
-  width: 340px;
-  display: flex;
+  width: 340px;  display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
@@ -1581,6 +1666,11 @@ onBeforeUnmount(() => {
   visibility: visible;
   transform: translateX(0);
   pointer-events: auto;
+}
+
+/* 笔记面板：Finder 式图标网格需要更宽的横向空间（文档库面板维持 340px 不变） */
+.rail-panel.wide {
+  width: 400px;
 }
 
 @media (prefers-reduced-motion: no-preference) {

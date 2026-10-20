@@ -4,6 +4,7 @@ import { buildHighlightTerms, highlightText } from '@shared/highlight'
 import { shortLawName } from '@shared/lawName'
 import { parseLocateQuery } from '@shared/locate'
 import { buildStatuteToc, type StatuteTocEntry, type StatuteTocLevel } from '@shared/statuteToc'
+import { usePageZoom } from '../composables/usePageZoom'
 import type { AnnotationRow, DocumentDetail } from '@shared/types'
 
 /**
@@ -32,6 +33,12 @@ const emit = defineEmits<{
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
+
+/** 正文缩放（触控板双指捏合）：按文档记住比例，下次打开该法条仍用原比例 */
+const { pageZoom, resetZoom } = usePageZoom({
+  zoomKey: () => `read:zoom:doc:${props.doc.id}`,
+  target: scrollEl
+})
 
 // ---------- 目录：面板与行内标题同源（唯一来源） ----------
 
@@ -361,10 +368,14 @@ function scrollTo(
   const el = scrollEl.value
   const target = anchorFor(order, level)
   if (!el || !target) return
+  // 正文容器带 CSS zoom：offsetTop 是未缩放单位，scrollTop/rect 是缩放后单位，混用会在
+  // 缩放≠100% 时按比例落错位置——用矩形差 + scrollTop 换算成内容坐标
+  const contentTop =
+    target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
   const top =
     mode === 'center'
-      ? target.offsetTop - el.clientHeight / 2 + target.clientHeight / 2
-      : target.offsetTop - RESTORE_PAD
+      ? contentTop - el.clientHeight / 2 + target.getBoundingClientRect().height / 2
+      : contentTop - RESTORE_PAD
   // 平滑滚动只在「看得见」时有意义：隐藏窗口合成器不跑会悬在半路，
   // 减弱动效偏好下也不该有动画——两者都降级为瞬时定位
   const smooth =
@@ -744,6 +755,14 @@ onBeforeUnmount(() => {
         </transition>
       </div>
       <div class="sv-ops">
+        <button
+          v-if="pageZoom !== 1"
+          class="sv-zoom-reset"
+          title="重置正文缩放（触控板双指可缩放）"
+          @click="resetZoom()"
+        >
+          {{ Math.round(pageZoom * 100) }}%
+        </button>
         <!-- 法内搜索：独立搜索框，只搜当前这部法 -->
         <div v-if="doc.articles.length" class="sv-search" :class="{ on: searchOpen }">
           <button v-if="!searchOpen" class="sv-top-btn" title="在本法中搜索条文" @click="openSearch">
@@ -804,7 +823,7 @@ onBeforeUnmount(() => {
     <div class="sv-main">
       <!-- 正文：单滚动容器，行内标题即跳转锚点 -->
       <div ref="scrollEl" class="sv-scroll" @scroll="onScroll">
-        <div class="sv-col">
+        <div class="sv-col" :style="{ zoom: pageZoom }">
           <div v-if="!doc.articles.length" class="sv-empty">
             未能解析出可阅读的条文。
             <p class="sv-empty-sub">
@@ -1021,6 +1040,21 @@ onBeforeUnmount(() => {
 .sv-fade-enter-from,
 .sv-fade-leave-to {
   opacity: 0;
+}
+
+.sv-zoom-reset {
+  padding: 3px 8px;
+  border: 1px solid var(--lb-border);
+  border-radius: 8px;
+  background: var(--lb-chip);
+  color: var(--lb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.sv-zoom-reset:hover {
+  color: var(--lb-accent);
+  border-color: var(--lb-accent-2);
 }
 
 .sv-ops {

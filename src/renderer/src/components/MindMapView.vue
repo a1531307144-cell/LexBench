@@ -15,6 +15,8 @@ import type { OutlineNode, OutlineRef } from '@shared/types'
 const props = defineProps<{
   tree: OutlineNode[]
   title: string
+  /** 缩放记忆键（settings 表）；空串则不记忆 */
+  zoomKey?: string
 }>()
 const emit = defineEmits<{
   (e: 'change', tree: OutlineNode[]): void
@@ -23,12 +25,16 @@ const emit = defineEmits<{
   (e: 'rename', title: string): void
   (e: 'undo'): void
   (e: 'redo'): void
+  /** 请求插入法条引用（/、@、Ctrl+K）：浮层在大纲壳里，导图只报锚点节点 */
+  (e: 'ref-request', nodeId: string): void
 }>()
 
 const hostEl = ref<HTMLElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
 let jm: jsMind | null = null
 let pendingSelf = false
+/** 最近一次同步出去的树：外部回流若与它同构就不重载画布（防无意义重建闪屏/高亮重闪） */
+let lastSync: OutlineNode[] | null = null
 let metaById = new Map<string, OutlineNode>()
 let resizeTimers: ReturnType<typeof setTimeout>[] = []
 let centerTimer: ReturnType<typeof setTimeout> | undefined
@@ -174,6 +180,7 @@ function syncToParent(): void {
     const fmt = jm.get_data('node_tree') as { data?: unknown }
     const out = fromJsMind(fmt.data)
     metaById = indexTree(out)
+    lastSync = out
     pendingSelf = true
     emit('change', out)
     paintDecorations()
@@ -199,19 +206,33 @@ async function loadTree(nodes: OutlineNode[]): Promise<void> {
   jm.select_node(jm.get_root())
   scheduleResize()
   paintDecorations()
-  // 初次进入/重载把视口放在额外画布中间，四向都有可拖空间
-  nextTick(() => centerViewport())
-  scheduleCenter()
-  if (!initialFitDone) {
-    initialFitDone = true
-    nextTick(() => {
-      fitView()
-      centerViewport()
-      scheduleCenter()
-      jm?.select_node(jm.get_root())
-    })
+  const reveal = pendingRevealId
+  const rseq = ++revealSeq
+  if (reveal) {
+    // 有要揭示的新节点（刚插入的引用）：本轮的「回到画布中央」让位，
+    // 等 resize 后的二次布局稳定再滚过去，否则刚滚到就被 centerViewport 拉回中间
+    pendingRevealId = null
+    const doReveal = (): void => {
+      if (rseq === revealSeq) revealNode(reveal)
+    }
+    nextTick(doReveal)
+    setTimeout(doReveal, 380)
+  } else {
+    // 初次进入/重载把视口放在额外画布中间，四向都有可拖空间
+    nextTick(() => centerViewport())
+    scheduleCenter()
+    if (!initialFitDone) {
+      initialFitDone = true
+      nextTick(() => {
+        fitView()
+        centerViewport()
+        scheduleCenter()
+        jm?.select_node(jm.get_root())
+      })
+    }
   }
-  updateZoomPercent()
+  syncZoom(false)
+  void restoreZoom()
 }
 
 function scheduleResize(): void {
@@ -315,8 +336,65 @@ function renderNodeWithImage(_jm: unknown, el: HTMLElement, node: { topic?: stri
 
 // ---------- 节点装饰（任务/备注） ----------
 
+/** 树同构比较：字段逐比 + 子树递归（归一化可能改字段序，不能用 JSON 全串比） */
+function sameTree(a: OutlineNode[], b: OutlineNode[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (!x || !y) return false
+    if (
+      x.id !== y.id ||
+      x.text !== y.text ||
+      x.fold !== y.fold ||
+      x.task !== y.task ||
+      x.heading !== y.heading ||
+      (x.note ?? '') !== (y.note ?? '') ||
+      (x.image ?? '') !== (y.image ?? '') ||
+      (x.html ?? '') !== (y.html ?? '') ||
+      (x.images ?? []).join('\u0000') !== (y.images ?? []).join('\u0000') ||
+      JSON.stringify(x.ref ?? null) !== JSON.stringify(y.ref ?? null)
+    ) {
+      return false
+    }
+    if (!sameTree(x.children ?? [], y.children ?? [])) return false
+  }
+  return true
+}
+
+/** jsMind 内联编辑输入框被打断（DOM 重画拆掉）后残留会把 is_editing() 卡成 true：
+ *  方向键从此全哑，残留蓝框条压在标题下像一条蓝线。每次交互前兜底收尾/清理。 */
+function recoverStaleEditor(): void {
+  if (!jm) return
+  const view = jm.view as unknown as {
+    e_editor: HTMLInputElement
+    editing_node: unknown
+    edit_node_end: () => void
+  }
+  const ed = view.e_editor
+  const live = ed && ed.isConnected && document.activeElement === ed
+  if (!live && view.editing_node) {
+    try {
+      view.edit_node_end() // 编辑器还在、只是失焦：正常收尾并落库
+    } catch {
+      view.editing_node = null // 编辑器已被重画拆掉：直接复位（丢失的改动本就已不在 DOM）
+    }
+  }
+  if (view.editing_node) return
+  // 无编辑状态下不留任何编辑框/空壳节点（残留后遮住标题、看起来像“蓝线”）
+  for (const el of Array.from(jm.view.e_nodes.querySelectorAll('.jsmind-editor'))) el.remove()
+  for (const el of Array.from(jm.view.e_nodes.querySelectorAll('jmnode'))) {
+    const id = jm.view.get_binded_nodeid(el)
+    const node = id ? jm.mind.nodes[id] : null
+    // 只补「既无输入框也无图文内容」的空壳；纯图片/图标节点的 textContent 本就是空，
+    // 直接写 node.topic 会把缩略图抹掉
+    if (node && !el.querySelector('input, img, svg') && !el.textContent?.trim()) el.textContent = node.topic
+  }
+}
+
 function paintDecorations(): void {
   if (!jm) return
+  recoverStaleEditor()
   for (const el of Array.from(jm.view.e_nodes.querySelectorAll('jmnode'))) {
     const id = jm.view.get_binded_nodeid(el)
     if (!id) continue
@@ -324,6 +402,8 @@ function paintDecorations(): void {
     el.classList.toggle('mm-task', !!node?.task)
     el.classList.toggle('mm-task-done', node?.task === 2)
     el.classList.toggle('mm-has-note', !!node?.note)
+    // 法条引用节点：与大纲里的引用行同一套视觉语汇（衬线 + 强调色 + 📖）
+    el.classList.toggle('mm-ref', !!node?.ref)
     const jsnode = jm.mind.nodes[id]
     el.title = jsnode?.isroot ? '拖动空白处平移画布' : '拖动调整层级（松手到目标上/下缘=同级）'
   }
@@ -346,53 +426,102 @@ function ensureSelected(): MNode | null {
   return root
 }
 
+// ---------- 供父级调用 ----------
+
+/** 等树回流重建后再揭示的节点（重建异步：图片预载），先记账，加载完再滚过去 */
+let pendingRevealId: string | null = null
+/** 揭示轮次：连续插入时只让最后一次的定时器生效 */
+let revealSeq = 0
+
+/** 选中并居中到指定节点；节点还没渲染就先记账 */
+function revealNode(id: string): void {
+  if (!jm) return
+  const node = jm.mind.nodes[id]
+  if (!node) {
+    pendingRevealId = id
+    return
+  }
+  jm.select_node(node)
+  jm.scroll_node_to_center(node)
+}
+
+/** / @ Ctrl+K：请父级打开引用检索浮层，锚点=当前选中节点 */
+function requestRefPicker(): void {
+  const sel = ensureSelected()
+  if (!sel) return
+  emit('ref-request', sel.id)
+}
+
+defineExpose({ revealNode })
+
 function nodeFrame(n: MNode): { x: number; y: number; w: number; h: number } {
   const loc = n.get_location()
   const size = n.get_size()
   return { x: loc.x, y: loc.y, w: size.w, h: size.h }
 }
 
+function centerOf(f: { x: number; y: number; w: number; h: number }): { x: number; y: number } {
+  return { x: f.x + f.w / 2, y: f.y + f.h / 2 }
+}
+
+/** 纵向导航：同级沿分支上下移；无同级可去时全图取纵向最近（横向偏移加权惩罚） */
+function pickVertical(sel: MNode, dir: -1 | 1): MNode | null {
+  const siblings = (sel.parent ? sel.parent.children : []).filter((n) => jm!.layout.is_visible(n))
+  const i = siblings.findIndex((n) => n.id === sel.id)
+  const sib = siblings[i + dir]
+  if (sib) return sib
+  const cur = centerOf(nodeFrame(sel))
+  let best: MNode | null = null
+  let bestScore = Infinity
+  for (const n of Object.values(jm!.mind.nodes)) {
+    if (n.id === sel.id || n.isroot || !jm!.layout.is_visible(n)) continue
+    const c = centerOf(nodeFrame(n))
+    const dy = (c.y - cur.y) * dir
+    if (dy <= 4) continue
+    const score = dy + Math.abs(c.x - cur.x) * 1.2
+    if (score < bestScore) {
+      bestScore = score
+      best = n
+    }
+  }
+  return best
+}
+
+/** 横向导航：绝对方向（右键=选中更右边的节点），左右两侧分支都符合直觉；
+ *  父/子关系加权：沿分支走优先于跨分支跳跃 */
+function pickHorizontal(sel: MNode, dirX: 1 | -1): MNode | null {
+  const cur = centerOf(nodeFrame(sel))
+  const childIds = new Set((sel.children ?? []).map((c) => c.id))
+  const parentId = sel.parent && !sel.isroot ? sel.parent.id : null
+  let best: MNode | null = null
+  let bestScore = Infinity
+  for (const n of Object.values(jm!.mind.nodes)) {
+    if (n.id === sel.id || !jm!.layout.is_visible(n)) continue
+    const c = centerOf(nodeFrame(n))
+    // 中心必须在目标方向上；同一列不横向跳
+    const dcx = (c.x - cur.x) * dirX
+    if (dcx <= 4) continue
+    const dcy = Math.abs(c.y - cur.y)
+    const kin = n.id === parentId || childIds.has(n.id) ? 0.55 : 1
+    const score = (dcx + dcy * 2.2) * kin
+    if (score < bestScore) {
+      bestScore = score
+      best = n
+    }
+  }
+  return best
+}
+
 function moveSelection(key: string): void {
   if (!jm) return
   const sel = ensureSelected()
   if (!sel) return
-  let target: MNode | null = null
-  if (key === 'ArrowLeft') {
-    target = sel.isroot ? null : sel.parent
-  } else if (key === 'ArrowRight') {
-    target = (sel.children ?? []).find((c) => jm!.layout.is_visible(c)) ?? null
-  } else {
-    const siblings = sel.parent ? sel.parent.children : []
-    const i = siblings.findIndex((n) => n.id === sel.id)
-    const dir = key === 'ArrowUp' ? -1 : 1
-    let j = i + dir
-    while (j >= 0 && j < siblings.length) {
-      const cand = siblings[j]
-      if (cand && jm.layout.is_visible(cand)) {
-        target = cand
-        break
-      }
-      j += dir
-    }
-    if (!target) {
-      // 几何兜底：可见节点里纵向最近（同侧）
-      const cur = nodeFrame(sel)
-      let bestDist = Infinity
-      for (const n of Object.values(jm.mind.nodes)) {
-        if (n.id === sel.id || !jm.layout.is_visible(n)) continue
-        if (n.isroot) continue
-        const f = nodeFrame(n)
-        const vertical = key === 'ArrowUp' ? f.y + f.h <= cur.y + 2 : f.y >= cur.y + cur.h - 2
-        if (!vertical) continue
-        const dx = Math.abs(f.x - cur.x)
-        const dy = key === 'ArrowUp' ? cur.y - (f.y + f.h) : f.y - (cur.y + cur.h)
-        if (dy >= -2 && dx < 90 && dy + dx < bestDist) {
-          bestDist = dy + dx
-          target = n
-        }
-      }
-    }
-  }
+  const target =
+    key === 'ArrowLeft'
+      ? pickHorizontal(sel, -1)
+      : key === 'ArrowRight'
+        ? pickHorizontal(sel, 1)
+        : pickVertical(sel, key === 'ArrowUp' ? -1 : 1)
   if (!target) return
   jm.select_node(target.id)
   jm.scroll_node_to_center(target.id)
@@ -707,6 +836,8 @@ function onPointerDown(ev: PointerEvent): void {
   if (!id) return
   const node = jm.mind.nodes[id]
   if (!node || node.isroot) return
+  // 不让浏览器顺手把节点文字选中：点了/拖了就留一层蓝色文本高亮，很没必要
+  ev.preventDefault()
   jm.select_node(id)
   hostEl.value?.focus()
   // 按在节点上时先关掉画布平移，避免拖节点时整张图跟着跑
@@ -847,6 +978,7 @@ function cancelPointerDrag(): void {
 }
 
 function cleanupPointerDrag(): void {
+  window.removeEventListener('pointermove', onPointerMove)
   pendingDrag = null
   drag.active = false
   drag.fromId = null
@@ -887,25 +1019,80 @@ function menuCall(fn: () => void): void {
 // ---------- 缩放 ----------
 
 const zoomPercent = ref(100)
+/** 缩放记忆：按笔记落 settings，切回大纲/重开笔记都回到上次比例 */
+const ZOOM_MIN = 0.4
+const ZOOM_MAX = 2
+let zoomSaveTimer: ReturnType<typeof setTimeout> | undefined
+let zoomPending = false
+let zoomLoadSeq = 0
+/** 关窗冲刷的退订函数（onBeforeUnmount 不保证在关窗时执行，单独订阅） */
+let unsubBeforeClose: (() => void) | null = null
 
-function updateZoomPercent(): void {
+const clampZoom = (n: number): number => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(n * 100) / 100))
+
+function zoomKeyOf(): string {
+  return props.zoomKey ?? ''
+}
+
+function scheduleZoomSave(): void {
+  if (!zoomKeyOf()) return
+  zoomPending = true
+  clearTimeout(zoomSaveTimer)
+  zoomSaveTimer = setTimeout(flushZoomSave, 320)
+}
+
+/** 立即落盘（防抖窗口结束与卸载时调用） */
+function flushZoomSave(): void {
+  clearTimeout(zoomSaveTimer)
+  if (!zoomPending) return
+  zoomPending = false
+  const key = zoomKeyOf()
+  if (!key) return
+  void window.lexbench.settings.set(key, String(zoomPercent.value / 100)).catch(() => {
+    // 记忆失败只是下次回到自适应，不打断操作
+  })
+}
+
+/** 缩放变化的统一出口：刷新百分比，需要落库时落库 */
+function syncZoom(persist: boolean): void {
   if (!jm) return
   zoomPercent.value = Math.round(jm.view.zoom_current * 100)
+  if (persist) scheduleZoomSave()
+}
+
+function updateZoomPercent(): void {
+  syncZoom(false)
+}
+
+/** 读回该笔记的记忆比例；没有记忆就保留 fitView 的自适应结果 */
+async function restoreZoom(): Promise<void> {
+  const key = zoomKeyOf()
+  const seq = ++zoomLoadSeq
+  if (!key || !jm) return
+  try {
+    const raw = await window.lexbench.settings.get(key)
+    if (seq !== zoomLoadSeq || !jm) return
+    const n = raw === null ? Number.NaN : Number(raw)
+    if (Number.isFinite(n)) jm.view.set_zoom(clampZoom(n))
+    syncZoom(false)
+  } catch {
+    // 读失败就用当前比例
+  }
 }
 
 function zoomIn(): void {
   jm?.view.zoom_in()
-  updateZoomPercent()
+  syncZoom(true)
 }
 
 function zoomOut(): void {
   jm?.view.zoom_out()
-  updateZoomPercent()
+  syncZoom(true)
 }
 
 function resetZoom(): void {
   jm?.view.set_zoom(1)
-  updateZoomPercent()
+  syncZoom(true)
   if (jm) jm.scroll_node_to_center(jm.get_root())
 }
 
@@ -931,7 +1118,7 @@ function fitView(): void {
   const scale = Math.max(0.45, Math.min(1, Math.min(w / bw, h / bh)))
   jm.view.set_zoom(scale)
   jm.scroll_node_to_center(jm.get_root())
-  updateZoomPercent()
+  syncZoom(true)
   scheduleResize()
 }
 
@@ -980,9 +1167,38 @@ function renderElbowLine(arg: {
 
 // ---------- 键盘 ----------
 
+/** 输入框/富文本内把按键交还给输入法与浏览器（含 jsMind 节点编辑输入框） */
+function isTypingTarget(t: EventTarget | null): boolean {
+  const el = t instanceof HTMLElement ? t : null
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+}
+
 function onKeydown(ev: KeyboardEvent): void {
   if (!jm || ev.isComposing) return
+  if (isTypingTarget(ev.target)) return
+  recoverStaleEditor()
   if (jm.view.is_editing()) return // 编辑输入框交给 jsMind / 浏览器
+  // 键挂 window：焦点滑到 body（刚切到导图、点击后焦点丢失）也响应，方向键不再“失灵”；
+  // 但在导图之外的交互元素（如下方列表、顶栏输入）上时不抢按键
+  const active = document.activeElement
+  const inHost =
+    ev.target instanceof HTMLElement && !!hostEl.value && hostEl.value.contains(ev.target)
+  // 焦点落在按钮/链接等控件上时，按键要还给控件本身（Enter/Space 激活、Esc 关下拉）：
+  // 否则「＋ / ⋯」这类工具钮会因为导图抢键而按不动
+  const onControl =
+    active instanceof HTMLElement && !!active.closest('button, a, [role="button"]')
+  const inMapChrome =
+    !onControl && active instanceof HTMLElement && !!active.closest('.mm-root')
+  const focusFree = !active || active === document.body || active === document.documentElement
+  const inEditorShell =
+    !onControl &&
+    !inMapChrome &&
+    active instanceof HTMLElement &&
+    !!active.closest('.ol')
+  if (!inHost && !inMapChrome && !focusFree && !inEditorShell) return
+  // 结构键（Tab/Enter/Del/空格）只在画布/导图浮层/焦点悬空时生效：
+  // 避免焦点还在「大纲/导图」切换钮上时按 Tab 突然瞦出新节点
+  const structuralOK = inHost || inMapChrome || focusFree
   const mod = ev.ctrlKey || ev.metaKey
   if (mod && ev.shiftKey && (ev.key === 'z' || ev.key === 'Z')) {
     ev.preventDefault()
@@ -1019,28 +1235,39 @@ function onKeydown(ev: KeyboardEvent): void {
     duplicateSelected()
     return
   }
-  if (ev.key === 'Tab') {
+  // 插入法条引用：/ @ 与 Ctrl+K 都唤出（与大纲同一套浮层）；Enter 插为选中节点的子主题
+  if (mod && !ev.shiftKey && (ev.key === 'k' || ev.key === 'K')) {
+    ev.preventDefault()
+    requestRefPicker()
+    return
+  }
+  if (!mod && !ev.altKey && (ev.key === '/' || ev.key === '@')) {
+    ev.preventDefault()
+    requestRefPicker()
+    return
+  }
+  if (structuralOK && ev.key === 'Tab') {
     ev.preventDefault()
     if (ev.shiftKey) addSibling(true)
     else addChild()
     return
   }
-  if (ev.key === 'Enter') {
+  if (structuralOK && ev.key === 'Enter') {
     ev.preventDefault()
     addSibling()
     return
   }
-  if (ev.key === 'Delete' || ev.key === 'Backspace') {
+  if (structuralOK && (ev.key === 'Delete' || ev.key === 'Backspace')) {
     ev.preventDefault()
     deleteSelected()
     return
   }
-  if (ev.key === ' ') {
+  if (structuralOK && ev.key === ' ') {
     ev.preventDefault()
     editSelected()
     return
   }
-  if (ev.key === 'F2') {
+  if (structuralOK && ev.key === 'F2') {
     ev.preventDefault()
     editSelected()
     return
@@ -1051,8 +1278,8 @@ function onKeydown(ev: KeyboardEvent): void {
     return
   }
   if (ev.key === 'Escape') {
-    closeMenu()
-    noteEditor.open = false
+    // Esc 语义统一：一次关掉所有浮层；备注先把内容落库再关（只关不存会丢字）
+    closeAllPopups()
     return
   }
 }
@@ -1064,6 +1291,8 @@ const moreMenu = ref(false)
 function closeAllPopups(): void {
   closeMenu()
   moreMenu.value = false
+  // 备注卡：保存后再关，与卡片内的 Esc/Ctrl+Enter 同一个出口
+  if (noteEditor.open) saveNoteEditor()
 }
 
 // ---------- 生命周期 ----------
@@ -1115,7 +1344,8 @@ onMounted(() => {
         paintDecorations()
       }
     })
-    hostEl.value.addEventListener('keydown', onKeydown)
+    // 快捷键挂 window（焦点不依赖 hostEl）；导图卸载即注销
+    window.addEventListener('keydown', onKeydown)
     hostEl.value.addEventListener('pointerdown', onPointerDown)
     hostEl.value.addEventListener('contextmenu', openMenu)
     hostEl.value.addEventListener('paste', onHostPaste)
@@ -1124,6 +1354,10 @@ onMounted(() => {
     hostEl.value.addEventListener('input', onEditorInput, true)
     hostEl.value.addEventListener('focusin', onEditorFocusIn)
     document.addEventListener('click', onDocumentClick)
+    // 拖动中途窗口失焦（Alt+Tab/切屏）可能再无 pointerup：遗留落点线/幽灵就是那条“蓝线”
+    window.addEventListener('blur', cancelPointerDrag)
+    // 关窗时渲染进程直接销毁、onBeforeUnmount 不跑：把防抖里的缩放记忆先写出去
+    unsubBeforeClose = window.lexbench.app.onBeforeClose(() => flushZoomSave())
   } catch (e) {
     emit('error', e)
   }
@@ -1141,7 +1375,8 @@ function onHostClick(): void {
 function onHostWheel(ev: WheelEvent): void {
   if (!jm) return
   if (ev.ctrlKey || ev.metaKey) {
-    setTimeout(updateZoomPercent, 40)
+    // jsMind 自己缩放了（mask_key 4096），等它算完再读比例并落库
+    setTimeout(() => syncZoom(true), 40)
     return
   }
   const p = jm.view.e_panel
@@ -1200,6 +1435,12 @@ watch(
       paintDecorations()
       return
     }
+    // 同构树（含归一化差异）也不重载：每次交互都重建画布会闪高亮、丢选中态
+    if (lastSync && sameTree(t, lastSync)) {
+      metaById = indexTree(t)
+      paintDecorations()
+      return
+    }
     void loadTree(t)
   }
 )
@@ -1217,7 +1458,11 @@ watch(
 )
 
 onBeforeUnmount(() => {
-  hostEl.value?.removeEventListener('keydown', onKeydown)
+  // 切视图/换笔记即销毁实例：弹出的比例先把防抖里的那笔写完
+  flushZoomSave()
+  unsubBeforeClose?.()
+  window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('blur', cancelPointerDrag)
   hostEl.value?.removeEventListener('pointerdown', onPointerDown)
   hostEl.value?.removeEventListener('contextmenu', openMenu)
   hostEl.value?.removeEventListener('paste', onHostPaste)
@@ -1258,6 +1503,7 @@ onBeforeUnmount(() => {
         <button class="mm-mi" @click="moreMenu = false; addSibling()">新建同级主题 <kbd>Enter</kbd></button>
         <button class="mm-mi" @click="moreMenu = false; addSibling(true)">在前插入同级</button>
         <button class="mm-mi" @click="moreMenu = false; editSelected()">编辑 <kbd>Space</kbd></button>
+        <button class="mm-mi" @click="moreMenu = false; requestRefPicker()">插入法条引用 <kbd>Ctrl+K</kbd></button>
         <div class="mm-sep-h"></div>
         <button class="mm-mi" @click="moreMenu = false; openNoteEditor()">备注</button>
         <button class="mm-mi" @click="moreMenu = false; toggleTaskFromToolbar()">待办 / 完成</button>
@@ -1298,6 +1544,7 @@ onBeforeUnmount(() => {
       <button class="mm-mi" @click="menuCall(() => addSibling(true))">在前插入同级</button>
       <button class="mm-mi" @click="menuCall(() => editSelected())">编辑 <kbd>Space</kbd></button>
       <div class="mm-sep-h"></div>
+      <button class="mm-mi" @click="menuCall(() => requestRefPicker())">插入法条引用 <kbd>Ctrl+K</kbd></button>
       <button class="mm-mi" @click="menuCall(() => duplicateSelected())">复制节点 <kbd>Ctrl+D</kbd></button>
       <button class="mm-mi" @click="menuCall(() => openNoteEditor())">备注</button>
       <button class="mm-mi" @click="menuCall(() => toggleTask(1))">设为待办</button>
@@ -1326,7 +1573,7 @@ onBeforeUnmount(() => {
         @keydown.ctrl.enter.prevent="saveNoteEditor()"
       ></textarea>
       <div class="mm-note-foot">
-        <span class="mm-note-hint">Ctrl+Enter 保存</span>
+        <span class="mm-note-hint">Esc / Ctrl+Enter 保存并关闭</span>
         <button class="mm-note-save" @click="saveNoteEditor()">保存</button>
       </div>
     </div>
@@ -1367,6 +1614,9 @@ body.mm-dragging .ol-mind * {
   max-width: 280px;
   white-space: normal;
   cursor: grab;
+  /* 点选/拖动不该顺带把标题文字选中（蓝色文本高亮是误染而非反馈） */
+  user-select: none;
+  -webkit-user-select: none;
   transition:
     border-color 0.14s ease,
     box-shadow 0.14s ease,
@@ -1415,6 +1665,29 @@ body.mm-dragging .ol-mind * {
   margin-right: 5px;
   color: var(--lb-muted);
   font-size: 13px;
+}
+
+/* 法条引用：📖 常显；同时是待办时与勾选框并存（两个标记都挂 ::before）*/
+.ol-mind jmnode.mm-ref::before {
+  content: '📖';
+  display: inline-block;
+  margin-right: 5px;
+  font-size: 12px;
+}
+
+.ol-mind jmnode.mm-ref.mm-task::before {
+  content: '📖 ☐';
+}
+
+.ol-mind jmnode.mm-ref.mm-task-done::before {
+  content: '📖 ☑';
+}
+
+/* :not(.selected) 让选中态的强调边框优先级不受影响 */
+.ol-mind jmnode.mm-ref:not(.selected) {
+  font-family: var(--lb-serif);
+  color: var(--lb-accent);
+  border-color: rgba(0, 113, 227, 0.34);
 }
 
 .ol-mind jmnode.mm-task-done::before {
@@ -1492,6 +1765,14 @@ body.mm-dragging .ol-mind * {
   position: relative;
   z-index: 2;
   background: #fff;
+  /* 节点禁止选中，但编辑框本身要能选文字 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* jsMind 进编辑是整段选中再敲键替换：选区弱化成淡蓝，别整块高亮 */
+.ol-mind .jsmind-editor::selection {
+  background: rgba(0, 113, 227, 0.16);
 }
 
 /* 拖动时关闭文本选择 */

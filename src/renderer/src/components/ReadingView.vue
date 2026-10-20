@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
+import { usePageZoom } from '../composables/usePageZoom'
 import type { BookNoteRow, DocumentDetail, ExportFormat } from '@shared/types'
 
 /**
@@ -343,7 +344,10 @@ function openNoteFromList(n: BookNoteRow): void {
     const p = el?.querySelector<HTMLElement>(`p[data-para="${n.start_para}"]`)
     if (el && p) {
       el.scrollTo({
-        top: Math.max(0, p.offsetTop - el.clientHeight / 2 + p.clientHeight / 2),
+        top: Math.max(
+          0,
+          contentTop(el, p) - el.clientHeight / 2 + p.getBoundingClientRect().height / 2
+        ),
         behavior: 'smooth'
       })
     }
@@ -397,16 +401,24 @@ async function saveProgressNow(): Promise<void> {
   }
 }
 
+/** 元素在滚动容器内容坐标系中的位置（视觉像素）。
+ *  正文容器带 CSS zoom：offsetTop 是未缩放单位，而 scrollTop / getBoundingClientRect 是缩放后单位，
+ *  两者直接混用会在缩放≠100% 时按比例落错位置——统一用矩形差 + scrollTop 换算。 */
+function contentTop(el: HTMLElement, p: HTMLElement): number {
+  return p.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+}
+
 /** 滚动定位到段落：start=顶部留白补偿；center=居中（文字模式） */
 function scrollToSeq(seq: number, mode: 'start' | 'center'): void {
   const el = scrollEl.value
   if (!el) return
   const p = el.querySelector<HTMLElement>(`p[data-para="${seq}"]`)
   if (!p) return
+  const top = contentTop(el, p)
   const target =
     mode === 'center'
-      ? p.offsetTop - el.clientHeight / 2 + p.clientHeight / 2
-      : p.offsetTop - RESTORE_PAD
+      ? top - el.clientHeight / 2 + p.getBoundingClientRect().height / 2
+      : top - RESTORE_PAD
   el.scrollTop = Math.max(0, target)
 }
 
@@ -423,6 +435,12 @@ function flashParaSeq(seq: number): void {
 // 对部分扫描件（内容流非标准）读不出内容，已弃用。
 
 const isPdf = computed(() => props.doc.file_ext === '.pdf')
+
+/** 正文缩放（触控板双指捏合）：按文档记住比例；PDF 交给内置阅读器自己缩放，故不记忆 */
+const { pageZoom, resetZoom } = usePageZoom({
+  zoomKey: () => (isPdf.value ? null : `read:zoom:doc:${props.doc.id}`),
+  target: scrollEl
+})
 /** PDF 书籍一页一 chunk：chunk 数即总页数 */
 const pdfTotal = computed(() => props.doc.chunks.length)
 /** 原件字节的 blob 地址（http 页面不能直接载入 file://，用 blob 喂内置阅读器） */
@@ -582,6 +600,14 @@ onBeforeUnmount(() => {
         </transition>
       </div>
       <div class="rv-ops">
+        <button
+          v-if="!isPdf && pageZoom !== 1"
+          class="rv-zoom-reset"
+          title="重置正文缩放（触控板双指可缩放）"
+          @click="resetZoom()"
+        >
+          {{ Math.round(pageZoom * 100) }}%
+        </button>
         <template v-if="isPdf">
           <span class="rv-page-ind">共 {{ pdfTotal }} 页</span>
           <label class="rv-page-jump">
@@ -639,7 +665,7 @@ onBeforeUnmount(() => {
         @mouseup="onMouseUp"
         @scroll="onScroll"
       >
-        <div ref="contentEl" class="rv-col">
+        <div ref="contentEl" class="rv-col" :style="{ zoom: pageZoom }">
           <template v-for="c in doc.chunks" :key="c.id">
             <p
               v-if="c.content"
@@ -838,6 +864,21 @@ onBeforeUnmount(() => {
 .rv-fade-enter-from,
 .rv-fade-leave-to {
   opacity: 0;
+}
+
+.rv-zoom-reset {
+  padding: 3px 8px;
+  border: 1px solid var(--lb-border);
+  border-radius: 8px;
+  background: var(--lb-chip);
+  color: var(--lb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.rv-zoom-reset:hover {
+  color: var(--lb-accent);
+  border-color: var(--lb-accent-2);
 }
 
 .rv-ops {

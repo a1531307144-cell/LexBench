@@ -55,7 +55,17 @@ const api = {
   app: {
     getVersion: (): Promise<string> => invoke('app:getVersion'),
     /** 数据包导入后重启软件使新数据生效 */
-    relaunch: (): Promise<void> => invoke('app:relaunch')
+    relaunch: (): Promise<void> => invoke('app:relaunch'),
+    /** 关窗前主进程请求落盘（订阅后必须回 flushDone，否则只能等 2s 兜底）；返回退订函数 */
+    onBeforeClose: (cb: () => void): (() => void) => {
+      const handler = (): void => cb()
+      ipcRenderer.on('app:before-close', handler)
+      return () => {
+        ipcRenderer.removeListener('app:before-close', handler)
+      }
+    },
+    /** 告知主进程未落盘内容已冲刷完毕，可以关窗 */
+    flushDone: (): void => ipcRenderer.send('app:flush-done')
   },
   clipboard: {
     /** 「复制引用」：plain 干净文本 + html 带 ref 元数据（笔记粘贴时生成引用节点） */
@@ -201,6 +211,8 @@ const api = {
       invoke('outlines:setGroup', id, groupId),
     setViewMode: (id: number, mode: string): Promise<void> =>
       invoke('outlines:setViewMode', id, mode),
+    /** 只改标题（列表页改名走这口，不带 tree，避免覆盖正在编辑的正文） */
+    rename: (id: number, title: string): Promise<void> => invoke('outlines:rename', id, title),
     /** 自动保存（编辑器防抖整树落库）；title 传了顺带改名 */
     save: (id: number, tree: string, title?: string): Promise<void> =>
       invoke('outlines:save', id, tree, title),
@@ -238,11 +250,21 @@ const api = {
   },
   noteGroups: {
     list: (): Promise<NoteGroupRow[]> => invoke('noteGroups:list'),
-    create: (name: string): Promise<NoteGroupRow> => invoke('noteGroups:create', name),
+    /** 新建分类文件夹；parentId 非空时建在该文件夹内（Finder 式嵌套） */
+    create: (name: string, parentId?: number | null): Promise<NoteGroupRow> =>
+      invoke('noteGroups:create', name, parentId ?? null),
     rename: (id: number, name: string): Promise<void> => invoke('noteGroups:rename', id, name),
     reorder: (ids: number[]): Promise<void> => invoke('noteGroups:reorder', ids),
-    /** 删除分类：其中笔记归「未分类」 */
+    /** 换归属（拖拽移动）：parentId=null 表示移到根层 */
+    move: (id: number, parentId: number | null): Promise<void> =>
+      invoke('noteGroups:move', id, parentId),
+    /** 删除分类：其子文件夹提升到当前层，直属笔记归「未分类」 */
     remove: (id: number): Promise<void> => invoke('noteGroups:remove', id)
+  },
+  /** 通用键值偏好（settings 表）：目前用于记住每篇文档的阅读缩放 */
+  settings: {
+    get: (key: string): Promise<string | null> => invoke('settings:get', key),
+    set: (key: string, value: string): Promise<void> => invoke('settings:set', key, value)
   },
   attachments: {
     /** 贴图保存：base64（无 data: 前缀）+ 扩展名 → attachments 相对文件名 */

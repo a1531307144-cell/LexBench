@@ -227,14 +227,18 @@ export interface OutlineListRow {
   title: string
   group_id: number | null
   updated_at: string
+  /** 搜索命中正文时的上下文摘录（仅带 keyword 查询时返回；命中标题则为 null） */
+  snippet?: string | null
 }
 
-/** 笔记自定义分类（note_groups；删除后笔记归未分类） */
+/** 笔记自定义分类（note_groups；表删后笔记归未分类；支持嵌套：parent_id=NULL 为根层） */
 export interface NoteGroupRow {
   id: number
   name: string
   sort_order: number
-  /** 该分类下笔记数（列表查询带出） */
+  /** 父文件夹 id（NULL=根层）；删除父夹时子夹提升到该夹所在层 */
+  parent_id: number | null
+  /** 该分类下笔记数（列表查询带出，只算直属笔记） */
   note_count: number
 }
 
