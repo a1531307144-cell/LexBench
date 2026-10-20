@@ -131,7 +131,7 @@ await injectHelpers()
 console.log('=== 2. 编辑器键位（Enter/Tab/Shift+Tab/Backspace）===')
 await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
 await sleep(400)
-await evalJs(`document.querySelector('.np-new')?.click()`)
+await evalJs(`document.querySelector('.np-nav-acts .np-icon-btn[title^="新建笔记"]')?.click()`)
 const editorUp = await until(`() => !!document.querySelector('.ol-text')`)
 if (!editorUp) {
   console.log('FAIL: 编辑器未出现')
@@ -368,6 +368,44 @@ if (inReading) {
   starDbOk = await evalJs(`window.lexbench.outlines.listStarred().then(r => r.length >= 1)`)
 }
 
+// ---------- 阅读缩放（触控板捏合）+ 缩放后目录跳转 ----------
+console.log('=== 8b. 阅读缩放与缩放后跳转 ===')
+let zoomOk = false
+let zoomJumpOk = false
+if (inReading) {
+  // 捏合 = ctrl+wheel（往放大方向）
+  await evalJs(`(() => {
+    const sc = document.querySelector('.sv-scroll')
+    if (!sc) return false
+    sc.dispatchEvent(new WheelEvent('wheel', { deltaY: -240, ctrlKey: true, bubbles: true, cancelable: true }))
+    return true
+  })()`)
+  await sleep(500)
+  const zoomNow = await evalJs(`parseFloat(document.querySelector('.sv-col')?.style.zoom || '1')`)
+  zoomOk = typeof zoomNow === 'number' && zoomNow > 1.05
+  // 缩放≠1 时目录跳转仍要落到目标条文（offsetTop 与 scrollTop 单位混用会按比例偏）
+  // 有的文档没有编/章标题就没有目录面板：此时跳过（恢复位置的同类跳转由第 9 步在缩放态下覆盖）
+  const tocOrder = await evalJs(`(() => {
+    const items = [...document.querySelectorAll('.sv-toc-item')]
+    const mid = items[Math.floor(items.length / 2)]
+    if (!mid) return null
+    mid.click()
+    return Number(mid.dataset.order)
+  })()`)
+  if (typeof tocOrder === 'number') {
+    zoomJumpOk = await until(`() => {
+      const sc = document.querySelector('.sv-scroll')
+      const el = sc?.querySelector('.sv-article[data-order="${tocOrder}"]')
+      if (!sc || !el) return false
+      const dy = el.getBoundingClientRect().top - sc.getBoundingClientRect().top
+      return dy >= 0 && dy <= 170
+    }`, 16)
+  } else {
+    zoomJumpOk = true
+    console.log('（本文档无目录项，缩放后跳转断言跳过）')
+  }
+}
+
 // ---------- 续读契约 ----------
 console.log('=== 9. 续读契约（静默重开 + 位置恢复）===')
 const scrolledOrder = await evalJs(`(() => {
@@ -403,6 +441,13 @@ if (resumeOk && typeof scrolledOrder === 'number' && scrolledOrder > 0) {
   silentOk = await evalJs(`![...document.querySelectorAll('*')].some(el => el.children.length === 0 && el.textContent?.includes('已回到上次阅读位置'))`)
 }
 
+// 缩放记忆：重开同一法条应回到上次比例（随后复位，不影响后续用例）
+const zoomPersistOk = resumeOk
+  ? (await evalJs(`parseFloat(document.querySelector('.sv-col')?.style.zoom || '1')`)) > 1.05
+  : false
+await evalJs(`document.querySelector('.sv-zoom-reset')?.click()`)
+await sleep(500)
+
 // ---------- 导出 ----------
 console.log('=== 10. 导出 md ===')
 let exportOk = false
@@ -411,7 +456,7 @@ let exportOk = false
   await until(`() => !!document.querySelector('.rail')`)
   await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
   await sleep(400)
-  await evalJs(`[...document.querySelectorAll('.np-item')].find(b => b.textContent.includes('自测笔记'))?.click()`)
+  await evalJs(`[...document.querySelectorAll('.np-card')].find(b => b.textContent.includes('自测笔记'))?.click()`)
   await until(`() => !!document.querySelector('.ol-title')`)
   exportOk = await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -428,6 +473,8 @@ let exportOk = false
 console.log('=== 11. 分类 / 贴图 / 导图编辑 ===')
 let catOk = false
 let catFilterOk = false
+let nestedOk = false
+let bodySearchOk = false
 let imgOk = false
 let imgDbOk = false
 let mapOk = false
@@ -437,10 +484,10 @@ let mapModeOk = false
 {
   await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
   await sleep(400)
-  await evalJs(`(() => { const b = document.querySelector('.gr-new'); if (b) { b.click(); return true } return false })()`)
+  await evalJs(`(() => { const b = document.querySelector('.np-nav-acts .np-icon-btn[title="新建文件夹"]'); if (b) { b.click(); return true } return false })()`)
   await sleep(300)
   await evalJs(`(() => {
-    const inp = document.querySelector('.gr-input')
+    const inp = document.querySelector('.np-card-input')
     if (!inp) return 'no-input'
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
     setter.call(inp, '自测分类')
@@ -448,12 +495,45 @@ let mapModeOk = false
     inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     return 'ok'
   })()`)
-  catOk = await until(() => [...document.querySelectorAll('.gr')].some((g) => g.textContent.includes('自测分类')))
-  await evalJs(`(() => { const g = [...document.querySelectorAll('.gr')].find((x) => x.textContent.includes('自测分类')); g?.click(); return !!g })()`)
+  catOk = await until(() => [...document.querySelectorAll('.np-card')].some((g) => g.textContent.includes('自测分类')))
+  await evalJs(`(() => { const g = [...document.querySelectorAll('.np-card')].find((x) => x.textContent.includes('自测分类')); g?.click(); return !!g })()`)
   await sleep(300)
-  await evalJs(`document.querySelector('.np-new')?.click()`)
+  await evalJs(`document.querySelector('.np-nav-acts .np-icon-btn[title^="新建笔记"]')?.click()`)
   await until(() => !!document.querySelector('.ol-title'))
   catFilterOk = await evalJs(`window.lexbench.outlines.list().then((l) => l.some((n) => n.group_id !== null))`)
+
+  // 嵌套文件夹：在「自测分类」内新建子文件夹，parent_id 应指向当前层
+  await evalJs(`document.querySelector('.np-nav-acts .np-icon-btn[title="新建文件夹"]')?.click()`)
+  await sleep(300)
+  await evalJs(`(() => {
+    const inp = document.querySelector('.np-card-input')
+    if (!inp) return false
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    setter.call(inp, '自测子分类')
+    inp.dispatchEvent(new Event('input', { bubbles: true }))
+    inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    return true
+  })()`)
+  nestedOk = await until(`() => window.lexbench.noteGroups.list().then((gs) => {
+    const p = gs.find((g) => g.name === '自测分类')
+    const c = gs.find((g) => g.name === '自测子分类')
+    return !!p && !!c && c.parent_id === p.id
+  })`)
+
+  // 正文搜索：标题不含关键词，命中来自正文并回带摘录
+  await evalJs(`window.__ltSet(0, '正文命中关键词：独角兽')`)
+  await sleep(900)
+  await evalJs(`(() => {
+    const inp = document.querySelector('.np-search-input')
+    if (!inp) return false
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    setter.call(inp, '独角兽')
+    inp.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })()`)
+  bodySearchOk = await until(`() => [...document.querySelectorAll('.np-item')].some((x) => x.querySelector('.np-item-snippet')?.textContent.includes('独角兽'))`, 16)
+  await evalJs(`document.querySelector('.np-search-clear')?.click()`)
+  await sleep(300)
 
   await evalJs(`window.__ltSet(0, '贴图载体行')`)
   await sleep(300)
@@ -569,7 +649,7 @@ let mapEditImageOk = false
   await injectHelpers()
   await evalJs(`[...document.querySelectorAll('.rail-item')].find(b => b.textContent.includes('笔记'))?.click()`)
   await sleep(400)
-  await evalJs(`[...document.querySelectorAll('.np-item')].find(b => b.textContent.includes('拖动自测'))?.click()`)
+  await evalJs(`[...document.querySelectorAll('.np-card')].find(b => b.textContent.includes('拖动自测'))?.click()`)
   await until(() => document.querySelectorAll('jmnode').length >= 4)
   await sleep(800)
   // 空白画布弹性 + 平移（小图也要有四个方向的可拖动空间）
@@ -868,8 +948,13 @@ const checks = [
   ['笔记往返后静默重开阅读', resumeOk],
   ['恢复位置（容差±3条）', posOk],
   ['静默恢复（无横幅）', silentOk],
+  ['阅读缩放：捏合生效', zoomOk],
+  ['阅读缩放后目录跳转不偏移', zoomJumpOk],
+  ['阅读缩放：重开记住比例', zoomPersistOk],
   ['导出 md（自测通道）', exportOk],
   ['分类：面板新建 + 落分类', catOk && catFilterOk],
+  ['分类：嵌套子文件夹落父级', nestedOk],
+  ['搜索：正文命中带摘录', bodySearchOk],
   ['贴图：粘贴渲染 + 落库', imgOk && imgDbOk],
   ['导图：⇄ 渲染节点', mapOk],
   ['导图：编辑回写大纲', mapEditOk],
