@@ -6,7 +6,7 @@ import { app } from 'electron'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSetting, setSetting } from './db'
-import { importFiles, markSeedApplied } from './library'
+import { importFiles, markFirstRunThisLaunch, markSeedApplied } from './library'
 
 /** 预置数据版本号：将来更新种子包时递增（旧用户不会重复导入） */
 const SEED_VERSION = '1'
@@ -46,6 +46,8 @@ function readSeedOrder(dir: string): string[] {
 export async function applySeedIfNeeded(): Promise<number> {
   try {
     if (getSetting('seed_version')) return 0 // 已预置过
+    // 没有 seed_version = 这台机器第一次启动应用（全新安装）；使用指引据此只弹一次
+    markFirstRunThisLaunch()
     const dir = seedDir()
     if (!existsSync(dir)) {
       console.warn('预置法条目录不存在，跳过：', dir)

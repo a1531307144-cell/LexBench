@@ -34,6 +34,8 @@ nsis:
   deleteAppDataOnUninstall: false
   createDesktopShortcut: always
   createStartMenuShortcut: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
 
 # 自动更新源：GitHub Releases（electron-updater 读取 latest.yml）
 publish:

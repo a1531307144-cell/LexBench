@@ -19,6 +19,8 @@ const props = defineProps<{
   focusOrder?: number
   /** 续读契约的静默重开（恢复位置但不弹「已回到上次位置」提示） */
   silentRestore?: boolean
+  /** 使用指引演示态：只展示，不写阅读进度 */
+  guide?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -369,12 +371,16 @@ function scrollTo(
   const target = anchorFor(order, level)
   if (!el || !target) return
   // 正文容器带 CSS zoom：offsetTop 是未缩放单位，scrollTop/rect 是缩放后单位，混用会在
-  // 缩放≠100% 时按比例落错位置——用矩形差 + scrollTop 换算成内容坐标
-  const contentTop =
-    target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+  // 缩放≠100% 时按比例落错位置。100% 时直接用 offsetTop——它不受入场动画 translateY 影响
+  // （rect 差会被动画临时偏移 8px，目录刚打开就点会落偏）；缩放时才用矩形差换算内容坐标。
+  const zoomed = pageZoom.value !== 1
+  const contentTop = zoomed
+    ? target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+    : target.offsetTop
+  const targetHeight = zoomed ? target.getBoundingClientRect().height : target.offsetHeight
   const top =
     mode === 'center'
-      ? contentTop - el.clientHeight / 2 + target.getBoundingClientRect().height / 2
+      ? contentTop - el.clientHeight / 2 + targetHeight / 2
       : contentTop - RESTORE_PAD
   // 平滑滚动只在「看得见」时有意义：隐藏窗口合成器不跑会悬在半路，
   // 减弱动效偏好下也不该有动画——两者都降级为瞬时定位
@@ -679,6 +685,7 @@ function onScroll(): void {
 
 /** 找视口顶部可见的 [data-order] 存为进度 */
 async function saveProgressNow(): Promise<void> {
+  if (props.guide) return
   const order = topVisibleOrder()
   if (order === null || order === lastSaved) return
   lastSaved = order
@@ -746,7 +753,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="sv">
     <!-- 顶栏 -->
-    <header class="sv-top">
+    <header class="sv-top" data-guide="reading-head">
       <button class="sv-back" @click="emit('back')">← 返回</button>
       <div class="sv-title-wrap">
         <h1 class="sv-title" :title="doc.title">{{ doc.title }}</h1>

@@ -416,6 +416,13 @@ export async function importFiles(
 /** 本次启动是否刚预置了法条（渲染层显示一次性提示用） */
 let seedAppliedThisRun = false
 let seedImportedCount = 0
+/** 本次启动是否为全新安装（settings 无 seed_version）；使用指引只在首启弹 */
+let firstRunThisLaunch = false
+
+/** 由 seed.ts 在判定为首次启动时调用，供 library:getSeedInfo 回报 */
+export function markFirstRunThisLaunch(): void {
+  firstRunThisLaunch = true
+}
 
 /** 由 seed.ts 在预置完成后调用，供 library:getSeedInfo 回报 */
 export function markSeedApplied(count: number): void {
@@ -533,10 +540,20 @@ export function registerLibraryIpc(): void {
     }
   )
 
-  // 首次启动预置法条的结果查询（渲染层用于展示一次性提示）
-  ipcMain.handle('library:getSeedInfo', (): { justApplied: boolean; count: number } => {
-    return { justApplied: seedAppliedThisRun, count: seedImportedCount }
-  })
+  // 首次启动预置法条的结果查询（渲染层用于一次性提示 + 判断是否全新安装）
+  ipcMain.handle(
+    'library:getSeedInfo',
+    (): { justApplied: boolean; count: number; firstRun: boolean } => {
+      return {
+        justApplied: seedAppliedThisRun,
+        count: seedImportedCount,
+        // 开发自测逃生门：只影响未打包的 dev，不改变真实首启判定
+        firstRun:
+          firstRunThisLaunch ||
+          (!app.isPackaged && process.env.LEXBENCH_FORCE_ONBOARDING === '1')
+      }
+    }
+  )
 
   // 把文档归入 / 移出分类文件夹（category 冗余副本同步）
   ipcMain.handle('library:setDocumentGroup', (_e, documentId: number, groupId: number | null): void => {

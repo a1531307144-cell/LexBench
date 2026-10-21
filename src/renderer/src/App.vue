@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AboutDialog from './components/AboutDialog.vue'
 import AiSettingsDialog from './components/AiSettingsDialog.vue'
 import BackupDialog from './components/BackupDialog.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DocLibrary from './components/DocLibrary.vue'
+import GuideOverlay from './components/GuideOverlay.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import NotesPanel from './components/NotesPanel.vue'
 import OutlineEditor from './components/OutlineEditor.vue'
@@ -12,6 +13,8 @@ import ReadingView from './components/ReadingView.vue'
 import ResultList from './components/ResultList.vue'
 import StatuteReadingView from './components/StatuteReadingView.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
+import { GUIDE_KEY, buildGuideSteps } from './guide/guideSteps'
+import { newOutlineId } from '@shared/outlineTree'
 import { TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
 import type {
   DocGroupRow,
@@ -19,6 +22,7 @@ import type {
   DocumentRow,
   NoteGroupRow,
   OutlineListRow,
+  OutlineNode,
   OutlineRow,
   SearchHit,
   SearchMode,
@@ -32,8 +36,14 @@ import type {
  * silentRestore = 续读契约的静默重开（恢复位置但不弹「已回到上次位置」提示）。
  */
 type ReaderState =
-  | { type: 'book'; data: DocumentDetail; focusPara?: number; silentRestore?: boolean }
-  | { type: 'statute-full'; data: DocumentDetail; focusOrder?: number; silentRestore?: boolean }
+  | { type: 'book'; data: DocumentDetail; focusPara?: number; silentRestore?: boolean; guide?: boolean }
+  | {
+      type: 'statute-full'
+      data: DocumentDetail
+      focusOrder?: number
+      silentRestore?: boolean
+      guide?: boolean
+    }
   | null
 
 /** 交给 ImportDialog 的待导入文件（路径经 webUtils 解析，仅用于交回主进程读取） */
@@ -127,6 +137,28 @@ let panelCloseTimer: ReturnType<typeof setTimeout> | undefined
  */
 const lastPointer = { x: -1, y: -1 }
 
+// ---------- 使用指引（首启一次性 + 关于页回放） ----------
+
+type GuideMode = 'closed' | 'welcome' | 'tour'
+interface GuideSnapshot {
+  tab: 'library' | 'notes'
+  panelTab: 'library' | 'notes'
+  panelOpen: boolean
+  railHidden: boolean
+  reader: ReaderState
+  activeOutline: OutlineRow | null
+}
+
+const GUIDE_SAMPLE_TITLE = '使用指引示例'
+const guideMode = ref<GuideMode>('closed')
+const guideIndex = ref(0)
+const guideSeedCount = ref(0)
+const guideSampleId = ref<number | null>(null)
+const guideClosing = ref(false)
+let guideSnapshot: GuideSnapshot | null = null
+/** 指引期间抑制竖排面板自动收起、tab 切换副作用等，避免说明卡一出现界面就变 */
+const guideActive = computed(() => guideMode.value !== 'closed')
+
 function trackPointer(e: MouseEvent): void {
   lastPointer.x = e.clientX
   lastPointer.y = e.clientY
@@ -153,6 +185,7 @@ function pointerInHotZone(): boolean {
 
 /** 收面板统一入口：150ms 后复核指针真的离开了热区才收（否则按钮换输入框的假 leave 会把面板误收、输入框连带销毁） */
 function schedulePanelClose(): void {
+  if (guideActive.value) return
   clearTimeout(panelCloseTimer)
   panelCloseTimer = setTimeout(() => {
     // 指针已出窗时 mousemove 停止派发、lastPointer 冻结在热区内，几何判据会误判「还在里面」：
@@ -165,6 +198,7 @@ function schedulePanelClose(): void {
 
 /** 指针直接移出窗口（不经过内容区）时 mouseleave 链只有一次复核，补一条出窗即收的兜底 */
 function onDocumentLeave(): void {
+  if (guideActive.value) return
   clearTimeout(panelCloseTimer)
   panelOpen.value = false
 }
@@ -199,6 +233,7 @@ function pickNav(which: 'library' | 'notes'): void {
 /** 点内容区空白处收起面板（补悬停机制之外的兜底）；命中目标可能被瞬时重排（按钮换输入框）重定向到正文，
  * 此时以指针真实位置为准：仍在热区就不收。 */
 function onBodyClick(): void {
+  if (guideActive.value) return
   if (pointerInHotZone()) return
   panelOpen.value = false
 }
@@ -346,6 +381,265 @@ async function createNote(groupId?: number | null): Promise<void> {
   }
 }
 
+// ---------- 使用指引：九步编排 ----------
+
+const guideHasSample = computed(() =>
+  notes.value.some((n) => n.id === guideSampleId.value || n.title === GUIDE_SAMPLE_TITLE)
+)
+const guideSteps = computed(() =>
+  buildGuideSteps({
+    hasSampleNote: guideHasSample.value,
+    hasStatute: documents.value.some((d) => d.doc_type === 'statute')
+  })
+)
+
+/** 示例笔记：给大纲/导图两步一个真实可操作的载体；结束后保留，用户可自行删改 */
+function guideSampleTree(): OutlineNode[] {
+  return [
+    {
+      id: newOutlineId(),
+      text: '把一次研究拆成几个问题',
+      children: [
+        { id: newOutlineId(), text: '争议焦点一：合同效力如何认定？', children: [] },
+        { id: newOutlineId(), text: '争议焦点二：违约责任如何承担？', children: [] }
+      ]
+    },
+    { id: newOutlineId(), text: '行首输入 / 可插入文档库里的法条引用', children: [] },
+    { id: newOutlineId(), text: '右上角切换到「导图」，同一份内容换个看法', children: [] }
+  ]
+}
+
+/** 应用启动、数据就绪后判断：只有全新安装且从没看过指引才自动弹欢迎卡 */
+async function initOnboarding(): Promise<void> {
+  let info: { justApplied: boolean; count: number; firstRun: boolean }
+  try {
+    info = await window.lexbench.library.getSeedInfo()
+  } catch {
+    return
+  }
+  const notice = (): void => {
+    if (info.justApplied && info.count > 0) {
+      setNotice(`已为你预置 ${info.count} 部常用法律与司法解释，直接检索即可使用`, 'success')
+    }
+  }
+  // 更新场景（已有 seed_version）不弹首启指引；后续更新另行告知
+  if (!info.firstRun) {
+    notice()
+    return
+  }
+  let seen = ''
+  try {
+    seen = (await window.lexbench.settings.get(GUIDE_KEY)) ?? ''
+  } catch {
+    seen = ''
+  }
+  if (seen) {
+    notice()
+    return
+  }
+  guideSeedCount.value = info.count
+  // 等首屏布局稳定再弹，避免引导卡位置先闪一下
+  await new Promise((r) => setTimeout(r, 320))
+  guideMode.value = 'welcome'
+}
+
+function snapshotGuideState(): void {
+  guideSnapshot = {
+    tab: tab.value,
+    panelTab: panelTab.value,
+    panelOpen: panelOpen.value,
+    railHidden: railHidden.value,
+    reader: reader.value,
+    activeOutline: activeOutline.value
+  }
+}
+
+async function startGuide(): Promise<void> {
+  if (guideMode.value !== 'welcome') return
+  snapshotGuideState()
+  guideIndex.value = 0
+  guideMode.value = 'tour'
+  try {
+    await prepareGuideStep(0)
+  } catch (e) {
+    showError(e)
+  }
+}
+
+function startGuideReplay(): void {
+  if (guideActive.value) return
+  snapshotGuideState()
+  guideIndex.value = 0
+  guideMode.value = 'tour'
+  void prepareGuideStep(0).catch((e) => showError(e))
+}
+
+function onAboutGuide(): void {
+  showAbout.value = false
+  startGuideReplay()
+}
+
+async function guideNext(): Promise<void> {
+  if (guideClosing.value || guideMode.value !== 'tour') return
+  if (guideIndex.value >= guideSteps.value.length - 1) {
+    await finishGuide('done')
+    return
+  }
+  guideIndex.value += 1
+  try {
+    await prepareGuideStep(guideIndex.value)
+  } catch (e) {
+    showError(e)
+  }
+}
+
+function guidePrev(): void {
+  if (guideClosing.value || guideMode.value !== 'tour' || guideIndex.value === 0) return
+  guideIndex.value -= 1
+  void prepareGuideStep(guideIndex.value).catch((e) => showError(e))
+}
+
+async function guideCta(): Promise<void> {
+  if (guideClosing.value || guideMode.value !== 'tour') return
+  const step = guideSteps.value[guideIndex.value]
+  if (!step) return
+  if (step.id === 'notes') {
+    try {
+      await ensureGuideNote('outline')
+    } catch (e) {
+      showError(e)
+      return
+    }
+  }
+  await guideNext()
+}
+
+/** 按步骤把界面摆到位：切方向、开阅读、准备示例笔记；说明卡自己会等目标渲染 */
+async function prepareGuideStep(index: number): Promise<void> {
+  const step = guideSteps.value[index]
+  if (!step) return
+  if (step.id === 'library') {
+    reader.value = null
+    railHidden.value = false
+    tab.value = 'library'
+    panelTab.value = 'library'
+    panelOpen.value = true
+  } else if (step.id === 'search') {
+    reader.value = null
+    railHidden.value = false
+    tab.value = 'library'
+    panelTab.value = 'library'
+    panelOpen.value = false
+  } else if (step.id === 'reading') {
+    await openGuideReading()
+  } else if (step.id === 'notes') {
+    reader.value = null
+    railHidden.value = false
+    tab.value = 'notes'
+    panelTab.value = 'notes'
+    panelOpen.value = true
+    activeOutline.value = null
+  } else if (step.id === 'editor') {
+    await ensureGuideNote('outline')
+  } else if (step.id === 'map') {
+    await ensureGuideNote('map')
+  }
+  await nextTick()
+}
+
+/** 阅读演示：打开第一部预置法规，guide 标记让它不写续读进度 */
+async function openGuideReading(): Promise<void> {
+  const doc = documents.value.find((d) => d.doc_type === 'statute')
+  if (!doc) {
+    tab.value = 'library'
+    return
+  }
+  try {
+    const data = await window.lexbench.library.getDocument(doc.id)
+    reader.value = {
+      type: 'statute-full',
+      data,
+      focusOrder: 0,
+      silentRestore: true,
+      guide: true
+    }
+    railHidden.value = false
+    tab.value = 'library'
+    panelOpen.value = false
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** 找（或创建）示例笔记，并按当前步骤切大纲/导图 */
+async function ensureGuideNote(view: 'outline' | 'map'): Promise<void> {
+  let note = notes.value.find((n) => n.id === guideSampleId.value) ?? null
+  if (!note) note = notes.value.find((n) => n.title === GUIDE_SAMPLE_TITLE) ?? null
+  if (!note) {
+    const row = await window.lexbench.outlines.create(GUIDE_SAMPLE_TITLE, null)
+    await window.lexbench.outlines.save(row.id, JSON.stringify(guideSampleTree()))
+    guideSampleId.value = row.id
+    await refreshNotes()
+    note = notes.value.find((n) => n.id === row.id) ?? null
+  } else {
+    guideSampleId.value = note.id
+  }
+  if (!note) return
+  try {
+    await window.lexbench.outlines.setViewMode(note.id, view)
+  } catch {
+    // 视图模式写失败不影响演示，按当前模式打开即可
+  }
+  const fresh = await window.lexbench.outlines.get(note.id)
+  reader.value = null
+  railHidden.value = false
+  tab.value = 'notes'
+  panelTab.value = 'notes'
+  panelOpen.value = false
+  activeOutline.value = fresh
+  outlineRev.value += 1
+}
+
+/** 结束（完成/跳过）：先记状态，再恢复进入指引前的现场 */
+async function finishGuide(mark: 'done' | 'skipped'): Promise<void> {
+  if (guideClosing.value) return
+  guideClosing.value = true
+  try {
+    try {
+      await window.lexbench.settings.set(GUIDE_KEY, mark)
+    } catch {
+      // 记忆失败不阻断关闭
+    }
+    await restoreGuideState()
+  } finally {
+    guideMode.value = 'closed'
+    guideIndex.value = 0
+    guideClosing.value = false
+  }
+}
+
+async function restoreGuideState(): Promise<void> {
+  const snap = guideSnapshot
+  guideSnapshot = null
+  if (!snap) return
+  reader.value = snap.reader
+  tab.value = snap.tab
+  panelTab.value = snap.panelTab
+  panelOpen.value = snap.panelOpen
+  railHidden.value = snap.railHidden
+  if (snap.activeOutline) {
+    try {
+      // 重新取快照：卸载冲刷后旧对象可能落后（见笔记编辑器的落盘契约）
+      activeOutline.value = await window.lexbench.outlines.get(snap.activeOutline.id)
+      outlineRev.value += 1
+    } catch {
+      activeOutline.value = null
+    }
+  } else {
+    activeOutline.value = null
+  }
+}
+
 /** 星标法条入口：直达全页阅读并跳到该条 */
 async function openStarredArticle(payload: { documentId: number; orderIndex: number }): Promise<void> {
   await openStatuteFull(payload.documentId, { focusOrder: payload.orderIndex })
@@ -403,6 +697,8 @@ async function onNotesPanelChanged(): Promise<void> {
 // node:sqlite 同步按序处理，get 一定读到 flush 之后的状态（不依赖卸载 emit，那条链不可靠）。
 // 切回文档库方向时：续读契约——离开时在读（resumeDoc 有值）则静默重开该文档恢复位置。
 watch(tab, async (t) => {
+  // 指引自己编排视图：不要让切 tab 触发续读/重取快照，结束后统一恢复现场
+  if (guideActive.value) return
   // 阅读中经竖排切方向：关阅读（卸载冲刷进度 + 记 resumeDoc，回库方向时静默重开）
   if (reader.value) closeReading()
   if (t === 'library') {
@@ -774,24 +1070,13 @@ onMounted(() => {
       window.lexbench.app.flushDone()
     })()
   })
-  void refreshDocs()
-  void refreshGroups()
-  // 笔记两列表首载（此前漏了——首开列表空，直到创建/改名才碰巧刷新）
-  void refreshNotes()
-  void refreshNoteGroups()
+  // 首屏数据与首启指引都等列表就绪后再决定（预置法条的一次性提示也在 initOnboarding 里）
+  const boot = Promise.allSettled([refreshDocs(), refreshGroups(), refreshNotes(), refreshNoteGroups()])
+  void boot.then(() => void initOnboarding())
   void window.lexbench.app
     .getVersion()
     .then((v) => {
       version.value = v
-    })
-    .catch(() => {})
-  // 首次启动预置了随包法条 → 提示一次，便于新用户直接上手检索
-  void window.lexbench.library
-    .getSeedInfo()
-    .then((info) => {
-      if (info.justApplied && info.count > 0) {
-        setNotice(`已为你预置 ${info.count} 部常用法律与司法解释，直接检索即可使用`, 'success')
-      }
     })
     .catch(() => {})
 })
@@ -824,7 +1109,7 @@ onBeforeUnmount(() => {
         <span class="brand-en">LexBench<span v-if="version" class="brand-ver">v{{ version }}</span></span>
       </div>
       <div class="search-area">
-        <div class="search-group">
+        <div class="search-group" data-guide="top-search">
           <div class="mode-menu">
             <button class="mode-trigger" title="检索模式" @click="modeMenuOpen = !modeMenuOpen">
               <span>{{ modeNames[modeSel] }}</span>
@@ -898,9 +1183,10 @@ onBeforeUnmount(() => {
           </Transition>
         </div>
       </div>
-      <button class="top-btn" @click="showImport = true">导入文档</button>
+      <button class="top-btn" data-guide="top-import" @click="showImport = true">导入文档</button>
       <button
         class="top-btn"
+        data-guide="top-ai"
         :class="{ on: aiWinOpen }"
         title="通用法律问答助手（独立窗口）：随便问，不用出软件去别处查"
         @click="toggleAiWindow"
@@ -910,7 +1196,12 @@ onBeforeUnmount(() => {
       <button class="top-btn" title="配置 AI 模型档案（接口地址 / 模型 / 密钥）" @click="showAiSettings = true">
         AI 设置
       </button>
-      <button class="top-btn" title="导出/导入数据包（换电脑与备份）" @click="showBackup = true">
+      <button
+        class="top-btn"
+        data-guide="top-data"
+        title="导出/导入数据包（换电脑与备份）"
+        @click="showBackup = true"
+      >
         数据
       </button>
       <button class="top-btn" title="版本信息与检查更新" @click="showAbout = true">关于</button>
@@ -949,6 +1240,7 @@ onBeforeUnmount(() => {
       <nav class="rail" aria-label="主导航" @mouseleave="railLeave">
         <button
           class="rail-item"
+          data-guide="rail-library"
           :class="{ active: tab === 'library' }"
           title="文档库"
           @mouseenter="railEnter('library')"
@@ -964,6 +1256,7 @@ onBeforeUnmount(() => {
         </button>
         <button
           class="rail-item"
+          data-guide="rail-notes"
           :class="{ active: tab === 'notes' }"
           title="笔记"
           @mouseenter="railEnter('notes')"
@@ -981,6 +1274,7 @@ onBeforeUnmount(() => {
       <!-- 悬停浮层面板：覆盖式滑入（配方时长 0.18s/缓动同 menu-pop），DOM 常驻控显隐 -->
       <aside
         class="rail-panel"
+        data-guide="notes-panel"
         :class="{ open: panelOpen, wide: panelTab === 'notes' }"
         @mouseenter="panelEnter"
         @mouseleave="panelLeave"
@@ -1019,6 +1313,7 @@ onBeforeUnmount(() => {
           :doc="reader.data"
           :focus-para="reader.focusPara"
           :silent-restore="reader.silentRestore"
+          :guide="!!reader.guide"
           @back="closeReading"
           @error="showError"
           @notice="onReadingNotice"
@@ -1033,6 +1328,7 @@ onBeforeUnmount(() => {
           :doc="reader.data"
           :focus-order="reader.focusOrder"
           :silent-restore="reader.silentRestore"
+          :guide="!!reader.guide"
           @back="closeReading"
           @error="showError"
           @notice="setNotice"
@@ -1086,7 +1382,20 @@ onBeforeUnmount(() => {
       @notice="setNotice"
     />
 
-    <AboutDialog v-model:visible="showAbout" @error="showError" />
+    <AboutDialog v-model:visible="showAbout" @error="showError" @guide="onAboutGuide" />
+
+    <GuideOverlay
+      :mode="guideMode"
+      :steps="guideSteps"
+      :index="guideIndex"
+      :seeded-count="guideSeedCount"
+      @start="startGuide"
+      @skip="finishGuide('skipped')"
+      @next="guideNext"
+      @prev="guidePrev"
+      @cta="guideCta"
+      @finish="finishGuide('done')"
+    />
 
     <ConfirmModal
       :visible="pendingDelete !== null"

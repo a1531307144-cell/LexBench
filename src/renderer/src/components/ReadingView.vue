@@ -16,6 +16,8 @@ const props = defineProps<{
   focusPara?: number
   /** 续读契约的静默重开（恢复位置但不弹「已回到上次位置」提示） */
   silentRestore?: boolean
+  /** 使用指引演示态：只展示，不写阅读进度 */
+  guide?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -378,6 +380,7 @@ function onScroll(): void {
 
 /** 找视口顶部可见段落的 data-para 存为进度（文字模式） */
 async function saveProgressNow(): Promise<void> {
+  if (props.guide) return
   const el = scrollEl.value
   if (!el) return
   const box = el.getBoundingClientRect()

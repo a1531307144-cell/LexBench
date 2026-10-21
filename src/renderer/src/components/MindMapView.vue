@@ -17,6 +17,8 @@ const props = defineProps<{
   title: string
   /** 缩放记忆键（settings 表）；空串则不记忆 */
   zoomKey?: string
+  /** 所属笔记 id：配色与结构按笔记记住（settings 表） */
+  noteId?: string | number
 }>()
 const emit = defineEmits<{
   (e: 'change', tree: OutlineNode[]): void
@@ -41,6 +43,253 @@ let centerTimer: ReturnType<typeof setTimeout> | undefined
 let initialFitDone = false
 
 const VIRTUAL_ROOT_ID = '_lb_root_'
+
+// ---------- 外观：结构 / 配色 ----------
+
+type MapStructure = 'balanced' | 'alternate' | 'right' | 'left'
+
+const STRUCTURES: { id: MapStructure; label: string }[] = [
+  { id: 'balanced', label: '平衡分侧' },
+  { id: 'alternate', label: '左右交替' },
+  { id: 'right', label: '单向右展' },
+  { id: 'left', label: '单向左展' }
+]
+
+interface MapTheme {
+  /** 内部标识，不出现在界面上 */
+  id: string
+  dark: boolean
+  canvas: string
+  node: string
+  rootBg: string
+  text: string
+  border: string
+  line: string
+  accent: string
+  accentSoft: string
+  accentLine: string
+  rootBorder: string
+  muted: string
+  nodeShadow: string
+  hoverShadow: string
+  selectShadow: string
+  dropBg: string
+  editorBg: string
+}
+
+/** 配色：浅色六套、深色三套；界面只展示色样，不展示名字 */
+const MAP_THEMES: MapTheme[] = [
+  {
+    id: 'paper',
+    dark: false,
+    canvas: '#ffffff',
+    node: '#ffffff',
+    rootBg: '#ffffff',
+    text: '#1d1d1f',
+    border: '#e7ebf0',
+    line: '#b3bdc8',
+    accent: '#0071e3',
+    accentSoft: 'rgba(0, 113, 227, 0.1)',
+    accentLine: 'rgba(0, 113, 227, 0.34)',
+    rootBorder: 'rgba(0, 113, 227, 0.24)',
+    muted: '#86868b',
+    nodeShadow: 'rgba(20, 24, 38, 0.05)',
+    hoverShadow: 'rgba(0, 90, 190, 0.1)',
+    selectShadow: 'rgba(0, 90, 190, 0.14)',
+    dropBg: '#f4f9ff',
+    editorBg: '#ffffff'
+  },
+  {
+    id: 'graphite',
+    dark: false,
+    canvas: '#fbfbfc',
+    node: '#ffffff',
+    rootBg: '#ffffff',
+    text: '#1f2124',
+    border: '#e3e5e8',
+    line: '#b7bcc3',
+    accent: '#4b5563',
+    accentSoft: 'rgba(75, 85, 99, 0.1)',
+    accentLine: 'rgba(75, 85, 99, 0.32)',
+    rootBorder: 'rgba(75, 85, 99, 0.24)',
+    muted: '#8a8e94',
+    nodeShadow: 'rgba(20, 24, 38, 0.05)',
+    hoverShadow: 'rgba(30, 35, 45, 0.1)',
+    selectShadow: 'rgba(30, 35, 45, 0.14)',
+    dropBg: '#f4f5f7',
+    editorBg: '#ffffff'
+  },
+  {
+    id: 'bamboo',
+    dark: false,
+    canvas: '#fbfdfb',
+    node: '#ffffff',
+    rootBg: '#ffffff',
+    text: '#1c211e',
+    border: '#e2eae5',
+    line: '#b4c7bd',
+    accent: '#2f7d5c',
+    accentSoft: 'rgba(47, 125, 92, 0.1)',
+    accentLine: 'rgba(47, 125, 92, 0.32)',
+    rootBorder: 'rgba(47, 125, 92, 0.24)',
+    muted: '#7f8c85',
+    nodeShadow: 'rgba(20, 40, 30, 0.05)',
+    hoverShadow: 'rgba(30, 100, 70, 0.1)',
+    selectShadow: 'rgba(30, 100, 70, 0.14)',
+    dropBg: '#f2faf6',
+    editorBg: '#ffffff'
+  },
+  {
+    id: 'clay',
+    dark: false,
+    canvas: '#fffdf9',
+    node: '#fffdfb',
+    rootBg: '#fffdfb',
+    text: '#241f1b',
+    border: '#ede4da',
+    line: '#d2c3b4',
+    accent: '#a4653c',
+    accentSoft: 'rgba(164, 101, 60, 0.1)',
+    accentLine: 'rgba(164, 101, 60, 0.32)',
+    rootBorder: 'rgba(164, 101, 60, 0.24)',
+    muted: '#8b8178',
+    nodeShadow: 'rgba(50, 30, 15, 0.05)',
+    hoverShadow: 'rgba(120, 60, 20, 0.1)',
+    selectShadow: 'rgba(120, 60, 20, 0.14)',
+    dropBg: '#fdf6ee',
+    editorBg: '#fffdfb'
+  },
+  {
+    id: 'violet',
+    dark: false,
+    canvas: '#fdfcff',
+    node: '#ffffff',
+    rootBg: '#ffffff',
+    text: '#221f28',
+    border: '#e8e3f0',
+    line: '#c7c0d5',
+    accent: '#6b5a90',
+    accentSoft: 'rgba(107, 90, 144, 0.1)',
+    accentLine: 'rgba(107, 90, 144, 0.32)',
+    rootBorder: 'rgba(107, 90, 144, 0.24)',
+    muted: '#86818f',
+    nodeShadow: 'rgba(30, 20, 45, 0.05)',
+    hoverShadow: 'rgba(80, 50, 120, 0.1)',
+    selectShadow: 'rgba(80, 50, 120, 0.14)',
+    dropBg: '#f7f4fd',
+    editorBg: '#ffffff'
+  },
+  {
+    id: 'slate',
+    dark: false,
+    canvas: '#fbfdff',
+    node: '#ffffff',
+    rootBg: '#ffffff',
+    text: '#1b2226',
+    border: '#e1e9ee',
+    line: '#b4c6d1',
+    accent: '#3a6d84',
+    accentSoft: 'rgba(58, 109, 132, 0.1)',
+    accentLine: 'rgba(58, 109, 132, 0.32)',
+    rootBorder: 'rgba(58, 109, 132, 0.24)',
+    muted: '#7d8a91',
+    nodeShadow: 'rgba(10, 30, 45, 0.05)',
+    hoverShadow: 'rgba(20, 70, 90, 0.1)',
+    selectShadow: 'rgba(20, 70, 90, 0.14)',
+    dropBg: '#f2f9fd',
+    editorBg: '#ffffff'
+  },
+  {
+    id: 'night',
+    dark: true,
+    canvas: '#191c21',
+    node: '#24282f',
+    rootBg: '#2a3038',
+    text: '#e9ebee',
+    border: '#363c45',
+    line: '#4a525d',
+    accent: '#5aa2f0',
+    accentSoft: 'rgba(90, 162, 240, 0.18)',
+    accentLine: 'rgba(90, 162, 240, 0.45)',
+    rootBorder: 'rgba(90, 162, 240, 0.35)',
+    muted: '#98a1ab',
+    nodeShadow: 'rgba(0, 0, 0, 0.35)',
+    hoverShadow: 'rgba(0, 0, 0, 0.4)',
+    selectShadow: 'rgba(90, 162, 240, 0.2)',
+    dropBg: '#1f2c3d',
+    editorBg: '#1f242b'
+  },
+  {
+    id: 'jade',
+    dark: true,
+    canvas: '#141a17',
+    node: '#1e2723',
+    rootBg: '#25302b',
+    text: '#e4ece7',
+    border: '#33433b',
+    line: '#46584f',
+    accent: '#63b48f',
+    accentSoft: 'rgba(99, 180, 143, 0.18)',
+    accentLine: 'rgba(99, 180, 143, 0.45)',
+    rootBorder: 'rgba(99, 180, 143, 0.35)',
+    muted: '#93a49b',
+    nodeShadow: 'rgba(0, 0, 0, 0.35)',
+    hoverShadow: 'rgba(0, 0, 0, 0.4)',
+    selectShadow: 'rgba(99, 180, 143, 0.2)',
+    dropBg: '#1b2b23',
+    editorBg: '#1a231e'
+  },
+  {
+    id: 'amber',
+    dark: true,
+    canvas: '#1b1714',
+    node: '#27211c',
+    rootBg: '#302820',
+    text: '#f0e8df',
+    border: '#41382f',
+    line: '#54463a',
+    accent: '#d79a63',
+    accentSoft: 'rgba(215, 154, 99, 0.18)',
+    accentLine: 'rgba(215, 154, 99, 0.45)',
+    rootBorder: 'rgba(215, 154, 99, 0.35)',
+    muted: '#a99a8c',
+    nodeShadow: 'rgba(0, 0, 0, 0.35)',
+    hoverShadow: 'rgba(0, 0, 0, 0.4)',
+    selectShadow: 'rgba(215, 154, 99, 0.2)',
+    dropBg: '#30251b',
+    editorBg: '#221c17'
+  }
+]
+
+const lightThemes = MAP_THEMES.filter((t) => !t.dark)
+const darkThemes = MAP_THEMES.filter((t) => t.dark)
+
+const structure = ref<MapStructure>('balanced')
+const themeId = ref('paper')
+const currentTheme = computed(() => MAP_THEMES.find((t) => t.id === themeId.value) ?? MAP_THEMES[0]!)
+
+/** 主题变量挂在 .mm-root 上：节点/连线/画布都从这里取色 */
+const themeVars = computed<Record<string, string>>(() => {
+  const t = currentTheme.value
+  return {
+    '--mm-canvas': t.canvas,
+    '--mm-node-bg': t.node,
+    '--mm-root-bg': t.rootBg,
+    '--mm-text': t.text,
+    '--mm-border': t.border,
+    '--mm-line': t.line,
+    '--mm-accent': t.accent,
+    '--mm-accent-soft': t.accentSoft,
+    '--mm-accent-line': t.accentLine,
+    '--mm-root-border': t.rootBorder,
+    '--mm-muted': t.muted,
+    '--mm-node-shadow': t.nodeShadow,
+    '--mm-hover-shadow': t.hoverShadow,
+    '--mm-select-shadow': t.selectShadow,
+    '--mm-drop-bg': t.dropBg,
+    '--mm-editor-bg': t.editorBg
+  }
+})
 
 // ---------- 映射：OutlineNode[] ↔ jsMind node_tree ----------
 
@@ -99,8 +348,20 @@ function rootDirections(nodes: OutlineNode[]): ('left' | 'right')[] {
   return dirs
 }
 
+/** 顶层分支方向：按用户选择的结构决定（默认智能平衡） */
+function directionsFor(nodes: OutlineNode[]): ('left' | 'right')[] {
+  const n = nodes.length
+  if (n === 0) return []
+  if (structure.value === 'right') return new Array<'right'>(n).fill('right')
+  if (structure.value === 'left') return new Array<'left'>(n).fill('left')
+  if (structure.value === 'alternate') {
+    return Array.from({ length: n }, (_, i) => (i % 2 === 0 ? 'right' : 'left'))
+  }
+  return rootDirections(nodes)
+}
+
 function toJsMind(nodes: OutlineNode[]): Record<string, unknown> {
-  const dirs = rootDirections(nodes)
+  const dirs = directionsFor(nodes)
   return {
     id: VIRTUAL_ROOT_ID,
     topic: props.title || '笔记',
@@ -544,12 +805,24 @@ function lighterRootSide(): 'left' | 'right' {
   return left < right ? 'left' : 'right'
 }
 
+/** 根下新增分支落哪一侧：按当前结构决定（平衡时选较轻一侧） */
+function rootSideForNew(): 'left' | 'right' {
+  if (structure.value === 'right') return 'right'
+  if (structure.value === 'left') return 'left'
+  if (structure.value === 'alternate') {
+    const children = jm?.get_root().children ?? []
+    const last = children[children.length - 1]
+    return last?.direction === -1 ? 'right' : 'left'
+  }
+  return lighterRootSide()
+}
+
 function addChild(topic = '新主题'): void {
   if (!jm) return
   const sel = ensureSelected()
   if (!sel) return
   const id = newOutlineId()
-  jm.add_node(sel.id, id, topic, undefined, sel.isroot ? lighterRootSide() : sel.direction)
+  jm.add_node(sel.id, id, topic, undefined, sel.isroot ? rootSideForNew() : sel.direction)
   jm.expand_node(sel.id)
   jm.select_node(id)
   syncToParent()
@@ -954,7 +1227,7 @@ function onPointerUp(): void {
       if (from && target) {
         if (mode === 'child') {
           jm.expand_node(target.id)
-          jm.move_node(from.id, undefined, target.id, target.isroot ? lighterRootSide() : target.direction)
+          jm.move_node(from.id, undefined, target.id, target.isroot ? rootSideForNew() : target.direction)
         } else if (!target.isroot && target.parent) {
           const parent = target.parent
           const idx = parent.children.findIndex((c) => c.id === target.id)
@@ -1015,6 +1288,95 @@ function menuCall(fn: () => void): void {
   closeMenu()
   fn()
 }
+
+// ---------- 外观（配色 / 结构） ----------
+
+const lookOpen = ref(false)
+
+function lookKey(): string {
+  return props.noteId ? `note:map:look:${props.noteId}` : ''
+}
+
+function persistLook(): void {
+  const key = lookKey()
+  if (!key) return
+  void window.lexbench.settings
+    .set(key, JSON.stringify({ theme: themeId.value, structure: structure.value }))
+    .catch(() => {
+      // 外观记忆失败不打断编辑，下次回默认外观
+    })
+}
+
+async function restoreLook(): Promise<void> {
+  const key = lookKey()
+  if (!key) return
+  try {
+    const raw = await window.lexbench.settings.get(key)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as { theme?: unknown; structure?: unknown }
+    if (typeof parsed.theme === 'string' && MAP_THEMES.some((t) => t.id === parsed.theme)) {
+      themeId.value = parsed.theme
+    }
+    if (typeof parsed.structure === 'string' && STRUCTURES.some((s) => s.id === parsed.structure)) {
+      structure.value = parsed.structure as MapStructure
+    }
+  } catch {
+    // 读失败就用默认外观
+  }
+}
+
+/** 把当前结构应用到现有顶层分支：不重建画布，保留选中/折叠态 */
+function applyStructure(): void {
+  if (!jm) return
+  const root = jm.get_root()
+  if (!root) return
+  const nodes = root.children.map(
+    (c) => metaById.get(c.id) ?? { id: c.id, text: '', children: [] as OutlineNode[] }
+  )
+  const dirs = directionsFor(nodes)
+  root.children.forEach((child, i) => {
+    child.direction = dirs[i] === 'left' ? -1 : 1
+  })
+  jm.layout.layout()
+  jm.view.relayout()
+  scheduleResize()
+  nextTick(() => jm?.scroll_node_to_center(root.id))
+}
+
+function chooseStructure(id: MapStructure): void {
+  if (structure.value === id) return
+  structure.value = id
+  applyStructure()
+  persistLook()
+}
+
+function chooseTheme(id: string): void {
+  if (themeId.value === id) return
+  themeId.value = id
+  persistLook()
+}
+
+function toggleLook(): void {
+  lookOpen.value = !lookOpen.value
+  if (lookOpen.value) {
+    closeMenu()
+    moreMenu.value = false
+    if (noteEditor.open) saveNoteEditor()
+  }
+}
+
+function toggleMore(): void {
+  moreMenu.value = !moreMenu.value
+  if (moreMenu.value) lookOpen.value = false
+}
+
+/** 连线颜色由 canvas 直接绘制，换配色时同步 opts 并重画 */
+watch(themeId, () => {
+  if (!jm) return
+  const view = jm.view as unknown as { opts: { line_color: string }; show_lines: () => void }
+  view.opts.line_color = currentTheme.value.line
+  view.show_lines()
+})
 
 // ---------- 缩放 ----------
 
@@ -1176,6 +1538,11 @@ function isTypingTarget(t: EventTarget | null): boolean {
 function onKeydown(ev: KeyboardEvent): void {
   if (!jm || ev.isComposing) return
   if (isTypingTarget(ev.target)) return
+  // 焦点在面板按钮上时也要能 Esc 收起（下面的控件过滤会提前 return）
+  if (ev.key === 'Escape' && lookOpen.value) {
+    lookOpen.value = false
+    return
+  }
   recoverStaleEditor()
   if (jm.view.is_editing()) return // 编辑输入框交给 jsMind / 浏览器
   // 键挂 window：焦点滑到 body（刚切到导图、点击后焦点丢失）也响应，方向键不再“失灵”；
@@ -1291,6 +1658,7 @@ const moreMenu = ref(false)
 function closeAllPopups(): void {
   closeMenu()
   moreMenu.value = false
+  lookOpen.value = false
   // 备注卡：保存后再关，与卡片内的 Esc/Ctrl+Enter 同一个出口
   if (noteEditor.open) saveNoteEditor()
 }
@@ -1299,7 +1667,10 @@ function closeAllPopups(): void {
 
 const titleComputed = computed(() => props.title || '笔记')
 
-onMounted(() => {
+onMounted(async () => {
+  if (!hostEl.value) return
+  // 先读回这篇笔记的配色/结构，首屏就按记忆渲染，不闪一下默认外观
+  await restoreLook()
   if (!hostEl.value) return
   try {
     jm = new jsMind({
@@ -1312,7 +1683,7 @@ onMounted(() => {
         hmargin: 640,
         vmargin: 480,
         line_width: 1.6,
-        line_color: '#b3bdc8',
+        line_color: currentTheme.value.line,
         line_style: 'curved',
         custom_line_render: renderElbowLine,
         custom_node_render: renderNodeWithImage,
@@ -1414,6 +1785,7 @@ function onDocumentClick(ev: MouseEvent): void {
   const t = ev.target as HTMLElement
   if (!t.closest('.mm-menu') && !t.closest('.mm-zoom') && !t.closest('.mm-fab-wrap')) closeMenu()
   if (!t.closest('.mm-fab-wrap')) moreMenu.value = false
+  if (!t.closest('.mm-look-wrap')) lookOpen.value = false
   // 点备注面板之外保存（排除打开它的入口按钮，避免刚点开就被关）
   if (
     noteEditor.open &&
@@ -1486,35 +1858,150 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mm-root">
+  <div class="mm-root" :style="themeVars">
     <div ref="hostEl" class="ol-mind" tabindex="0"></div>
 
-    <!-- 顶部小菜单：不常驻大工具条，只留一个不碍眼的入口 -->
-    <div class="mm-fab-wrap" @click.stop>
-      <button class="mm-fab" title="导图操作" @click.stop="moreMenu = !moreMenu">
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="4.5" cy="10" r="1.4" />
-          <circle cx="10" cy="10" r="1.4" />
-          <circle cx="15.5" cy="10" r="1.4" />
-        </svg>
-      </button>
-      <div v-if="moreMenu" class="mm-fab-menu" @click.stop>
-        <button class="mm-mi" @click="moreMenu = false; addChild()">新建子主题 <kbd>Tab</kbd></button>
-        <button class="mm-mi" @click="moreMenu = false; addSibling()">新建同级主题 <kbd>Enter</kbd></button>
-        <button class="mm-mi" @click="moreMenu = false; addSibling(true)">在前插入同级</button>
-        <button class="mm-mi" @click="moreMenu = false; editSelected()">编辑 <kbd>Space</kbd></button>
-        <button class="mm-mi" @click="moreMenu = false; requestRefPicker()">插入法条引用 <kbd>Ctrl+K</kbd></button>
-        <div class="mm-sep-h"></div>
-        <button class="mm-mi" @click="moreMenu = false; openNoteEditor()">备注</button>
-        <button class="mm-mi" @click="moreMenu = false; toggleTaskFromToolbar()">待办 / 完成</button>
-        <button class="mm-mi" @click="moreMenu = false; requestImage()">插入图片</button>
-        <button class="mm-mi" @click="moreMenu = false; duplicateSelected()">复制节点 <kbd>Ctrl+D</kbd></button>
-        <div class="mm-sep-h"></div>
-        <button class="mm-mi" @click="moreMenu = false; expandAll()">全部展开</button>
-        <button class="mm-mi" @click="moreMenu = false; collapseAll()">全部折叠</button>
-        <button class="mm-mi" @click="moreMenu = false; fitView()">适应画布</button>
-        <div class="mm-sep-h"></div>
-        <button class="mm-mi danger" @click="moreMenu = false; deleteSelected()">删除主题 <kbd>Del</kbd></button>
+    <!-- 顶部小菜单：不常驻大工具条，只留两个不碍眼的圆钮 -->
+    <div class="mm-fab-bar" data-guide="map-chrome" @click.stop>
+      <div class="mm-look-wrap">
+        <button
+          class="mm-fab"
+          :class="{ 'is-on': lookOpen }"
+          title="配色与结构"
+          aria-label="配色与结构"
+          @click.stop="toggleLook()"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <rect x="3" y="3" width="6" height="6" rx="1.7" />
+            <rect x="11" y="3" width="6" height="6" rx="1.7" opacity="0.4" />
+            <rect x="3" y="11" width="6" height="6" rx="1.7" opacity="0.4" />
+            <rect x="11" y="11" width="6" height="6" rx="1.7" />
+          </svg>
+        </button>
+
+        <div v-if="lookOpen" class="mm-look-panel" role="dialog" aria-label="配色与结构" @click.stop>
+          <div class="mm-look-head">
+            <span>外观</span>
+            <button class="mm-look-x" title="关闭" @click="lookOpen = false">✕</button>
+          </div>
+
+          <div class="mm-look-title">结构</div>
+          <div class="mm-struct-grid">
+            <button
+              v-for="s in STRUCTURES"
+              :key="s.id"
+              class="mm-struct-card"
+              :class="{ active: structure === s.id }"
+              :title="s.label"
+              :aria-pressed="structure === s.id"
+              @click="chooseStructure(s.id)"
+            >
+              <svg class="mm-struct-thumb" viewBox="0 0 88 44" aria-hidden="true">
+                <template v-if="s.id === 'balanced'">
+                  <path class="thumb-link" d="M34 22 H22 M54 22 H59 V11 H66 M54 22 H59 V32 H66" />
+                  <rect class="thumb-root" x="34" y="16" width="20" height="12" rx="3.5" />
+                  <rect class="thumb-leaf" x="4" y="17" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="66" y="6" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="66" y="27" width="18" height="10" rx="2.5" />
+                </template>
+                <template v-else-if="s.id === 'alternate'">
+                  <path
+                    class="thumb-link"
+                    d="M34 22 H29 V11 H22 M34 22 H29 V32 H22 M54 22 H59 V11 H66 M54 22 H59 V32 H66"
+                  />
+                  <rect class="thumb-root" x="34" y="16" width="20" height="12" rx="3.5" />
+                  <rect class="thumb-leaf" x="4" y="6" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="4" y="27" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="66" y="6" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="66" y="27" width="18" height="10" rx="2.5" />
+                </template>
+                <template v-else-if="s.id === 'right'">
+                  <path class="thumb-link" d="M26 22 H44 V7 H64 M26 22 H44 V22 H64 M26 22 H44 V37 H64" />
+                  <rect class="thumb-root" x="6" y="16" width="20" height="12" rx="3.5" />
+                  <rect class="thumb-leaf" x="64" y="2" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="64" y="17" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="64" y="32" width="18" height="10" rx="2.5" />
+                </template>
+                <template v-else>
+                  <path class="thumb-link" d="M62 22 H44 V7 H24 M62 22 H44 V22 H24 M62 22 H44 V37 H24" />
+                  <rect class="thumb-root" x="62" y="16" width="20" height="12" rx="3.5" />
+                  <rect class="thumb-leaf" x="6" y="2" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="6" y="17" width="18" height="10" rx="2.5" />
+                  <rect class="thumb-leaf" x="6" y="32" width="18" height="10" rx="2.5" />
+                </template>
+              </svg>
+              <span>{{ s.label }}</span>
+            </button>
+          </div>
+
+          <div class="mm-look-title">配色</div>
+          <div class="mm-look-sub">浅色</div>
+          <div class="mm-swatch-grid">
+            <button
+              v-for="t in lightThemes"
+              :key="t.id"
+              class="mm-swatch"
+              :class="{ active: themeId === t.id }"
+              :style="{ background: t.canvas }"
+              title="使用这套配色"
+              :aria-pressed="themeId === t.id"
+              @click="chooseTheme(t.id)"
+            >
+              <span class="mm-swatch-row">
+                <i class="sw-accent" :style="{ background: t.accent }"></i>
+                <i class="sw-node" :style="{ background: t.node, borderColor: t.border }"></i>
+                <i class="sw-line" :style="{ background: t.line }"></i>
+              </span>
+            </button>
+          </div>
+          <div class="mm-look-sub">深色</div>
+          <div class="mm-swatch-grid">
+            <button
+              v-for="t in darkThemes"
+              :key="t.id"
+              class="mm-swatch"
+              :class="{ active: themeId === t.id }"
+              :style="{ background: t.canvas }"
+              title="使用这套配色"
+              :aria-pressed="themeId === t.id"
+              @click="chooseTheme(t.id)"
+            >
+              <span class="mm-swatch-row">
+                <i class="sw-accent" :style="{ background: t.accent }"></i>
+                <i class="sw-node" :style="{ background: t.node, borderColor: t.border }"></i>
+                <i class="sw-line" :style="{ background: t.line }"></i>
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mm-fab-wrap">
+        <button class="mm-fab" title="导图操作" @click.stop="toggleMore()">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="4.5" cy="10" r="1.4" />
+            <circle cx="10" cy="10" r="1.4" />
+            <circle cx="15.5" cy="10" r="1.4" />
+          </svg>
+        </button>
+        <div v-if="moreMenu" class="mm-fab-menu" @click.stop>
+          <button class="mm-mi" @click="moreMenu = false; addChild()">新建子主题 <kbd>Tab</kbd></button>
+          <button class="mm-mi" @click="moreMenu = false; addSibling()">新建同级主题 <kbd>Enter</kbd></button>
+          <button class="mm-mi" @click="moreMenu = false; addSibling(true)">在前插入同级</button>
+          <button class="mm-mi" @click="moreMenu = false; editSelected()">编辑 <kbd>Space</kbd></button>
+          <button class="mm-mi" @click="moreMenu = false; requestRefPicker()">插入法条引用 <kbd>Ctrl+K</kbd></button>
+          <div class="mm-sep-h"></div>
+          <button class="mm-mi" @click="moreMenu = false; openNoteEditor()">备注</button>
+          <button class="mm-mi" @click="moreMenu = false; toggleTaskFromToolbar()">待办 / 完成</button>
+          <button class="mm-mi" @click="moreMenu = false; requestImage()">插入图片</button>
+          <button class="mm-mi" @click="moreMenu = false; duplicateSelected()">复制节点 <kbd>Ctrl+D</kbd></button>
+          <div class="mm-sep-h"></div>
+          <button class="mm-mi" @click="moreMenu = false; expandAll()">全部展开</button>
+          <button class="mm-mi" @click="moreMenu = false; collapseAll()">全部折叠</button>
+          <button class="mm-mi" @click="moreMenu = false; fitView()">适应画布</button>
+          <div class="mm-sep-h"></div>
+          <button class="mm-mi danger" @click="moreMenu = false; deleteSelected()">删除主题 <kbd>Del</kbd></button>
+        </div>
       </div>
     </div>
 
@@ -1589,7 +2076,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   outline: none;
-  background: #fff;
+  background: var(--mm-canvas, #fff);
   position: relative;
   cursor: grab;
 }
@@ -1602,11 +2089,11 @@ body.mm-dragging .ol-mind * {
 }
 
 .ol-mind jmnode {
-  background: #fff;
-  color: var(--lb-text);
-  border: 1px solid #e7ebf0;
+  background: var(--mm-node-bg, #fff);
+  color: var(--mm-text, var(--lb-text));
+  border: 1px solid var(--mm-border, #e7ebf0);
   border-radius: 22px;
-  box-shadow: 0 1px 2px rgba(20, 24, 38, 0.05);
+  box-shadow: 0 1px 2px var(--mm-node-shadow, rgba(20, 24, 38, 0.05));
   font-family: var(--lb-sans);
   font-size: 15px;
   line-height: 1.55;
@@ -1628,42 +2115,43 @@ body.mm-dragging .ol-mind * {
 }
 
 .ol-mind jmnode:hover {
-  border-color: var(--lb-accent-2);
-  box-shadow: 0 3px 10px rgba(0, 90, 190, 0.1);
+  border-color: var(--mm-accent, var(--lb-accent-2));
+  box-shadow: 0 3px 10px var(--mm-hover-shadow, rgba(0, 90, 190, 0.1));
 }
 
 .ol-mind jmnode.selected {
-  background: #fff;
-  color: var(--lb-text);
-  border-color: var(--lb-accent);
+  background: var(--mm-node-bg, #fff);
+  color: var(--mm-text, var(--lb-text));
+  border-color: var(--mm-accent, var(--lb-accent));
   box-shadow:
-    0 0 0 3px var(--lb-accent-soft),
-    0 4px 14px rgba(0, 90, 190, 0.14);
+    0 0 0 3px var(--mm-accent-soft, var(--lb-accent-soft)),
+    0 4px 14px var(--mm-select-shadow, rgba(0, 90, 190, 0.14));
 }
 
 .ol-mind jmnode.root {
+  background: var(--mm-root-bg, #fff);
   font-size: 18px;
   font-weight: 600;
   border-radius: 24px;
   padding: 11px 20px;
-  border-color: rgba(0, 113, 227, 0.24);
+  border-color: var(--mm-root-border, rgba(0, 113, 227, 0.24));
 }
 
 .ol-mind jmnode.root.selected {
-  border-color: var(--lb-accent);
+  border-color: var(--mm-accent, var(--lb-accent));
 }
 
 .ol-mind jmnode.mm-drop-into {
-  border-color: var(--lb-accent) !important;
-  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.18) !important;
-  background: #f4f9ff;
+  border-color: var(--mm-accent, var(--lb-accent)) !important;
+  box-shadow: 0 0 0 4px var(--mm-accent-soft, rgba(0, 113, 227, 0.18)) !important;
+  background: var(--mm-drop-bg, #f4f9ff);
 }
 
 .ol-mind jmnode.mm-task::before {
   content: '☐';
   display: inline-block;
   margin-right: 5px;
-  color: var(--lb-muted);
+  color: var(--mm-muted, var(--lb-muted));
   font-size: 13px;
 }
 
@@ -1686,13 +2174,13 @@ body.mm-dragging .ol-mind * {
 /* :not(.selected) 让选中态的强调边框优先级不受影响 */
 .ol-mind jmnode.mm-ref:not(.selected) {
   font-family: var(--lb-serif);
-  color: var(--lb-accent);
-  border-color: rgba(0, 113, 227, 0.34);
+  color: var(--mm-accent, var(--lb-accent));
+  border-color: var(--mm-accent-line, rgba(0, 113, 227, 0.34));
 }
 
 .ol-mind jmnode.mm-task-done::before {
   content: '☑';
-  color: var(--lb-accent);
+  color: var(--mm-accent, var(--lb-accent));
 }
 
 .ol-mind jmnode.mm-task-done {
@@ -1704,7 +2192,7 @@ body.mm-dragging .ol-mind * {
   content: '▤';
   display: inline-block;
   margin-left: 6px;
-  color: var(--lb-muted);
+  color: var(--mm-muted, var(--lb-muted));
   font-size: 10px;
   vertical-align: 1px;
 }
@@ -1738,15 +2226,15 @@ body.mm-dragging .ol-mind * {
   line-height: 15px;
   font-size: 11px;
   border-radius: 50%;
-  border: 1px solid #c8ced4;
-  background: #fff;
-  color: #646a73;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--mm-border, #c8ced4);
+  background: var(--mm-node-bg, #fff);
+  color: var(--mm-muted, #646a73);
+  box-shadow: 0 1px 3px var(--mm-node-shadow, rgba(0, 0, 0, 0.08));
 }
 
 .ol-mind jmexpander:hover {
-  border-color: var(--lb-accent-2);
-  color: var(--lb-accent);
+  border-color: var(--mm-accent, var(--lb-accent-2));
+  color: var(--mm-accent, var(--lb-accent));
 }
 
 .ol-mind .jsmind-inner {
@@ -1755,24 +2243,25 @@ body.mm-dragging .ol-mind * {
 
 .ol-mind .jsmind-editor {
   box-sizing: border-box;
-  border: 1px solid rgba(0, 113, 227, 0.55);
+  border: 1px solid var(--mm-accent, rgba(0, 113, 227, 0.55));
   border-radius: 10px;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  box-shadow: 0 0 0 3px var(--mm-accent-soft, rgba(0, 113, 227, 0.12));
   font-family: var(--lb-sans);
   font-size: 14px;
   padding: 6px 10px;
   outline: none;
   position: relative;
   z-index: 2;
-  background: #fff;
+  background: var(--mm-editor-bg, #fff);
+  color: var(--mm-text, var(--lb-text));
   /* 节点禁止选中，但编辑框本身要能选文字 */
   user-select: text;
   -webkit-user-select: text;
 }
 
-/* jsMind 进编辑是整段选中再敲键替换：选区弱化成淡蓝，别整块高亮 */
+/* jsMind 进编辑是整段选中再敲键替换：选区弱化成淡色，别整块高亮 */
 .ol-mind .jsmind-editor::selection {
-  background: rgba(0, 113, 227, 0.16);
+  background: var(--mm-accent-soft, rgba(0, 113, 227, 0.16));
 }
 
 /* 拖动时关闭文本选择 */
@@ -1788,15 +2277,23 @@ body.mm-dragging {
   display: flex;
   flex: 1;
   min-height: 0;
-  background: #fff;
+  background: var(--mm-canvas, #fff);
 }
 
-/* 不常驻大工具条：只留右上角一个低存在感入口 */
-.mm-fab-wrap {
+/* 不常驻大工具条：只留右上角两个低存在感圆钮 */
+.mm-fab-bar {
   position: absolute;
   top: 14px;
   right: 18px;
   z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.mm-look-wrap,
+.mm-fab-wrap {
+  position: relative;
 }
 
 .mm-fab {
@@ -1827,6 +2324,206 @@ body.mm-dragging {
   width: 18px;
   height: 18px;
   fill: currentColor;
+}
+
+.mm-fab.is-on {
+  color: var(--lb-accent);
+  border-color: rgba(0, 113, 227, 0.45);
+  box-shadow:
+    0 0 0 3px var(--lb-accent-soft),
+    var(--lb-shadow-1);
+}
+
+/* ---------- 外观面板：结构缩略图 + 配色色样 ---------- */
+
+.mm-look-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  /* 与右侧「⋯」钮的右缘对齐，视觉上仍是右上角一块 */
+  right: -42px;
+  z-index: 40;
+  width: 304px;
+  max-height: min(74vh, 640px);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-l);
+  corner-shape: var(--lb-corner-shape);
+  background: var(--lb-panel);
+  box-shadow: var(--lb-shadow-2);
+}
+
+.mm-look-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 10px;
+}
+
+.mm-look-head span {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lb-text);
+}
+
+.mm-look-x {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: var(--lb-chip);
+  color: var(--lb-muted);
+  font-size: 11px;
+}
+
+.mm-look-title {
+  margin: 14px 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lb-text);
+}
+
+.mm-look-head + .mm-look-title {
+  margin-top: 0;
+}
+
+.mm-look-sub {
+  margin: 8px 2px 6px;
+  font-size: 11px;
+  color: var(--lb-muted);
+}
+
+.mm-struct-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.mm-struct-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 6px 6px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-s);
+  background: var(--lb-panel);
+  color: var(--lb-muted);
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease,
+    transform 0.14s ease,
+    color 0.14s ease;
+}
+
+.mm-struct-card:hover {
+  border-color: var(--lb-accent-2);
+  color: var(--lb-text);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+}
+
+.mm-struct-card.active {
+  border-color: var(--lb-accent);
+  color: var(--lb-accent);
+  box-shadow: 0 0 0 3px var(--lb-accent-soft);
+}
+
+.mm-struct-card span {
+  font-size: 11px;
+  line-height: 1.2;
+  color: inherit;
+}
+
+.mm-struct-thumb {
+  display: block;
+  width: 100%;
+  height: 38px;
+}
+
+.mm-struct-thumb .thumb-root {
+  fill: currentColor;
+}
+
+.mm-struct-thumb .thumb-leaf {
+  fill: currentColor;
+  opacity: 0.34;
+}
+
+.mm-struct-thumb .thumb-link {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: 0.42;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mm-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.mm-swatch {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  height: 42px;
+  padding: 8px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-xs);
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease,
+    transform 0.14s ease;
+}
+
+.mm-swatch:hover {
+  border-color: var(--lb-accent-2);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07);
+}
+
+.mm-swatch.active {
+  border-color: var(--lb-accent);
+  box-shadow: 0 0 0 3px var(--lb-accent-soft);
+}
+
+.mm-swatch.active::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lb-accent);
+}
+
+.mm-swatch-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.mm-swatch-row i {
+  display: block;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.mm-swatch-row .sw-accent {
+  width: 18px;
+}
+
+.mm-swatch-row .sw-node {
+  width: 12px;
+  border: 1px solid transparent;
+}
+
+.mm-swatch-row .sw-line {
+  width: 6px;
 }
 
 .mm-fab-menu {

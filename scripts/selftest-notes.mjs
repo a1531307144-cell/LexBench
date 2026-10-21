@@ -629,6 +629,11 @@ let mapElasticOk = false
 let mapWheelZoomOk = false
 let mapWheelPanOk = false
 let mapEditImageOk = false
+let mapLookOk = false
+let mapLookStructureOk = false
+let mapLookPersistOk = false
+let mapLookThemeOk = false
+let headMenuFitOk = false
 {
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -717,13 +722,22 @@ let mapEditImageOk = false
   // 触控板捏合 = ctrl+wheel 缩放；双指滑动 = wheel 平移
   const wheelZ0 = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
   await evalJs(`(() => { const p = document.querySelector('.jsmind-inner'); p?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true })); return true })()`)
-  await sleep(500)
-  const wheelZ1 = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
+  // 隐藏窗口定时器会节流：等缩放百分比真正变化，别固定短睡（lessons #2）
+  let wheelZ1 = wheelZ0
+  for (let i = 0; i < 12; i++) {
+    await sleep(250)
+    wheelZ1 = await evalJs(`document.querySelector('.mm-zoom-val')?.textContent`)
+    if (wheelZ1 && wheelZ1 !== wheelZ0) break
+  }
   mapWheelZoomOk = !!wheelZ0 && !!wheelZ1 && wheelZ0 !== wheelZ1
   const wheelPan0 = await evalJs(`document.querySelector('.jsmind-inner')?.scrollTop ?? -1`)
   await evalJs(`(() => { const p = document.querySelector('.jsmind-inner'); p?.dispatchEvent(new WheelEvent('wheel', { deltaY: 90, bubbles: true, cancelable: true })); return true })()`)
-  await sleep(300)
-  const wheelPan1 = await evalJs(`document.querySelector('.jsmind-inner')?.scrollTop ?? -1`)
+  let wheelPan1 = wheelPan0
+  for (let i = 0; i < 12; i++) {
+    await sleep(200)
+    wheelPan1 = await evalJs(`document.querySelector('.jsmind-inner')?.scrollTop ?? -1`)
+    if (wheelPan1 > wheelPan0) break
+  }
   mapWheelPanOk = wheelPan0 >= 0 && wheelPan1 > wheelPan0
 
   // 白底 + 不常驻底部工具条（反馈修正）
@@ -833,6 +847,60 @@ let mapEditImageOk = false
     })
   })
   mapEditImageOk = editImgEditing && editImgCount1 === editImgCount0 && editImgDb
+
+  // 外观面板：结构 / 配色（右上角第二个圆钮）
+  const lookId = await evalJs(`window.lexbench.outlines.list().then((l) => l.find((x) => x.title === '拖动自测')?.id ?? null)`)
+  await evalJs(`document.querySelector('.mm-look-wrap .mm-fab')?.click()`)
+  mapLookOk =
+    (await until(
+      `() => document.querySelectorAll('.mm-fab-bar .mm-fab').length === 2 && document.querySelectorAll('.mm-struct-card').length === 4 && document.querySelectorAll('.mm-swatch').length === 9`
+    )) === true
+  await evalJs(`[...document.querySelectorAll('.mm-struct-card')].find((x) => x.textContent.includes('单向右展'))?.click()`)
+  await sleep(600)
+  mapLookStructureOk = await evalJs(`(() => {
+    const root = [...document.querySelectorAll('jmnode')].find((n) => n.classList.contains('root'))
+    if (!root) return false
+    const rr = root.getBoundingClientRect()
+    const rc = rr.x + rr.width / 2
+    return [...document.querySelectorAll('jmnode')].every((n) => {
+      if (n === root) return true
+      const r = n.getBoundingClientRect()
+      return r.x + r.width / 2 > rc
+    })
+  })()`)
+  mapLookPersistOk = await evalJs(
+    `window.lexbench.settings.get('note:map:look:${lookId}').then((v) => !!v && JSON.parse(v).structure === 'right')`
+  )
+  await evalJs(`document.querySelectorAll('.mm-swatch')[6]?.click()`)
+  await sleep(350)
+  mapLookThemeOk = await evalJs(
+    `getComputedStyle(document.querySelector('.ol-mind')).backgroundColor === 'rgb(25, 28, 33)'`
+  )
+  // 还原默认外观，避免影响后续断言与清理
+  await evalJs(`(() => {
+    document.querySelectorAll('.mm-swatch')[0]?.click()
+    document.querySelectorAll('.mm-struct-card')[0]?.click()
+    document.querySelector('.ol-mind')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    return true
+  })()`)
+  await sleep(350)
+
+  // 头部「⋯」菜单靠右展开：不能越出 .main / 视口被裁掉
+  await evalJs(`(() => {
+    if (!document.querySelector('.ol-head .ol-menu')) document.querySelector('.ol-head .ol-more')?.click()
+    return true
+  })()`)
+  await sleep(300)
+  headMenuFitOk = await evalJs(`(() => {
+    const m = document.querySelector('.ol-head .ol-menu')
+    const main = document.querySelector('.main')
+    if (!m || !main) return false
+    const r = m.getBoundingClientRect()
+    const mr = main.getBoundingClientRect()
+    return r.left >= mr.left && r.right <= mr.right && r.right <= innerWidth && r.bottom <= innerHeight
+  })()`)
+  await evalJs(`document.querySelector('.ol-head .ol-more')?.click()`)
+  await sleep(200)
 
   await evalJs(`(async () => {
     const l = await window.lexbench.outlines.list()
@@ -970,6 +1038,11 @@ const checks = [
   ['导图：触控板捏合缩放', mapWheelZoomOk],
   ['导图：触控板双指平移', mapWheelPanOk],
   ['导图：编辑中粘贴图片不新建方框', mapEditImageOk],
+  ['导图：外观面板（结构 + 配色）', mapLookOk],
+  ['导图：结构切换生效', mapLookStructureOk],
+  ['导图：结构选择落库', mapLookPersistOk],
+  ['导图：深色配色生效', mapLookThemeOk],
+  ['笔记头部⋯菜单不被裁切', headMenuFitOk],
   ['导入：预检三格式', importPreviewOk],
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],

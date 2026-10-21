@@ -9,6 +9,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:visible': [v: boolean]
   error: [message: string]
+  /** 打开「使用指引」回放 */
+  guide: []
 }>()
 
 const version = ref('')
@@ -158,6 +160,7 @@ onBeforeUnmount(() => unsubscribe?.())
 
       <div class="ab-foot">
         <button class="ab-btn plain" @click="emit('update:visible', false)">关闭</button>
+        <button class="ab-btn plain" @click="emit('guide')">使用指引</button>
         <span class="ab-flex"></span>
         <button
           v-if="phase === 'available'"

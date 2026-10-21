@@ -1872,7 +1872,7 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <header class="ol-head" :class="{ 'head-map': viewMode === 'map' }">
+    <header class="ol-head" :class="{ 'head-map': viewMode === 'map' }" data-guide="outline-head">
       <input
         v-model="title"
         class="ol-title"
@@ -2059,6 +2059,7 @@ onBeforeUnmount(() => {
       :tree="tree"
       :title="displayTitle"
       :zoom-key="`note:zoom:map:${outline.id}`"
+      :note-id="outline.id"
       @change="onMapChange"
       @error="(e) => emit('error', e)"
       @notice="(t) => emit('notice', t)"
@@ -2426,6 +2427,12 @@ onBeforeUnmount(() => {
   border-radius: var(--lb-radius-l);
   corner-shape: var(--lb-corner-shape);
   box-shadow: var(--lb-shadow-2);
+}
+
+/* 头部「⋯」靠右：菜单向左展开，避免溢出 .main（overflow:hidden）被裁掉 */
+.ol-menu {
+  top: calc(100% + 6px);
+  right: 0;
 }
 
 .ol-row-menu {

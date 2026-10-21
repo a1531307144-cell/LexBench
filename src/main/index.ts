@@ -43,6 +43,8 @@ function createWindow(): void {
     minHeight: 640,
     show: false,
     title: '法研台',
+    // 开发版任务栏/窗口图标；打包版由 electron-builder 把 build/icon.ico 嵌进 exe
+    icon: app.isPackaged ? undefined : join(__dirname, '../../build/icon.ico'),
     backgroundColor: '#f5f5f7',
     // 无边框窗口：去掉系统标题栏，控制按钮由顶栏自绘（ VS Code / Notion 方案）
     frame: false,
