@@ -14,6 +14,7 @@ import ResultList from './components/ResultList.vue'
 import StatuteReadingView from './components/StatuteReadingView.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
 import { GUIDE_KEY, buildGuideSteps } from './guide/guideSteps'
+import { dropNoteHistory } from './composables/noteHistoryStore'
 import { newOutlineId } from '@shared/outlineTree'
 import { TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
 import type {
@@ -364,6 +365,9 @@ async function refreshNoteGroups(): Promise<void> {
 
 async function openNote(id: number): Promise<void> {
   try {
+    // 切到另一篇前先把当前编辑器防抖窗口里的内容落盘：
+    // 否则随后 get 到的是旧树，撤销历史按「当前树」校验会被整段丢弃
+    if (id !== activeOutline.value?.id) await outlineEditorRef.value?.flush()
     activeOutline.value = await window.lexbench.outlines.get(id)
   } catch (e) {
     activeOutline.value = null
@@ -404,7 +408,7 @@ function guideSampleTree(): OutlineNode[] {
         { id: newOutlineId(), text: '争议焦点二：违约责任如何承担？', children: [] }
       ]
     },
-    { id: newOutlineId(), text: '行首输入 / 可插入文档库里的法条引用', children: [] },
+    { id: newOutlineId(), text: '行首输入 / 可插入文档库里的法条原文', children: [] },
     { id: newOutlineId(), text: '右上角切换到「导图」，同一份内容换个看法', children: [] }
   ]
 }
@@ -630,6 +634,7 @@ async function restoreGuideState(): Promise<void> {
   if (snap.activeOutline) {
     try {
       // 重新取快照：卸载冲刷后旧对象可能落后（见笔记编辑器的落盘契约）
+      await outlineEditorRef.value?.flush()
       activeOutline.value = await window.lexbench.outlines.get(snap.activeOutline.id)
       outlineRev.value += 1
     } catch {
@@ -645,17 +650,6 @@ async function openStarredArticle(payload: { documentId: number; orderIndex: num
   await openStatuteFull(payload.documentId, { focusOrder: payload.orderIndex })
 }
 
-/** 引用节点右键「在文档库打开来源」（逃生门）：全页阅读跳到该条 */
-async function openSourceFromNote(ref: { docId: number; articleId: number }): Promise<void> {
-  try {
-    const detail = await window.lexbench.library.getArticle(ref.articleId)
-    await openStatuteFull(ref.docId, { focusOrder: detail.article.order_index })
-  } catch (e) {
-    // 来源已被删：提示而非白屏
-    showError(e)
-  }
-}
-
 /** 「⋯」→删除笔记：确认后删库、清选中、刷列表 */
 async function confirmDeleteNote(): Promise<void> {
   const target = pendingNoteDelete.value
@@ -663,6 +657,7 @@ async function confirmDeleteNote(): Promise<void> {
   if (!target) return
   try {
     await window.lexbench.outlines.remove(target.id)
+    dropNoteHistory(target.id)
     if (activeOutline.value?.id === target.id) activeOutline.value = null
     await refreshNotes()
     setNotice('笔记已删除')
@@ -715,6 +710,9 @@ watch(tab, async (t) => {
   const cur = activeOutline.value
   if (!cur) return
   try {
+    // 先清空，避免用 App 手里过期的旧快照先把编辑器挂起来：
+    // 那样会以空树初始化一次，把会话内的撤销历史缓存冲掉。取到新快照后再挂。
+    activeOutline.value = null
     activeOutline.value = await window.lexbench.outlines.get(cur.id)
     outlineRev.value += 1 // 强制编辑器用新快照重挂
   } catch {
@@ -1346,14 +1344,13 @@ onBeforeUnmount(() => {
             :outline="activeOutline"
             @error="showError"
             @list-changed="onNoteListChanged"
-            @open-source="openSourceFromNote"
             @delete-request="pendingNoteDelete = activeOutline"
             @notice="setNotice"
           />
         </section>
         <section v-else-if="tab === 'notes'" class="notes-main notes-empty">
           <p class="notes-empty-title">选择或新建一篇笔记</p>
-          <p class="notes-empty-line">大纲式笔记：Enter 新行，Tab 缩进，可插入文档库法条引用</p>
+          <p class="notes-empty-line">大纲式笔记：Enter 新行，Tab 缩进，可插入文档库法条原文</p>
         </section>
         <section v-else class="lib-home">
           <p class="lib-home-title">从左侧「文档库」选择文档开始阅读</p>

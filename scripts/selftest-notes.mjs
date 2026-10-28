@@ -1,5 +1,6 @@
 // 笔记库 CDP 自测：大纲编辑器（contenteditable 键位/折叠/自动保存/往返快照）+ 多选/拖拽
-// + 引用通道 + 星标 + 续读契约 + 分类/贴图 + 思维导图（编辑/拖动/缩放/往返）+ 通用导入。
+// + 法条纯文本插入 + 撤销/重做 + 手动保存 + 星标 + 续读契约 + 分类/贴图
+// + 思维导图（编辑/拖动/缩放/往返/撤销）+ 通用导入 + 旧 ref 兼容。
 // 前提：npm run dev 已启动（开发模式开放 9222）。用法：node scripts/selftest-notes.mjs
 const errors = []
 
@@ -280,7 +281,7 @@ await sleep(400)
 const roundtripOk = await until(`() => !!document.querySelector('.ol-title') && document.querySelector('.ol-title').value === '自测笔记'`)
 
 // ---------- 插入浮层 ----------
-console.log('=== 6. 插入引用浮层（/ 唤出 + 连加）===')
+console.log('=== 6. 插入法条浮层（/ 唤出 + 连加）===')
 await evalJs(`document.querySelector('.ol-append')?.click()`)
 await sleep(300)
 const pickerOpen = await (async () => {
@@ -316,20 +317,44 @@ const pickerClosed = await until(`() => {
   return !ov || ov.className.includes('menu-pop-leave')
 }`)
 
-// ---------- 引用节点 ----------
-console.log('=== 7. 引用节点（浮层插入落库 / 粘贴生成）===')
-const refSaved = await until(`() => {
-  return window.lexbench.outlines.list().then(async (l) => {
-    const n = l.find(x => x.title === '自测笔记')
-    if (!n) return false
-    const d = await window.lexbench.outlines.get(n.id)
-    const walk = (ns) => ns.some(x => (x.ref && x.ref.articleId) || walk(x.children ?? []))
-    return walk(JSON.parse(d.tree))
-  })
-}`)
+// ---------- 插入法条：纯文本 + 可删除 + 旧引用兼容 ----------
+console.log('=== 7. 插入法条（纯文本 / 删除 / 旧 data-lb-ref 粘贴）===')
+const noteIdForTest = await evalJs(`window.lexbench.outlines.list().then(l => l.find(x => x.title === '自测笔记')?.id)`)
+const plainInsertOk = await until(`() => window.lexbench.outlines.get(${noteIdForTest}).then((r) => {
+  let hasRef = false
+  let hasLaw = false
+  const walk = (ns) => (ns || []).forEach((x) => { if (x.ref) hasRef = true; if ((x.text || '').includes('《')) hasLaw = true; walk(x.children) })
+  walk(JSON.parse(r.tree))
+  return hasLaw && !hasRef
+})`)
+const plainUiOk = await evalJs(`(() => {
+  const rows = [...document.querySelectorAll('.ol-row')]
+  const law = rows.find((r) => (r.querySelector('.ol-text')?.textContent ?? '').startsWith('《'))
+  return !!law && !law.classList.contains('is-ref') && !(law.querySelector('.ol-bullet')?.textContent ?? '').includes('📖')
+})()`)
+await evalJs(`document.querySelector('.ol-hover-actions .ol-act[title="更多"]')?.click()`)
+await sleep(250)
+const rowMenuNoSourceOk = await evalJs(
+  `![...document.querySelectorAll('.ol-row-menu .ol-menu-item')].some((x) => x.textContent.includes('在文档库打开来源'))`
+)
+await evalJs(`document.body.click()`)
+await sleep(200)
+const lawCountOf = `[...document.querySelectorAll('.ol-row')].filter((r) => (r.querySelector('.ol-text')?.textContent ?? '').startsWith('《')).length`
+const lawCountBefore = await evalJs(`(() => ${lawCountOf})()`)
+const deleteInsertedOk = await evalJs(`(() => {
+  const rows = [...document.querySelectorAll('.ol-row')]
+  const law = rows.find((r) => (r.querySelector('.ol-text')?.textContent ?? '').startsWith('《'))
+  if (!law) return false
+  law.querySelector('[data-act="delete-row"]')?.click()
+  return true
+})()`)
+const insertedGoneOk =
+  deleteInsertedOk && (await until(`() => (${lawCountOf}) === ${lawCountBefore - 1}`))
+await evalJs(`document.querySelector('[data-hist="undo"]')?.click()`)
+const insertedRestoredOk = await until(`() => (${lawCountOf}) === ${lawCountBefore}`)
 await evalJs(`document.querySelector('.ol-append')?.click()`)
 await sleep(300)
-const pasteRefOk = await evalJs(`(() => {
+const legacyPasteOk = await evalJs(`(() => {
   const tas = document.querySelectorAll('.ol-text')
   const ta = tas[tas.length - 1]
   if (!ta) return false
@@ -340,19 +365,14 @@ const pasteRefOk = await evalJs(`(() => {
   ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
   return true
 })()`)
-await sleep(600)
-const pasteRefRowOk = await evalJs(`(() => {
-  const row = [...document.querySelectorAll('.ol-row')].find(
-    r => r.classList.contains('is-ref') && r.querySelector('.ol-text').textContent.includes('《自测法》')
-  )
-  return !!row && row.querySelector('.ol-bullet').textContent.includes('📖')
+await sleep(900)
+const legacyPlainOk = await evalJs(`(() => {
+  const row = [...document.querySelectorAll('.ol-row')].find((r) => (r.querySelector('.ol-text')?.textContent ?? '').includes('《自测法》第一条'))
+  return !!row && !row.classList.contains('is-ref') && !(row.querySelector('.ol-bullet')?.textContent ?? '').includes('📖')
 })()`)
-const escapeOk = await evalJs(`(() => {
-  const row = [...document.querySelectorAll('.ol-row')].find(r => r.classList.contains('is-ref'))
-  if (!row) return false
-  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
-  return typeof window.lexbench.outlines.setRefContext === 'function' && typeof window.lexbench.outlines.onOpenSource === 'function'
-})()`)
+const noRefApisOk = await evalJs(
+  `[typeof window.lexbench.outlines.setRefContext, typeof window.lexbench.outlines.onOpenSource, typeof window.lexbench.reading.onCopyRefRequest, typeof window.lexbench.clipboard].every((x) => x === 'undefined')`
+)
 
 // ---------- 星标 ----------
 console.log('=== 8. 星标链路 ===')
@@ -963,8 +983,159 @@ let importTreeOk = false
   })()`)
 }
 
+// ---------- 撤销 / 重做 / 手动保存 ----------
+console.log('=== 13. 撤销/重做与手动保存 ===')
+// 11b 的「拖动自测」笔记已被删掉但编辑器还挂着它的快照：先切回真正的主自测笔记
+await evalJs(`[...document.querySelectorAll('.rail-item')].find((b) => b.textContent.includes('笔记'))?.click()`)
+await sleep(500)
+const undoReopened = await evalJs(`(() => {
+  const c = [...document.querySelectorAll('.np-card')].find((x) => (x.getAttribute('title') || '') === '自测笔记')
+  if (!c) return false
+  c.click()
+  return true
+})()`)
+await until(`() => !!document.querySelector('.ol-text') && document.querySelector('.ol-title')?.value === '自测笔记'`)
+await sleep(400)
+await evalJs(`[...document.querySelectorAll('.ol-view-switch button')].find((b) => b.textContent.includes('大纲'))?.click()`)
+await until(`() => !!document.querySelector('.ol-text')`)
+await sleep(400)
+const undoBtnOk = await evalJs(
+  `!!document.querySelector('[data-hist="undo"]') && !!document.querySelector('[data-hist="redo"]') && !!document.querySelector('.ol-save')`
+)
+const noteRowForUndo = await evalJs(`(() => {
+  // 笔记可能位于分类文件夹里（面板不一定显示它的卡片）：以编辑器根节点的 data-note-id 为准
+  const id = Number(document.querySelector('.ol')?.dataset.noteId)
+  return Number.isFinite(id) && id > 0 ? id : null
+})()`)
+await evalJs(`document.querySelector('.ol-append')?.click()`)
+await sleep(300)
+const undoRowIdx = await evalJs(`document.querySelectorAll('.ol-text').length - 1`)
+await evalJs(`window.__ltSet(${undoRowIdx}, '撤销测试A')`)
+await evalJs(`window.__ltKey(${undoRowIdx}, 'z', { ctrlKey: true })`)
+const undoPendingOk = await until(`() => {
+  const els = document.querySelectorAll('.ol-text')
+  return !!els[${undoRowIdx}] && els[${undoRowIdx}].textContent === ''
+}`)
+await evalJs(`document.querySelector('[data-hist="redo"]')?.click()`)
+const redoTextOk = await until(`() => document.querySelectorAll('.ol-text')[${undoRowIdx}]?.textContent === '撤销测试A'`)
+
+await evalJs(`(() => {
+  const el = document.querySelector('.ol-title')
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+  set.call(el, '自测改名')
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
+await sleep(1500)
+await evalJs(`document.querySelector('[data-hist="undo"]')?.click()`)
+const titleUndoOk = await until(`() => document.querySelector('.ol-title')?.value !== '自测改名'`)
+
+await evalJs(`window.__ltSet(${undoRowIdx}, '手动保存X')`)
+await sleep(200)
+const unsavedStateOk = await evalJs(`document.querySelector('.ol-save')?.dataset.state === 'unsaved'`)
+await evalJs(`document.querySelector('.ol-save')?.click()`)
+const manualSavedOk = await until(
+  `() => window.lexbench.outlines.get(${noteRowForUndo}).then((r) => r.tree.includes('手动保存X'))`
+)
+const savedStateOk = await until(`() => document.querySelector('.ol-save')?.dataset.state === 'saved'`)
+await evalJs(`window.__ltSet(${undoRowIdx}, '快捷键保存Y')`)
+await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }))`)
+const ctrlSOk = await until(
+  `() => window.lexbench.outlines.get(${noteRowForUndo}).then((r) => r.tree.includes('快捷键保存Y'))`
+)
+
+await sleep(1500)
+await evalJs(`window.__ltSet(${undoRowIdx}, '切换标签Z')`)
+await sleep(1500)
+await evalJs(`[...document.querySelectorAll('.rail-item')].find((b) => b.textContent.includes('文档库'))?.click()`)
+await sleep(600)
+await evalJs(`[...document.querySelectorAll('.rail-item')].find((b) => b.textContent.includes('笔记'))?.click()`)
+const tabBackOk = await until(`() => !!document.querySelector('.ol-head')`)
+await sleep(700)
+const tabUndoEnabledOk = await evalJs(`document.querySelector('[data-hist="undo"]')?.disabled === false`)
+await evalJs(`document.querySelector('[data-hist="undo"]')?.click()`)
+const tabUndoOk = await until(
+  `() => document.querySelectorAll('.ol-text')[${undoRowIdx}]?.textContent !== '切换标签Z'`
+)
+
+// 导图：单命令单步 + 撤销/重做
+await evalJs(`[...document.querySelectorAll('.ol-view-switch button')].find((b) => b.textContent.includes('导图'))?.click()`)
+const mapUndoUp = await until(`() => !!document.querySelector('jmnode')`)
+await sleep(700)
+const mapUndoBefore = await evalJs(`document.querySelectorAll('jmnode').length`)
+await evalJs(`(() => {
+  const host = document.querySelector('.jsmind-inner') || document.querySelector('.mm-root')
+  host?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  return !!host
+})()`)
+await sleep(600)
+await evalJs(`(() => {
+  const inp = document.querySelector('.jsmind-editor')
+  if (!inp) return false
+  inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  return true
+})()`)
+await sleep(600)
+const mapUndoAfter = await evalJs(`document.querySelectorAll('jmnode').length`)
+await evalJs(`document.querySelector('[data-hist="undo"]')?.click()`)
+const mapUndoCanvasOk = await until(`() => document.querySelectorAll('jmnode').length === ${mapUndoBefore}`)
+const mapUndoDbOk = await until(`() => window.lexbench.outlines.get(${noteRowForUndo}).then((r) => {
+  let n = 0
+  const w = (l) => (l || []).forEach((x) => { n += 1; w(x.children) })
+  w(JSON.parse(r.tree))
+  return n === ${mapUndoBefore - 1}
+})`)
+await evalJs(`document.querySelector('[data-hist="redo"]')?.click()`)
+const mapRedoCanvasOk = await until(`() => document.querySelectorAll('jmnode').length === ${mapUndoAfter}`)
+const mapRedoDbOk = await until(`() => window.lexbench.outlines.get(${noteRowForUndo}).then((r) => {
+  let n = 0
+  const w = (l) => (l || []).forEach((x) => { n += 1; w(x.children) })
+  w(JSON.parse(r.tree))
+  return n === ${mapUndoAfter - 1}
+})`)
+
+// ---------- 旧引用数据 ----------
+console.log('=== 13b. 旧 ref 节点按普通文本处理 ===')
+const legacyId = await evalJs(`(async () => {
+  const row = await window.lexbench.outlines.create('旧引用自测')
+  await window.lexbench.outlines.save(row.id, JSON.stringify([
+    { id: 'legacy1', text: '《民法典》第一条', children: [{ id: 'legacy2', text: '旧引用正文', children: [] }], ref: { docId: 1, articleId: 1 } }
+  ]))
+  return row.id
+})()`)
+await send('Page.reload')
+await sleep(2500)
+const legacyMounted = await waitMounted()
+await injectHelpers()
+await evalJs(`[...document.querySelectorAll('.rail-item')].find((b) => b.textContent.includes('笔记'))?.click()`)
+await sleep(500)
+const legacyOpened = await evalJs(`(() => {
+  const c = [...document.querySelectorAll('.np-card')].find((x) => (x.getAttribute('title') || '') === '旧引用自测')
+  if (!c) return false
+  c.click()
+  return true
+})()`)
+await until(`() => !!document.querySelector('.ol-text')`)
+await sleep(500)
+const legacyRefPlainOk = await evalJs(`(() => {
+  const row = [...document.querySelectorAll('.ol-row')].find((r) => (r.querySelector('.ol-text')?.textContent ?? '').includes('民法典'))
+  return !!row && !row.classList.contains('is-ref') && !(row.querySelector('.ol-bullet')?.textContent ?? '').includes('📖')
+})()`)
+await evalJs(`window.__ltSet(0, '《民法典》第一条（旧）')`)
+await sleep(200)
+await evalJs(`document.querySelector('.ol-save')?.click()`)
+const legacyNoRefOk = await until(`() => window.lexbench.outlines.get(${legacyId}).then((r) => {
+  const t = JSON.parse(r.tree)
+  const hasRef = (ns) => (ns || []).some((x) => x.ref || hasRef(x.children))
+  return r.tree.includes('（旧）') && !hasRef(t)
+})`)
+await evalJs(`document.querySelector('[data-act="delete-row"]')?.click()`)
+const legacyGoneOk = await until(`() => ![...document.querySelectorAll('.ol-text')].some((e) => e.textContent.includes('民法典'))`)
+await evalJs(`document.querySelector('[data-hist="undo"]')?.click()`)
+const legacyRestoredOk = await until(`() => [...document.querySelectorAll('.ol-text')].some((e) => e.textContent.includes('民法典'))`)
+
 // ---------- 收尾 ----------
-console.log('=== 13. 收尾清理 ===')
+console.log('=== 14. 收尾清理 ===')
 await evalJs(`(async () => {
   const s = await window.lexbench.outlines.listStarred()
   for (const x of s) await window.lexbench.outlines.setStarred(x.article_id, false)
@@ -1002,13 +1173,17 @@ const checks = [
   ['往返快照（切走切回不丢）', roundtripOk],
   ['/ 唤出插入浮层', pickerOpen],
   ['浮层出候选', pickerHits],
-  ['＋插入引用行', addOk],
+  ['＋插入法条行', addOk],
   ['浮层不关（连加）', stillOpen],
   ['第二条继续插入', secondOk],
   ['✕ 关闭浮层', pickerClosed],
-  ['引用节点 ref 落库', refSaved],
-  ['粘贴生成引用节点', pasteRefOk && pasteRefRowOk],
-  ['逃生门 API + contextmenu 派发', escapeOk],
+  ['插入法条为纯文本（无 ref）', plainInsertOk],
+  ['插入行无引用 UI', plainUiOk],
+  ['行菜单无「打开来源」', rowMenuNoSourceOk],
+  ['悬停删除插入行', insertedGoneOk],
+  ['撤销恢复插入行', insertedRestoredOk],
+  ['旧 data-lb-ref 粘贴为普通文本', legacyPasteOk && legacyPlainOk],
+  ['ref 通道 API 已移除', noRefApisOk],
   ['打开法规阅读页', inReading],
   ['星标按钮点亮', starClickOk],
   ['星标落库', starDbOk],
@@ -1047,6 +1222,20 @@ const checks = [
   ['导入：执行落库', importRunOk],
   ['导入：同源重复 skip', importDupOk],
   ['导入：OPML 树结构', importTreeOk],
+  ['撤销/重做按钮可见', undoBtnOk],
+  ['输入后立即 Ctrl+Z', undoPendingOk],
+  ['重做恢复输入', redoTextOk],
+  ['标题撤销', titleUndoOk],
+  ['编辑后状态未保存', unsavedStateOk],
+  ['手动保存立即落库', manualSavedOk && savedStateOk],
+  ['Ctrl+S 立即落库', ctrlSOk],
+  ['切 tab 回来可撤销', tabBackOk && tabUndoEnabledOk && tabUndoOk],
+  ['导图新增节点', mapUndoUp && mapUndoAfter > mapUndoBefore],
+  ['导图撤销画布与 DB 一致', mapUndoCanvasOk && mapUndoDbOk],
+  ['导图重做画布与 DB 一致', mapRedoCanvasOk && mapRedoDbOk],
+  ['旧 ref 按普通文本显示', legacyMounted && legacyOpened && legacyRefPlainOk],
+  ['旧 ref 编辑保存后清除', legacyNoRefOk],
+  ['旧 ref 行可删除并撤销', legacyGoneOk && legacyRestoredOk],
   ['测试数据已清理', cleanOk],
   ['零控制台错误', errors.length === 0]
 ]

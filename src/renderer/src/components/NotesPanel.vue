@@ -816,6 +816,7 @@ defineExpose({ refreshStarred })
             role="button"
             tabindex="0"
             :draggable="!isRenaming('note', n.id)"
+            :data-note-id="n.id"
             :class="{
               selected: n.id === activeId,
               dragging: dragging?.kind === 'note' && dragging.id === n.id

@@ -2,15 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import jsMind from 'jsmind'
 import 'jsmind/style/jsmind.css'
-import { cloneSubtree, newOutlineId, nodeImages } from '@shared/outlineTree'
-import type { OutlineNode, OutlineRef } from '@shared/types'
+import { cloneSubtree, newOutlineId, nodeImages, sameOutlineTree } from '@shared/outlineTree'
+import type { OutlineNode } from '@shared/types'
 
 /**
  * 思维导图视图：与大纲共用同一棵树。
  * - 节点拖动 = 改挂载（拖到节点中部成为子级，拖到上/下缘成为前后同级），带落点高亮；
- * - 底部工具条 / 右键菜单 / 缩放控件；Tab 子主题、Enter 同级、Shift+Tab 在前插入同级；
- * - 节点备注、待办、图片（背景缩略图）与大纲实时互通；
- * - 自身改动 emit change；父级回流用 pendingSelf 吞掉一次，防重载闪屏。
+ * - 工具条 / 右键菜单 / 缩放控件；Tab 子主题、Enter 同级、Shift+Tab 在前插入同级；
+ * - 节点备注、待办、图片与大纲实时互通；
+ * - `lastSync` 永远等于画布当前渲染的树：自身改动后回流被它挡掉，外部换树（撤销/重做）则重载。
  */
 const props = defineProps<{
   tree: OutlineNode[]
@@ -27,16 +27,17 @@ const emit = defineEmits<{
   (e: 'rename', title: string): void
   (e: 'undo'): void
   (e: 'redo'): void
-  /** 请求插入法条引用（/、@、Ctrl+K）：浮层在大纲壳里，导图只报锚点节点 */
-  (e: 'ref-request', nodeId: string): void
+  /** 请求插入法条（/、@、Ctrl+K）：浮层在大纲壳里，导图只报锚点节点 */
+  (e: 'insert-request', nodeId: string): void
 }>()
 
 const hostEl = ref<HTMLElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
 let jm: jsMind | null = null
-let pendingSelf = false
-/** 最近一次同步出去的树：外部回流若与它同构就不重载画布（防无意义重建闪屏/高亮重闪） */
+/** 画布当前实际渲染的树（自身 sync 或 loadTree 后更新）；回流与它同构就只刷装饰 */
 let lastSync: OutlineNode[] | null = null
+/** >0 时吞掉 jsMind 内部事件：批量命令只允许显式 syncToParent 提交一次 */
+let suppressSync = 0
 let metaById = new Map<string, OutlineNode>()
 let resizeTimers: ReturnType<typeof setTimeout>[] = []
 let centerTimer: ReturnType<typeof setTimeout> | undefined
@@ -295,7 +296,6 @@ const themeVars = computed<Record<string, string>>(() => {
 
 function toJsMindNode(n: OutlineNode): Record<string, unknown> {
   const data: Record<string, unknown> = {}
-  if (n.ref) data['ref'] = { ...n.ref }
   if (n.note) data['note'] = n.note
   if (n.task) data['task'] = n.task
   if (n.heading) data['heading'] = n.heading
@@ -380,7 +380,6 @@ function fromJsMind(data: unknown): OutlineNode[] {
         data?: Record<string, unknown>
         expanded?: boolean
         children?: unknown[]
-        ref?: OutlineRef
         note?: string
         task?: 1 | 2
         heading?: 1 | 2 | 3
@@ -393,7 +392,6 @@ function fromJsMind(data: unknown): OutlineNode[] {
       const bag = it.data ?? {}
       const fallback = metaById.get(it.id)
       const topic = (it.topic ?? '').trim() === '' ? '' : (it.topic ?? '')
-      const ref = it.ref ?? (bag['ref'] as OutlineRef | undefined) ?? fallback?.ref
       const note = it.note ?? (bag['note'] as string | undefined) ?? fallback?.note
       const task = it.task ?? (bag['task'] as 1 | 2 | undefined) ?? fallback?.task
       const heading = it.heading ?? (bag['heading'] as 1 | 2 | 3 | undefined) ?? fallback?.heading
@@ -409,7 +407,6 @@ function fromJsMind(data: unknown): OutlineNode[] {
         children: walk(it.children)
       }
       if (it.expanded === false) node.fold = true
-      if (ref) node.ref = { ...ref }
       if (note) node.note = note
       if (task) node.task = task
       if (heading) node.heading = heading
@@ -436,13 +433,13 @@ function indexTree(nodes: OutlineNode[]): Map<string, OutlineNode> {
 // ---------- 同步 ----------
 
 function syncToParent(): void {
-  if (!jm) return
+  if (!jm || suppressSync > 0) return
   try {
     const fmt = jm.get_data('node_tree') as { data?: unknown }
     const out = fromJsMind(fmt.data)
     metaById = indexTree(out)
+    // lastSync 永远等于画布刚同步出去的树：父级回流与它同构时只刷装饰，不重载
     lastSync = out
-    pendingSelf = true
     emit('change', out)
     paintDecorations()
   } catch (e) {
@@ -450,27 +447,56 @@ function syncToParent(): void {
   }
 }
 
+/** 批量命令：吞掉 jsMind 内部事件，结束后只允许显式 syncToParent 提交一次 */
+function quiet(fn: () => void): void {
+  suppressSync += 1
+  try {
+    fn()
+  } finally {
+    suppressSync = Math.max(0, suppressSync - 1)
+  }
+}
+
+function cloneTree(nodes: OutlineNode[]): OutlineNode[] {
+  return JSON.parse(JSON.stringify(nodes)) as OutlineNode[]
+}
+
 let loadSeq = 0
 
 async function loadTree(nodes: OutlineNode[]): Promise<void> {
   if (!jm) return
   const seq = ++loadSeq
+  const panel = jm.view.e_panel
+  const keepView = initialFitDone
+  const scroll = panel ? { left: panel.scrollLeft, top: panel.scrollTop } : null
+  const selectedId = jm.get_selected_node()?.id ?? null
   metaById = indexTree(nodes)
   // 图片先转成 Blob URL 再渲染：自定义节点渲染是同步的，URL 没就绪会只剩文字
   await preloadImages(nodes)
   if (seq !== loadSeq || !jm) return
-  jm.show({
-    meta: { name: 'lexbench-note', author: 'lexbench', version: '1.0' },
-    format: 'node_tree',
-    data: toJsMind(nodes)
-  } as never)
-  jm.select_node(jm.get_root())
+  // show 期间 jsMind 可能派发 edit/show 事件；先静音，避免把「刚载入的树」当成用户改动回流
+  suppressSync += 1
+  try {
+    jm.show({
+      meta: { name: 'lexbench-note', author: 'lexbench', version: '1.0' },
+      format: 'node_tree',
+      data: toJsMind(nodes)
+    } as never)
+  } finally {
+    setTimeout(() => {
+      suppressSync = Math.max(0, suppressSync - 1)
+    }, 0)
+  }
+  // 不变量：lastSync = 画布当前实际渲染的树（深拷贝，父级后续会就地改自己的树）
+  lastSync = cloneTree(nodes)
+  const keepNode = selectedId ? (jm.mind.nodes[selectedId] ?? null) : null
+  jm.select_node(keepNode ?? jm.get_root())
   scheduleResize()
   paintDecorations()
   const reveal = pendingRevealId
   const rseq = ++revealSeq
   if (reveal) {
-    // 有要揭示的新节点（刚插入的引用）：本轮的「回到画布中央」让位，
+    // 有要揭示的新节点（刚插入的法条）：本轮的「回到画布中央」让位，
     // 等 resize 后的二次布局稳定再滚过去，否则刚滚到就被 centerViewport 拉回中间
     pendingRevealId = null
     const doReveal = (): void => {
@@ -478,8 +504,17 @@ async function loadTree(nodes: OutlineNode[]): Promise<void> {
     }
     nextTick(doReveal)
     setTimeout(doReveal, 380)
+  } else if (keepView && scroll) {
+    // 外部换树（撤销/重做）：保留原来的视口，不要每次都跳回画布中央
+    const applyScroll = (): void => {
+      if (!panel) return
+      panel.scrollLeft = scroll.left
+      panel.scrollTop = scroll.top
+    }
+    nextTick(applyScroll)
+    setTimeout(applyScroll, 320)
   } else {
-    // 初次进入/重载把视口放在额外画布中间，四向都有可拖空间
+    // 初次进入/切换笔记：把视口放在额外画布中间，四向都有可拖空间
     nextTick(() => centerViewport())
     scheduleCenter()
     if (!initialFitDone) {
@@ -597,32 +632,6 @@ function renderNodeWithImage(_jm: unknown, el: HTMLElement, node: { topic?: stri
 
 // ---------- 节点装饰（任务/备注） ----------
 
-/** 树同构比较：字段逐比 + 子树递归（归一化可能改字段序，不能用 JSON 全串比） */
-function sameTree(a: OutlineNode[], b: OutlineNode[]): boolean {
-  if (a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]
-    const y = b[i]
-    if (!x || !y) return false
-    if (
-      x.id !== y.id ||
-      x.text !== y.text ||
-      x.fold !== y.fold ||
-      x.task !== y.task ||
-      x.heading !== y.heading ||
-      (x.note ?? '') !== (y.note ?? '') ||
-      (x.image ?? '') !== (y.image ?? '') ||
-      (x.html ?? '') !== (y.html ?? '') ||
-      (x.images ?? []).join('\u0000') !== (y.images ?? []).join('\u0000') ||
-      JSON.stringify(x.ref ?? null) !== JSON.stringify(y.ref ?? null)
-    ) {
-      return false
-    }
-    if (!sameTree(x.children ?? [], y.children ?? [])) return false
-  }
-  return true
-}
-
 /** jsMind 内联编辑输入框被打断（DOM 重画拆掉）后残留会把 is_editing() 卡成 true：
  *  方向键从此全哑，残留蓝框条压在标题下像一条蓝线。每次交互前兜底收尾/清理。 */
 function recoverStaleEditor(): void {
@@ -663,8 +672,6 @@ function paintDecorations(): void {
     el.classList.toggle('mm-task', !!node?.task)
     el.classList.toggle('mm-task-done', node?.task === 2)
     el.classList.toggle('mm-has-note', !!node?.note)
-    // 法条引用节点：与大纲里的引用行同一套视觉语汇（衬线 + 强调色 + 📖）
-    el.classList.toggle('mm-ref', !!node?.ref)
     const jsnode = jm.mind.nodes[id]
     el.title = jsnode?.isroot ? '拖动空白处平移画布' : '拖动调整层级（松手到目标上/下缘=同级）'
   }
@@ -710,10 +717,30 @@ function revealNode(id: string): void {
 function requestRefPicker(): void {
   const sel = ensureSelected()
   if (!sel) return
-  emit('ref-request', sel.id)
+  emit('insert-request', sel.id)
 }
 
-defineExpose({ revealNode })
+/** 撤销/重做等外部换树前：清掉回流指纹，保证 watcher 一定重载画布 */
+function invalidateSync(): void {
+  lastSync = null
+}
+
+/** 把正在进行的行内编辑/备注卡草稿提交进树（保存、撤销、切视图前调用） */
+function flushEditing(): void {
+  if (!jm) return
+  if (noteEditor.open) saveNoteEditor()
+  recoverStaleEditor()
+  if (jm.view.is_editing()) {
+    try {
+      ;(jm.view as unknown as { edit_node_end: () => void }).edit_node_end()
+    } catch {
+      /* 编辑器已失联：丢失的改动本就不在 DOM */
+    }
+  }
+  paintDecorations()
+}
+
+defineExpose({ revealNode, invalidateSync, flushEditing })
 
 function nodeFrame(n: MNode): { x: number; y: number; w: number; h: number } {
   const loc = n.get_location()
@@ -822,9 +849,12 @@ function addChild(topic = '新主题'): void {
   const sel = ensureSelected()
   if (!sel) return
   const id = newOutlineId()
-  jm.add_node(sel.id, id, topic, undefined, sel.isroot ? rootSideForNew() : sel.direction)
-  jm.expand_node(sel.id)
-  jm.select_node(id)
+  // jsMind 的 add_node 内部会触发 expand + edit 两次事件：静音后统一提交一次
+  quiet(() => {
+    jm!.add_node(sel.id, id, topic, undefined, sel.isroot ? rootSideForNew() : sel.direction)
+    jm!.expand_node(sel.id)
+    jm!.select_node(id)
+  })
   syncToParent()
   nextTick(() => {
     jm?.begin_edit(id)
@@ -842,15 +872,17 @@ function addSibling(before = false): void {
   }
   const parent = sel.parent
   const id = newOutlineId()
-  jm.add_node(parent.id, id, '新主题', undefined, sel.direction)
-  if (!before) {
-    const idx = parent.children.findIndex((c) => c.id === sel.id)
-    const next = parent.children[idx + 1]
-    if (next && next.id !== id) jm.move_node(id, next.id, parent.id, sel.direction)
-  } else {
-    jm.move_node(id, sel.id, parent.id, sel.direction)
-  }
-  jm.select_node(id)
+  quiet(() => {
+    jm!.add_node(parent.id, id, '新主题', undefined, sel.direction)
+    if (!before) {
+      const idx = parent.children.findIndex((c) => c.id === sel.id)
+      const next = parent.children[idx + 1]
+      if (next && next.id !== id) jm!.move_node(id, next.id, parent.id, sel.direction)
+    } else {
+      jm!.move_node(id, sel.id, parent.id, sel.direction)
+    }
+    jm!.select_node(id)
+  })
   syncToParent()
   nextTick(() => {
     jm?.begin_edit(id)
@@ -863,8 +895,10 @@ function deleteSelected(): void {
   const sel = jm.get_selected_node()
   if (!sel || sel.isroot) return
   const parentId = sel.parent?.id
-  jm.remove_node(sel.id)
-  if (parentId) jm.select_node(parentId)
+  quiet(() => {
+    jm!.remove_node(sel.id)
+    if (parentId) jm!.select_node(parentId)
+  })
   syncToParent()
   paintDecorations()
 }
@@ -873,8 +907,10 @@ function toggleCollapse(): void {
   if (!jm) return
   const sel = ensureSelected()
   if (!sel || !(sel.children ?? []).length) return
-  if (sel.expanded) jm.collapse_node(sel.id)
-  else jm.expand_node(sel.id)
+  quiet(() => {
+    if (sel.expanded) jm!.collapse_node(sel.id)
+    else jm!.expand_node(sel.id)
+  })
   syncToParent()
   paintDecorations()
   scheduleResize()
@@ -882,18 +918,23 @@ function toggleCollapse(): void {
 
 function collapseAll(): void {
   if (!jm) return
-  for (const n of Object.values(jm.mind.nodes)) {
-    if (!n.isroot && (n.children ?? []).length) jm.collapse_node(n.id)
-  }
+  // 循环会逐个触发 show 事件：静音后只提交一次，避免 N 个历史步与 O(N²) 重建
+  quiet(() => {
+    for (const n of Object.values(jm!.mind.nodes)) {
+      if (!n.isroot && (n.children ?? []).length) jm!.collapse_node(n.id)
+    }
+  })
   syncToParent()
   paintDecorations()
 }
 
 function expandAll(): void {
   if (!jm) return
-  for (const n of Object.values(jm.mind.nodes)) {
-    if ((n.children ?? []).length) jm.expand_node(n.id)
-  }
+  quiet(() => {
+    for (const n of Object.values(jm!.mind.nodes)) {
+      if ((n.children ?? []).length) jm!.expand_node(n.id)
+    }
+  })
   syncToParent()
   paintDecorations()
   scheduleResize()
@@ -913,11 +954,13 @@ function duplicateSelected(): void {
   if (!src) return
   const parent = sel.parent
   const copy = cloneSubtree(src, newOutlineId)
-  jm.add_nodes(parent.id, [toJsMindNode(copy)] as never)
-  const idx = parent.children.findIndex((c) => c.id === sel.id)
-  const next = parent.children[idx + 1]
-  if (next && next.id !== copy.id) jm.move_node(copy.id, next.id, parent.id, sel.direction)
-  jm.select_node(copy.id)
+  quiet(() => {
+    jm!.add_nodes(parent.id, [toJsMindNode(copy)] as never)
+    const idx = parent.children.findIndex((c) => c.id === sel.id)
+    const next = parent.children[idx + 1]
+    if (next && next.id !== copy.id) jm!.move_node(copy.id, next.id, parent.id, sel.direction)
+    jm!.select_node(copy.id)
+  })
   syncToParent()
   paintDecorations()
   nextTick(() => jm?.scroll_node_to_center(copy.id))
@@ -1037,9 +1080,11 @@ async function attachImages(files: File[], target?: MNode | null): Promise<void>
   if (url) await decodeImage(list[0]!, url)
   if (!jm) return
   // 自定义节点渲染：重画节点（文字 + 图片缩略图），并按新尺寸重新布局
-  jm.update_node(sel.id, sel.topic)
-  jm.layout.layout()
-  jm.view.relayout()
+  quiet(() => {
+    jm!.update_node(sel.id, sel.topic)
+    jm!.layout.layout()
+    jm!.view.relayout()
+  })
   paintDecorations()
   syncToParent()
   nextTick(() => jm?.scroll_node_to_center(sel.id))
@@ -1225,15 +1270,17 @@ function onPointerUp(): void {
       const from = jm.mind.nodes[fromId]
       const target = jm.mind.nodes[targetId]
       if (from && target) {
-        if (mode === 'child') {
-          jm.expand_node(target.id)
-          jm.move_node(from.id, undefined, target.id, target.isroot ? rootSideForNew() : target.direction)
-        } else if (!target.isroot && target.parent) {
-          const parent = target.parent
-          const idx = parent.children.findIndex((c) => c.id === target.id)
-          const next = mode === 'after' ? parent.children[idx + 1] : target
-          jm.move_node(from.id, next?.id, parent.id, target.direction)
-        }
+        quiet(() => {
+          if (mode === 'child') {
+            jm!.expand_node(target.id)
+            jm!.move_node(from.id, undefined, target.id, target.isroot ? rootSideForNew() : target.direction)
+          } else if (!target.isroot && target.parent) {
+            const parent = target.parent
+            const idx = parent.children.findIndex((c) => c.id === target.id)
+            const next = mode === 'after' ? parent.children[idx + 1] : target
+            jm!.move_node(from.id, next?.id, parent.id, target.direction)
+          }
+        })
         syncToParent()
         paintDecorations()
         scheduleResize()
@@ -1700,7 +1747,7 @@ onMounted(async () => {
     })
     void loadTree(props.tree)
     jm.add_event_listener((type, data) => {
-      if (!jm) return
+      if (!jm || suppressSync > 0) return
       if (type === jsMind.event_type.edit) {
         // 中心主题就是笔记标题：导图里改名要回写标题，不能只改虚拟 root
         const root = jm.get_root()
@@ -1800,15 +1847,8 @@ function onDocumentClick(ev: MouseEvent): void {
 watch(
   () => props.tree,
   (t) => {
-    if (pendingSelf) {
-      pendingSelf = false
-      // 回流的是自己刚同步的树：只刷新装饰，不重载画布
-      metaById = indexTree(t)
-      paintDecorations()
-      return
-    }
-    // 同构树（含归一化差异）也不重载：每次交互都重建画布会闪高亮、丢选中态
-    if (lastSync && sameTree(t, lastSync)) {
+    // lastSync = 画布当前渲染的树：同构即自身回流（或外部无变化），只刷装饰
+    if (lastSync && sameOutlineTree(t, lastSync)) {
       metaById = indexTree(t)
       paintDecorations()
       return
@@ -1823,7 +1863,8 @@ watch(
     if (!jm) return
     const root = jm.get_root()
     if (root && root.topic !== (t || '笔记')) {
-      jm.update_node(root.id, t || '笔记')
+      // 标题不是树内容：静音避免 update_node 的 edit 事件再回流一次
+      quiet(() => jm?.update_node(root.id, t || '笔记'))
       paintDecorations()
     }
   }
@@ -2153,29 +2194,6 @@ body.mm-dragging .ol-mind * {
   margin-right: 5px;
   color: var(--mm-muted, var(--lb-muted));
   font-size: 13px;
-}
-
-/* 法条引用：📖 常显；同时是待办时与勾选框并存（两个标记都挂 ::before）*/
-.ol-mind jmnode.mm-ref::before {
-  content: '📖';
-  display: inline-block;
-  margin-right: 5px;
-  font-size: 12px;
-}
-
-.ol-mind jmnode.mm-ref.mm-task::before {
-  content: '📖 ☐';
-}
-
-.ol-mind jmnode.mm-ref.mm-task-done::before {
-  content: '📖 ☑';
-}
-
-/* :not(.selected) 让选中态的强调边框优先级不受影响 */
-.ol-mind jmnode.mm-ref:not(.selected) {
-  font-family: var(--lb-serif);
-  color: var(--mm-accent, var(--lb-accent));
-  border-color: var(--mm-accent-line, rgba(0, 113, 227, 0.34));
 }
 
 .ol-mind jmnode.mm-task-done::before {

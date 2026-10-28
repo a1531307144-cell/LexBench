@@ -27,11 +27,25 @@ import {
   outdentNode,
   rangeNodeIds,
   removeNode,
+  sameOutlineTree,
   splitOutlineNode,
+  stableStringify,
   visibleNodeIds
 } from '@shared/outlineTree'
+import {
+  anchorOf,
+  initHistory,
+  pushHistory as pushHistoryState,
+  redoHistory as redoHistoryState,
+  retitleState,
+  trimHistory,
+  undoHistory as undoHistoryState,
+  type HistoryEntry,
+  type HistoryState
+} from '@shared/noteHistory'
 import { escapeHtml, hasInlineFormatting, htmlFromPlainText } from '@shared/outlineRichText'
-import type { ExportFormat, OutlineNode, OutlineRef, OutlineRow, SearchHit } from '@shared/types'
+import type { ExportFormat, OutlineNode, OutlineRow, SearchHit } from '@shared/types'
+import { dropNoteHistory, loadNoteHistory, saveNoteHistory } from '../composables/noteHistoryStore'
 
 /**
  * 大纲编辑器（笔记主视图）。
@@ -44,7 +58,6 @@ const props = defineProps<{ outline: OutlineRow }>()
 const emit = defineEmits<{
   (e: 'error', err: unknown): void
   (e: 'list-changed'): void
-  (e: 'open-source', ref: OutlineRef): void
   (e: 'delete-request'): void
   (e: 'notice', text: string): void
 }>()
@@ -64,7 +77,9 @@ function parseTree(raw: string): OutlineNode[] {
 
 const tree = ref<OutlineNode[]>(parseTree(props.outline.tree))
 if (tree.value.length === 0) tree.value = [createOutlineNode('')]
-/** 导图视图实例：插入引用后点名揭示新节点（选中 + 居中） */
+/** 树代际：异步操作（检索插入/贴图）await 回来后发现已撤销/切走就放弃写回 */
+let treeEpoch = 0
+/** 导图视图实例：插入法条后点名揭示新节点（选中 + 居中） */
 const mapRef = ref<InstanceType<typeof MindMapView> | null>(null)
 const title = ref(props.outline.title)
 const displayTitle = computed(() => title.value.trim() || '未命名笔记')
@@ -73,10 +88,14 @@ const displayTitle = computed(() => title.value.trim() || '未命名笔记')
 watch(
   () => props.outline.title,
   (t) => {
-    if (titleDirty) return
+    if (titleDirty.value) return
     const el = document.activeElement
     if (el instanceof HTMLElement && el.classList.contains('ol-title')) return
-    if (t && t !== title.value) title.value = t
+    if (t && t !== title.value) {
+      title.value = t
+      // 列表页的外部改名不算「可撤销的编辑」：同步改写历史标题，撤销不会把它倒回去
+      retitleHistoryNow(t)
+    }
   }
 )
 const viewMode = ref<'outline' | 'map'>(props.outline.view_mode === 'map' ? 'map' : 'outline')
@@ -242,7 +261,8 @@ function editorFor(id: string | null): TextEditorApi | null {
 function focusNode(id: string, offset: number | 'end' | 'start' = 'end'): void {
   const hit = findNode(tree.value, id)
   if (!hit) return
-  expandAncestors(tree.value, id)
+  // 聚焦时可能展开折叠祖先（树真的变了）：补一次保存，别让状态显示「已保存」却丢了折叠态
+  if (expandAncestors(tree.value, id)) scheduleSave()
   // 聚焦文字永远不点亮整行：高光只保留鼠标悬停与编辑框内的文字选区
   selected.clear()
   anchorId.value = id
@@ -255,22 +275,32 @@ function focusNode(id: string, offset: number | 'end' | 'start' = 'end'): void {
   })
 }
 
-// ---------- 保存（500ms 防抖整树落库） ----------
+// ---------- 保存（500ms 防抖整树落库；手动保存走同一队列） ----------
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined
-let dirty = false
-let titleDirty = false
+const dirty = ref(false)
+const titleDirty = ref(false)
+const saving = ref(false)
+const saveError = ref(false)
+const saveAnnounce = ref('')
+let saveSeq = 0
+let saveChain: Promise<void> = Promise.resolve()
+let disposed = false
 
 function scheduleSave(): void {
-  dirty = true
+  dirty.value = true
+  saveError.value = false
   clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => void saveNow(false), 500)
+  saveTimer = setTimeout(() => void saveNow(), 500)
 }
 
 function scheduleTitleSave(): void {
-  titleDirty = true
+  titleDirty.value = true
+  saveError.value = false
   clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => void saveNow(true), 500)
+  saveTimer = setTimeout(() => void saveNow(), 500)
+  // 标题也是笔记内容：与正文同一套 700ms 汇总历史
+  scheduleHistory()
 }
 
 /** 笔记已被删（如删除/数据恢复后的卸载冲刷）：不再弹「笔记不存在」打扰 */
@@ -278,60 +308,125 @@ function isMissingNoteError(e: unknown): boolean {
   return (e instanceof Error ? e.message : String(e)).includes('笔记不存在')
 }
 
-async function saveNow(withTitle: boolean): Promise<void> {
-  // 先算清本次要不要带标题再决定是否早退：否则「只改了标题」时早退已把定时器清掉，标题永远不落盘
-  const sendTitle = titleDirty || withTitle
+/**
+ * 入队一次保存并返回是否成功。
+ * 串行链 + saveSeq：旧请求即使晚失败，也不会把新请求的「已保存」状态改回未保存。
+ * 不强制写标题：只认 titleDirty，避免把列表页刚改的名字盖回旧值。
+ */
+function saveNow(): Promise<boolean> {
+  const sendTitle = titleDirty.value
   clearTimeout(saveTimer)
-  if (!dirty && !sendTitle) return
-  dirty = false
-  titleDirty = false
-  try {
-    await window.lexbench.outlines.save(
-      props.outline.id,
-      JSON.stringify(tree.value),
-      sendTitle ? title.value : undefined
-    )
-    if (sendTitle) emit('list-changed')
-  } catch (e) {
-    if (isMissingNoteError(e)) return
-    dirty = true
-    if (sendTitle) titleDirty = true
-    emit('error', e)
+  if (!dirty.value && !sendTitle) return saveChain.then(() => !saveError.value)
+  const payloadTree = JSON.stringify(tree.value)
+  const payloadTitle = title.value
+  dirty.value = false
+  if (sendTitle) titleDirty.value = false
+  saveError.value = false
+  saving.value = true
+  const seq = ++saveSeq
+  let ok = false
+  const job = async (): Promise<void> => {
+    try {
+      await window.lexbench.outlines.save(
+        props.outline.id,
+        payloadTree,
+        sendTitle ? payloadTitle : undefined
+      )
+      ok = true
+      if (seq === saveSeq) {
+        saving.value = false
+        saveError.value = false
+      }
+      if (sendTitle && !disposed) emit('list-changed')
+    } catch (e) {
+      if (isMissingNoteError(e)) {
+        if (seq === saveSeq) saving.value = false
+        return
+      }
+      if (seq === saveSeq) {
+        saveError.value = true
+        saving.value = false
+        dirty.value = true
+        if (sendTitle) titleDirty.value = true
+      }
+      if (!disposed) emit('error', e)
+    }
   }
+  saveChain = saveChain.then(job, job)
+  return saveChain.then(() => ok)
 }
 
-/** 主进程关窗前调用（App → 编辑器）：把防抖窗口里的树与标题立即落盘。
- *  只认 titleDirty，不强行写标题——列表页刚改的名字不能被编辑器手里的旧值盖回去 */
-async function flush(): Promise<void> {
-  await saveNow(false)
+/** 主进程关窗前 / 切笔记前调用：提交导图瞬时编辑 → 清定时器 → 等在途 → 循环补存 */
+async function flush(): Promise<boolean> {
+  mapRef.value?.flushEditing()
+  flushMapHistory()
+  clearTimeout(saveTimer)
+  await saveChain
+  for (let i = 0; i < 3 && (dirty.value || titleDirty.value); i += 1) {
+    await saveNow()
+    await saveChain
+  }
+  return !dirty.value && !titleDirty.value && !saveError.value
+}
+
+const saveState = computed<'saved' | 'unsaved' | 'saving' | 'error'>(() => {
+  if (saveError.value) return 'error'
+  if (saving.value) return 'saving'
+  if (dirty.value || titleDirty.value) return 'unsaved'
+  return 'saved'
+})
+const saveLabel = computed(() => {
+  if (saveState.value === 'error') return '保存失败 · 重试'
+  if (saveState.value === 'saving') return '保存中…'
+  if (saveState.value === 'unsaved') return '保存'
+  return '✓ 已保存'
+})
+
+async function manualSave(): Promise<void> {
+  const ok = await flush()
+  saveAnnounce.value = ok ? '已保存' : '保存失败'
+  if (ok && !disposed) emit('notice', '已保存')
 }
 
 defineExpose({ flush })
 
-// ---------- 撤销 / 重做（整树快照；文字输入每 700ms 汇总一次） ----------
+// ---------- 撤销 / 重做（整树+标题快照；文字输入每 700ms 汇总一次） ----------
 
-const history = ref<string[]>([])
-let historyIndex = 0
+const history = ref<HistoryEntry[]>([])
+const historyIndex = ref(0)
+/** 有尚未汇总进栈的输入：决定撤销按钮是否可用、redo 是否会被新输入截断 */
+const historyPending = ref(false)
 let historyTimer: ReturnType<typeof setTimeout> | undefined
+/** 导图批量变更：树立即落地，只把「历史提交」合并成一个窗口 */
+let mapHistoryOpen = false
+let mapHistoryTimer: ReturnType<typeof setTimeout> | undefined
 
-function snapshot(): string {
-  return JSON.stringify(tree.value)
+function snapshot(): HistoryEntry {
+  return { tree: stableStringify(tree.value), title: title.value }
+}
+
+function currentHistory(): HistoryState {
+  return { entries: history.value, index: historyIndex.value }
+}
+
+function writeHistory(s: HistoryState): void {
+  history.value = s.entries
+  historyIndex.value = s.index
 }
 
 function resetHistory(): void {
-  history.value = [snapshot()]
-  historyIndex = 0
+  writeHistory(initHistory(snapshot()))
+  historyPending.value = false
 }
 
 function pushHistory(): void {
   clearTimeout(historyTimer)
-  const s = snapshot()
-  if (history.value[historyIndex] === s) return
-  history.value = [...history.value.slice(0, historyIndex + 1), s].slice(-100)
-  historyIndex = history.value.length - 1
+  writeHistory(pushHistoryState(currentHistory(), snapshot()))
+  historyPending.value = false
 }
 
 function scheduleHistory(): void {
+  historyPending.value = true
   clearTimeout(historyTimer)
   historyTimer = setTimeout(pushHistory, 700)
 }
@@ -339,21 +434,53 @@ function scheduleHistory(): void {
 /** 结构操作前：把尚未汇总的输入快照落进历史 */
 function beforeStructure(): void {
   clearTimeout(historyTimer)
-  if (history.value[historyIndex] !== snapshot()) pushHistory()
+  writeHistory(pushHistoryState(currentHistory(), snapshot()))
+  historyPending.value = false
 }
 
-function applySnapshot(s: string): void {
+function cancelMapHistory(): void {
+  clearTimeout(mapHistoryTimer)
+  mapHistoryOpen = false
+}
+
+function flushMapHistory(): void {
+  if (!mapHistoryOpen) return
+  clearTimeout(mapHistoryTimer)
+  mapHistoryOpen = false
+  pushHistory()
+}
+
+function retitleHistoryNow(t: string): void {
+  writeHistory(retitleState(currentHistory(), t))
+}
+
+function applySnapshot(entry: HistoryEntry): void {
+  let parsed: unknown
   try {
-    tree.value = normalizeOutlineTree(JSON.parse(s))
+    parsed = JSON.parse(entry.tree)
   } catch {
     return
   }
+  treeEpoch += 1
+  tree.value = normalizeOutlineTree(parsed)
+  if (tree.value.length === 0) tree.value = [createOutlineNode('')]
+  if (title.value !== entry.title) {
+    title.value = entry.title
+    titleDirty.value = true
+  }
+  // 撤销/重做是外部换树：清掉导图回流指纹，保证画布重新载入
+  mapRef.value?.invalidateSync()
   hideToolbar()
   selected.clear()
+  noteEditingId.value = null
+  closeRowMenu()
+  cancelDrag()
   bumpRender()
   scheduleSave()
   nextTick(() => {
-    const id = focusedId.value && findNode(tree.value, focusedId.value) ? focusedId.value : rows.value[0]?.node.id
+    // 只聚焦可见行，不调用会展开祖先的 focusNode（避免撤销后再次改树）
+    const visible = new Set(rows.value.map((r) => r.node.id))
+    const id = focusedId.value && visible.has(focusedId.value) ? focusedId.value : rows.value[0]?.node.id
     if (id) {
       focusedId.value = id
       selected.clear()
@@ -364,17 +491,62 @@ function applySnapshot(s: string): void {
 }
 
 function undo(): void {
+  mapRef.value?.flushEditing()
   clearTimeout(historyTimer)
-  if (historyIndex <= 0) return
-  historyIndex -= 1
-  applySnapshot(history.value[historyIndex] ?? '[]')
+  cancelMapHistory()
+  const res = undoHistoryState(currentHistory(), snapshot())
+  if (!res) {
+    historyPending.value = false
+    return
+  }
+  writeHistory(res.state)
+  historyPending.value = false
+  applySnapshot(res.target)
 }
 
 function redo(): void {
+  mapRef.value?.flushEditing()
   clearTimeout(historyTimer)
-  if (historyIndex >= history.value.length - 1) return
-  historyIndex += 1
-  applySnapshot(history.value[historyIndex] ?? '[]')
+  cancelMapHistory()
+  const res = redoHistoryState(currentHistory(), snapshot())
+  if (!res) {
+    historyPending.value = false
+    return
+  }
+  writeHistory(res.state)
+  historyPending.value = false
+  applySnapshot(res.target)
+}
+
+const canUndo = computed(() => historyIndex.value > 0 || historyPending.value)
+const canRedo = computed(() => historyIndex.value < history.value.length - 1 && !historyPending.value)
+
+// ---------- 会话内跨笔记 / 跨 tab 历史 ----------
+// 编辑器 key 含 outlineRev，切笔记/切 tab/进阅读页都会重挂；历史按 note id 存本会话内存。
+// 恢复只认「当前指针那一条」的树指纹：撤销过再切走时栈顶不是现状，不能拿栈顶校验。
+
+function persistHistory(): void {
+  const id = props.outline.id
+  const state = trimHistory(currentHistory())
+  writeHistory(state)
+  if (state.entries.length <= 1) {
+    dropNoteHistory(id)
+    return
+  }
+  saveNoteHistory(id, state)
+}
+
+function restoreHistory(): void {
+  const cached = loadNoteHistory(props.outline.id)
+  const cur = snapshot()
+  const anchor = cached ? anchorOf(cached.state) : null
+  if (cached && anchor && anchor.tree === cur.tree) {
+    // 栈顶标题与现状不同 = 离开期间在列表页改过名：按外部改名处理，撤销不倒回标题
+    writeHistory(anchor.title === cur.title ? cached.state : retitleState(cached.state, cur.title))
+    historyPending.value = false
+    return
+  }
+  resetHistory()
 }
 
 // ---------- 内容变更 ----------
@@ -502,7 +674,6 @@ function handleBackspace(row: { node: OutlineNode; parent: OutlineNode | null },
   beforeStructure()
   const merged = mergeOutlineNode(tree.value, node.id)
   if (!merged) return
-  if (node.ref && !merged.node.ref) merged.node.ref = node.ref
   pushHistory()
   bumpRender()
   scheduleSave()
@@ -535,6 +706,24 @@ function deleteSelected(): void {
   pushHistory()
   scheduleSave()
   if (rootNodes.value.length === 0) rootNodes.value.push(createOutlineNode(''))
+  bumpRender()
+  const nextId = fallback && findNode(tree.value, fallback) ? fallback : rows.value[0]?.node.id
+  if (nextId) focusNode(nextId, 'end')
+}
+
+/** 行悬停「删除」：不依赖当前选择集，直接删这一行及其全部子级 */
+function deleteRow(id: string): void {
+  const flat = flattenOutline(rootNodes.value, 0, true)
+  const idx = flat.findIndex((r) => r.node.id === id)
+  if (idx < 0) return
+  const fallback = flat[idx - 1]?.node.id ?? flat[idx + 1]?.node.id ?? null
+  beforeStructure()
+  if (!removeNode(tree.value, id)) return
+  selected.delete(id)
+  focusedId.value = null
+  if (rootNodes.value.length === 0) rootNodes.value.push(createOutlineNode(''))
+  pushHistory()
+  scheduleSave()
   bumpRender()
   const nextId = fallback && findNode(tree.value, fallback) ? fallback : rows.value[0]?.node.id
   if (nextId) focusNode(nextId, 'end')
@@ -675,7 +864,7 @@ function isMod(ev: KeyboardEvent): boolean {
 }
 
 function onKeydown(ev: KeyboardEvent): void {
-  if (ev.isComposing) return
+  if (ev.isComposing || ev.defaultPrevented) return
   // 导图有自己的键位/缩放；大纲的快捷键不再从导图冒泡上来重复处理
   if (viewMode.value !== 'outline') return
   const target = ev.target as HTMLElement | null
@@ -1335,9 +1524,8 @@ function onDocClick(ev: MouseEvent): void {
 const noteEditingId = ref<string | null>(null)
 
 function startNote(row: { node: OutlineNode }): void {
-  if (!row.node.note) row.node.note = ''
+  // 只开编辑态，不写 note:''（否则「打开备注」也算一次脏改动）
   noteEditingId.value = row.node.id
-  scheduleSave()
   nextTick(() => {
     const ta = document.querySelector<HTMLTextAreaElement>(
       `.ol-row[data-row-id="${CSS.escape(row.node.id)}"] .ol-note-input`
@@ -1356,9 +1544,12 @@ function onNoteInput(row: { node: OutlineNode }, ev: Event): void {
 }
 
 function onNoteBlur(row: { node: OutlineNode }): void {
-  if (!row.node.note?.trim()) delete row.node.note
+  const had = row.node.note
+  if (had !== undefined && !had.trim()) {
+    delete row.node.note
+    scheduleSave()
+  }
   noteEditingId.value = null
-  scheduleSave()
 }
 
 function sizeNote(ta: HTMLTextAreaElement): void {
@@ -1421,16 +1612,23 @@ function clipboardImageItems(ev: ClipboardEvent): DataTransferItem[] {
 }
 
 async function attachImageFiles(files: File[], node: OutlineNode): Promise<void> {
+  const nodeId = node.id
+  const epoch = treeEpoch
   for (const file of files) {
     try {
       const ext = (file.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg')
       const b64 = await fileToBase64(file)
       const name = await window.lexbench.attachments.saveImage(b64, ext)
-      const list = node.images?.length ? node.images : node.image ? [node.image] : []
+      // 异步保存期间可能已撤销/切笔记：不要挂到游离节点上
+      if (epoch !== treeEpoch || disposed) return
+      const target = nodeFor(nodeId)
+      if (!target) return
+      const list = target.images?.length ? target.images : target.image ? [target.image] : []
       if (!list.includes(name)) list.push(name)
-      node.images = list
-      node.image = list[0]
+      target.images = list
+      target.image = list[0]
       await ensureImageUrl(name)
+      if (epoch !== treeEpoch || disposed) return
       scheduleSave()
       scheduleHistory()
       emit('notice', '图片已插入')
@@ -1490,28 +1688,6 @@ async function onPaste(ev: ClipboardEvent, row: { node: OutlineNode; hasChildren
 
   const text = ev.clipboardData?.getData('text/plain') ?? ''
   const html = ev.clipboardData?.getData('text/html') ?? ''
-  const refMatch = /data-lb-ref="([^"]+)"/.exec(html)
-  if (refMatch) {
-    ev.preventDefault()
-    try {
-      const ref = JSON.parse(refMatch[1]!.replace(/&quot;/g, '"').replace(/&amp;/g, '&')) as OutlineRef
-      const citeText = text.split(/\r?\n/)[0]?.trim() ?? ''
-      if (!citeText) return
-      const quote = text.split(/\r?\n/).slice(1).join('\n').trim()
-      beforeStructure()
-      const citeNode = createOutlineNode(citeText, {
-        ref,
-        children: quote ? [createOutlineNode(quote)] : []
-      })
-      insertAfter(tree.value, row.node.id, citeNode)
-      pushHistory()
-      scheduleSave()
-      focusNode(citeNode.id, 0)
-    } catch {
-      /* 元数据损坏时按普通文本走 */
-    }
-    return
-  }
 
   // 结构选择态粘贴节点
   if (selected.size > 0 && !editor.hasTextSelection() && nodeClipboard.value.length) {
@@ -1535,14 +1711,14 @@ async function onPaste(ev: ClipboardEvent, row: { node: OutlineNode; hasChildren
   ev.preventDefault()
   const split = editor.splitAtCaret()
   if (!split) return
+  const hit = findNode(tree.value, row.node.id)
+  if (!hit) return
   const lines = text.split(/\r?\n/)
   beforeStructure()
   row.node.text = split.beforeText + (lines[0] ?? '')
   const firstHtml = split.beforeHtml + htmlFromPlainText(lines[0] ?? '')
   if (hasInlineFormatting(firstHtml, row.node.text)) row.node.html = firstHtml
   else delete row.node.html
-  const hit = findNode(tree.value, row.node.id)
-  if (!hit) return
   const created: OutlineNode[] = []
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i] ?? ''
@@ -1663,18 +1839,22 @@ async function onPickerEnter(ev: KeyboardEvent): Promise<void> {
   ev.preventDefault()
   const idx = picker.value.activeIdx >= 0 ? picker.value.activeIdx : 0
   const hit = picker.value.results[idx]
-  if (hit) await insertRefFromPicker(hit, true)
+  if (hit) await insertArticleFromPicker(hit, true)
 }
 
-async function insertRefFromPicker(hit: SearchHit, keepPickerFocus = false): Promise<void> {
+async function insertArticleFromPicker(hit: SearchHit, keepPickerFocus = false): Promise<void> {
   if (hit.kind !== 'article') return
   try {
+    // 检索是异步的：期间若用户撤销/切笔记，回调不得再写回旧树
+    const epoch = treeEpoch
     const detail = await window.lexbench.library.getArticle(hit.id)
+    if (epoch !== treeEpoch || disposed) return
     beforeStructure()
-    const citeNode = createOutlineNode(`《${shortLawName(detail.article.title ?? hit.title)}》${detail.article.article_label}`, {
-      ref: { docId: detail.article.document_id, articleId: detail.article.id },
-      children: [createOutlineNode(detail.article.content)]
-    })
+    // 法条只是一段普通文本（条名 + 正文子行），不再写 ref / 不建立笔记↔文档库关联
+    const citeNode = createOutlineNode(
+      `《${shortLawName(detail.article.title ?? hit.title)}》${detail.article.article_label}`,
+      { children: [createOutlineNode(detail.article.content)] }
+    )
     const anchorId = picker.value.anchorId
     const anchor = anchorId ? findNode(tree.value, anchorId) : null
     if (picker.value.mapMode) {
@@ -1706,33 +1886,24 @@ async function insertRefFromPicker(hit: SearchHit, keepPickerFocus = false): Pro
     } else if (!picker.value.mapMode) {
       focusNode(citeNode.id, 0)
     }
-    emit('notice', '已插入法条引用')
+    emit('notice', '已插入法条')
   } catch (e) {
     emit('error', e)
   }
 }
 
 /** 导图里敲 / @ Ctrl+K：锚点是导图当前选中节点，插为其子主题 */
-function onMapRefRequest(nodeId: string): void {
+function onMapInsertRequest(nodeId: string): void {
   openPicker(nodeId, null, true)
-}
-
-// ---------- 引用行右键（原生菜单的逃生门） ----------
-
-function onRowContextmenu(row: { node: OutlineNode }): void {
-  const ref = row.node.ref
-  window.lexbench.outlines.setRefContext(ref ? { docId: ref.docId, articleId: ref.articleId } : null)
-}
-
-function openSourceFromNode(node: OutlineNode): void {
-  if (node.ref) emit('open-source', node.ref)
 }
 
 // ---------- 导出 / 视图切换 ----------
 
 async function setView(mode: 'outline' | 'map'): Promise<void> {
   if (viewMode.value === mode) return
-  await saveNow(false)
+  // 离开导图前先把行内编辑/备注草稿提交，再统一冲刷
+  mapRef.value?.flushEditing()
+  await flush()
   viewMode.value = mode
   try {
     await window.lexbench.outlines.setViewMode(props.outline.id, mode)
@@ -1749,27 +1920,44 @@ async function setView(mode: 'outline' | 'map'): Promise<void> {
 }
 
 function onMapChange(newTree: OutlineNode[]): void {
-  beforeStructure()
-  tree.value = normalizeOutlineTree(newTree)
-  if (!tree.value.length) tree.value = [createOutlineNode('')]
+  const next = normalizeOutlineTree(newTree)
+  if (!next.length) next.push(createOutlineNode(''))
+  // 标题改名等回流会带来同构树：不产生无意义保存/历史
+  if (sameOutlineTree(next, tree.value)) return
+  // 树立即落地（保存/撤销不能读到旧树）；只把历史提交合并成约 120ms 一个窗口
+  if (!mapHistoryOpen) {
+    beforeStructure()
+    mapHistoryOpen = true
+  }
+  tree.value = next
   bumpRender()
-  pushHistory()
   scheduleSave()
+  historyPending.value = true
+  clearTimeout(mapHistoryTimer)
+  mapHistoryTimer = setTimeout(() => {
+    if (!mapHistoryOpen) return
+    mapHistoryOpen = false
+    pushHistory()
+  }, 120)
 }
 
 /** 导图中心主题改名 = 笔记标题改名 */
 function onMapRename(next: string): void {
   const clean = next.trim() || '未命名笔记'
   if (clean === title.value) return
+  // 导图中心主题改名：先落「改名前」，再把标题作为独立一步入栈
+  beforeStructure()
   title.value = clean
-  scheduleTitleSave()
-  emit('list-changed')
+  titleDirty.value = true
+  scheduleSave()
+  pushHistory()
 }
 
 async function exportOutline(format: ExportFormat): Promise<void> {
   headMenuOpen.value = false
   try {
-    await saveNow(true)
+    // 导出前必须确认落盘成功，否则导出的是旧树
+    if (!(await flush())) return
     const res = await window.lexbench.outlines.export(props.outline.id, format)
     if (!res.canceled) emit('notice', `笔记已导出：${res.path}`)
   } catch (e) {
@@ -1784,7 +1972,6 @@ function rowClass(row: ReturnType<typeof flattenOutline>[number]): Record<string
   return {
     selected: selected.has(node.id),
     focused: focusedId.value === node.id,
-    'is-ref': !!node.ref,
     'heading-1': node.heading === 1,
     'heading-2': node.heading === 2,
     'heading-3': node.heading === 3,
@@ -1824,11 +2011,53 @@ function onScrollHideToolbar(): void {
   hideToolbar()
 }
 
+/**
+ * 全局键位（capture）：Ctrl+S 任何焦点都生效；标题/备注/任务复选框的撤销走应用历史。
+ * 只在编辑器根节点范围内生效，避免抢 AI 设置/导入/备份等弹窗里的输入框。
+ */
+function onGlobalKeydown(ev: KeyboardEvent): void {
+  if (ev.isComposing || ev.defaultPrevented) return
+  const target = ev.target instanceof HTMLElement ? ev.target : null
+  const active = document.activeElement
+  const root = rootEl.value
+  const inside =
+    (!!target && !!root?.contains(target)) ||
+    active === document.body ||
+    active === document.documentElement ||
+    (!!active && !!root?.contains(active))
+  if (!inside) return
+  if (!isMod(ev) || ev.altKey) return
+  const key = ev.key.toLowerCase()
+  if (key === 's') {
+    ev.preventDefault()
+    void manualSave()
+    return
+  }
+  const inTitle = !!target?.classList.contains('ol-title')
+  const inNote = !!target?.closest('.ol-note-input')
+  const inTask = !!target?.closest('.ol-task')
+  if (!inTitle && !inNote && !inTask) {
+    // 大纲正文外的兜底；导图交给 MindMapView；检索框/原生输入保留浏览器撤销
+    if (viewMode.value !== 'outline') return
+    if (target?.closest('input, textarea, [contenteditable="true"]')) return
+    if (target?.closest('.ol-picker, .ol-toolbar, .ol-menu, .ol-row-menu')) return
+  }
+  if (key === 'z') {
+    ev.preventDefault()
+    if (ev.shiftKey) redo()
+    else undo()
+  } else if (key === 'y') {
+    ev.preventDefault()
+    redo()
+  }
+}
+
 onMounted(() => {
-  resetHistory()
+  restoreHistory()
   syncTreeImages()
   document.addEventListener('selectionchange', onSelectionChange)
   document.addEventListener('click', onDocClick)
+  window.addEventListener('keydown', onGlobalKeydown, true)
   window.addEventListener('scroll', onScrollHideToolbar, true)
   rootEl.value?.addEventListener('wheel', onOutlineWheel, { passive: false })
   centerOutlineScroll()
@@ -1841,19 +2070,26 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearTimeout(saveTimer)
+  disposed = true
+  // 先提交导图行内编辑/备注草稿，再合并导图历史窗口，最后落盘
+  mapRef.value?.flushEditing()
+  cancelMapHistory()
   clearTimeout(historyTimer)
+  writeHistory(pushHistoryState(currentHistory(), snapshot()))
+  historyPending.value = false
+  persistHistory()
+  clearTimeout(saveTimer)
   clearTimeout(pickerTimer)
   document.removeEventListener('selectionchange', onSelectionChange)
   document.removeEventListener('click', onDocClick)
   window.removeEventListener('scroll', onScrollHideToolbar, true)
+  window.removeEventListener('keydown', onGlobalKeydown, true)
   rootEl.value?.removeEventListener('wheel', onOutlineWheel)
   window.removeEventListener('pointermove', onDragMove)
   document.body.classList.remove('ol-dragging')
-  window.lexbench.outlines.setRefContext(null)
   // 卸载即冲刷；不 emit('saved')（见 lessons-log #11）。
-  // 不带 withTitle：标题已由 titleDirty 决定是否落盘，强写会把列表页刚改的名字盖回旧值
-  if (dirty || titleDirty) void saveNow(false)
+  // 标题只认 titleDirty，强写会把列表页刚改的名字盖回旧值
+  if (dirty.value || titleDirty.value) void saveNow()
   for (const url of imageUrls.values()) URL.revokeObjectURL(url)
   imageUrls.clear()
 })
@@ -1861,7 +2097,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootEl" class="ol" :class="{ 'in-map': viewMode === 'map' }" @keydown="onKeydown">
+  <div
+    ref="rootEl"
+    class="ol"
+    :class="{ 'in-map': viewMode === 'map' }"
+    :data-note-id="outline.id"
+    @keydown="onKeydown"
+  >
     <div v-if="drilledId" class="ol-breadcrumb">
       <button class="ol-crumb" @click="drilledId = null">全部</button>
       <template v-for="(item, i) in breadcrumb" :key="item.id">
@@ -1883,12 +2125,74 @@ onBeforeUnmount(() => {
         @keydown.enter.prevent="focusNode(rows[0]?.node.id ?? '', 0)"
       />
       <div class="ol-head-actions">
+        <div class="ol-hist" role="group" aria-label="撤销重做">
+          <button
+            class="ol-hbtn"
+            data-hist="undo"
+            title="撤销 (Ctrl+Z)"
+            :disabled="!canUndo"
+            @click="undo"
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M6.2 3.2 2.8 6.4l3.4 3.2"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M3.2 6.4h5.6a4.1 4.1 0 0 1 0 8.2H6.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            class="ol-hbtn"
+            data-hist="redo"
+            title="重做 (Ctrl+Shift+Z)"
+            :disabled="!canRedo"
+            @click="redo"
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M9.8 3.2l3.4 3.2-3.4 3.2"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M12.8 6.4H7.2a4.1 4.1 0 0 0 0 8.2h2.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <button
+          class="ol-save"
+          :class="`state-${saveState}`"
+          :data-state="saveState"
+          title="立即保存 (Ctrl+S)"
+          @click="manualSave"
+        >
+          {{ saveLabel }}
+        </button>
+        <span class="ol-sr" role="status" aria-live="polite">{{ saveAnnounce }}</span>
         <button
           class="ol-insert-btn"
-          title="插入文档库法条引用（空行上按 / 或 @ 也可唤出）"
+          title="插入文档库法条（纯文本，不关联文档库；空行上按 / 或 @ 也可唤出）"
           @click="openPicker(rows[rows.length - 1]?.node.id ?? null)"
         >
-          <span class="ol-ico">＋</span> 引用
+          <span class="ol-ico">＋</span> 法条
         </button>
         <div class="ol-view-switch" role="group" aria-label="视图">
           <button :class="{ on: viewMode === 'outline' }" title="大纲视图" @click="setView('outline')">大纲</button>
@@ -1943,14 +2247,13 @@ onBeforeUnmount(() => {
             :data-row-id="row.node.id"
             :data-depth="row.depth"
             @mousedown="onRowMouseDown(row, $event)"
-            @contextmenu="onRowContextmenu(row)"
           >
             <span v-for="i in row.depth" :key="i" class="ol-indent" aria-hidden="true"></span>
 
             <div class="ol-node">
               <div
                 class="ol-gutter"
-                :title="row.node.ref ? '法条引用（拖动可移动）' : '拖动可移动 / 点击选中'"
+                title="拖动可移动 / 点击选中"
                 @pointerdown="onBulletPointerDown(row, $event)"
                 @dblclick.stop="toggleFold(row)"
               >
@@ -1974,13 +2277,7 @@ onBeforeUnmount(() => {
                   </svg>
                 </button>
                 <span v-else class="ol-fold-space" aria-hidden="true"></span>
-                <span
-                  class="ol-bullet"
-                  :class="{ ref: !!row.node.ref, collapsed: row.node.fold }"
-                  aria-hidden="true"
-                >
-                  {{ row.node.ref ? '📖' : '' }}
-                </span>
+                <span class="ol-bullet" :class="{ collapsed: row.node.fold }" aria-hidden="true"></span>
                 <span v-if="row.node.fold && row.hidden > 0" class="ol-count">{{ row.hidden }}</span>
               </div>
 
@@ -2000,7 +2297,7 @@ onBeforeUnmount(() => {
                     :text="row.node.text"
                     :html="row.node.html"
                     :sync-token="renderEpoch"
-                    :placeholder="rows.length === 1 && row.depth === 0 ? '开始写笔记…（Enter 新行，Tab 缩进，/ 插入引用）' : ''"
+                    :placeholder="rows.length === 1 && row.depth === 0 ? '开始写笔记…（Enter 新行，Tab 缩进，/ 插入法条）' : ''"
                     :aria-label="'笔记第 ' + (row.depth + 1) + ' 级'"
                     @change="onNodeChange(row.node, $event)"
                     @paste="onPasteFromRow($event, row)"
@@ -2039,6 +2336,15 @@ onBeforeUnmount(() => {
 
               <div class="ol-hover-actions">
                 <button class="ol-act" title="新建子节点（Tab）" @mousedown.stop @click.stop="addChild(row)">＋</button>
+                <button
+                  class="ol-act danger"
+                  data-act="delete-row"
+                  title="删除整行（含子级）"
+                  @mousedown.stop
+                  @click.stop="deleteRow(row.node.id)"
+                >
+                  ✕
+                </button>
                 <button class="ol-act" title="更多" @mousedown.stop @click.stop="openRowMenu(row, $event)">⋯</button>
               </div>
             </div>
@@ -2064,7 +2370,7 @@ onBeforeUnmount(() => {
       @error="(e) => emit('error', e)"
       @notice="(t) => emit('notice', t)"
       @rename="onMapRename"
-      @ref-request="onMapRefRequest"
+      @insert-request="onMapInsertRequest"
       @undo="undo"
       @redo="redo"
     />
@@ -2120,16 +2426,11 @@ onBeforeUnmount(() => {
       >
         进入该节点 <kbd>Ctrl+[</kbd>
       </button>
-      <button
-        v-if="menuRow()?.node.ref"
-        class="ol-menu-item"
-        @click="menuAction((r) => openSourceFromNode(r.node))"
-      >
-        在文档库打开来源
-      </button>
       <button class="ol-menu-item" @click="menuAction(() => duplicateSelected())">复制节点 <kbd>Ctrl+D</kbd></button>
       <div class="ol-menu-sep"></div>
-      <button class="ol-menu-item danger" @click="menuAction(() => deleteSelected())">删除节点 <kbd>Del</kbd></button>
+      <button class="ol-menu-item danger" @click="menuAction((r) => deleteRow(r.node.id))">
+        删除节点 <kbd>Del</kbd>
+      </button>
     </div>
 
     <!-- 富文本浮动工具栏 -->
@@ -2169,7 +2470,7 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
-    <!-- 插入引用浮层 -->
+    <!-- 插入法条浮层（纯文本，不建立笔记↔文档库关联） -->
     <Transition name="menu-pop">
       <div v-if="picker.open" class="ol-picker" :class="{ 'is-map': picker.mapMode }" @click.self="closePicker">
         <div class="ol-picker-card">
@@ -2212,7 +2513,7 @@ onBeforeUnmount(() => {
                 <span class="opi-title">{{ r.title }}</span>
                 <span class="opi-label">{{ r.label }}</span>
               </div>
-              <button class="opi-add" title="插入引用" @click="insertRefFromPicker(r)">＋</button>
+              <button class="opi-add" title="插入法条" @click="insertArticleFromPicker(r)">＋</button>
             </div>
           </div>
         </div>
@@ -2330,6 +2631,82 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* 撤销 / 重做：克隆头部 ⋯ 的 28×28 轻量钮，但独立类名避免自测选择器漂移 */
+.ol-hist {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ol-hbtn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lb-muted);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.ol-hbtn:hover:not(:disabled) {
+  background: var(--lb-chip);
+  color: var(--lb-text);
+}
+
+.ol-hbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* 保存：按钮文案即状态（未保存 / 保存中 / 已保存 / 失败重试） */
+.ol-save {
+  min-width: 76px;
+  padding: 5px 10px;
+  border: 1px solid var(--lb-border-strong);
+  border-radius: 10px;
+  background: var(--lb-panel);
+  font-size: 12px;
+  color: var(--lb-muted);
+  white-space: nowrap;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.ol-save:hover {
+  border-color: var(--lb-accent-2);
+  color: var(--lb-accent);
+}
+
+.ol-save.state-unsaved {
+  border-color: var(--lb-accent-2);
+  color: var(--lb-accent);
+}
+
+.ol-save.state-error {
+  border-color: rgba(140, 43, 35, 0.35);
+  color: var(--lb-err-fg);
+}
+
+.ol-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .ol-insert-btn {
@@ -2624,16 +3001,6 @@ onBeforeUnmount(() => {
   background: #6e6e73;
 }
 
-.ol-bullet.ref::after {
-  display: none;
-}
-
-.ol-bullet.ref {
-  font-size: 13px;
-  line-height: 18px;
-  text-align: center;
-}
-
 .ol-gutter:hover .ol-bullet {
   background: var(--lb-chip);
 }
@@ -2716,11 +3083,6 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-.ol-row.is-ref .ol-line :deep(.ol-text) {
-  font-family: var(--lb-serif);
-  color: var(--lb-accent);
-}
-
 .ol-row.task-done :deep(.ol-text) {
   opacity: 0.5;
   text-decoration: line-through;
@@ -2765,6 +3127,12 @@ onBeforeUnmount(() => {
 .ol-act:hover {
   color: var(--lb-accent);
   box-shadow: 0 0 0 1px var(--lb-accent-2);
+}
+
+.ol-act.danger:hover {
+  color: var(--lb-err-fg);
+  box-shadow: 0 0 0 1px rgba(140, 43, 35, 0.3);
+  background: var(--lb-err-bg);
 }
 
 /* ---------- 备注 ---------- */

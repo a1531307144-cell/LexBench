@@ -150,12 +150,6 @@ export interface AnnotationRow {
 
 // ---------- 笔记库（阶段2） ----------
 
-/** 引用节点元数据：法条引用（右键逃生门「在文档库打开来源」与插入浮层复用） */
-export interface OutlineRef {
-  docId: number
-  articleId: number
-}
-
 /**
  * 大纲树节点：嵌套结构整树存 JSON（拍平成行列表是渲染层的事）。
  * 除 text 外全部可选——历史笔记（纯文本树）无需迁移，读出来缺省即是普通正文行。
@@ -167,8 +161,6 @@ export interface OutlineNode {
   children: OutlineNode[]
   /** 折叠态（有子节点才生效） */
   fold?: boolean
-  /** 引用节点（《法规名》第X条）才有 */
-  ref?: OutlineRef
   /** 贴图：attachments 目录内文件名（相对引用，随数据包备份）；兼容旧字段，等于 images[0] */
   image?: string
   /** 多图：attachments 目录内文件名列表（旧笔记只有 image 时按单图处理） */

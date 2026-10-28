@@ -1,10 +1,10 @@
-import { app, BrowserWindow, ClipboardItem, clipboard, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
 import { setupUpdater } from './updater'
 import { registerLibraryIpc } from './library'
 import { registerAnnotationsIpc, isAnnotationContextActive } from './annotations'
-import { registerOutlinesIpc, getRefContext, clearRefContext } from './outlines'
+import { registerOutlinesIpc } from './outlines'
 import { registerSearchIpc } from './search'
 import { registerReadingIpc } from './reading'
 import { registerBackupIpc } from './backup'
@@ -93,21 +93,6 @@ function createWindow(): void {
   // 法规全页阅读内且有选中时，追加「添加批注」（上下文开关由阅读页挂载/卸载控制）
   win.webContents.on('context-menu', (_e, params) => {
     const template: MenuItemConstructorOptions[] = []
-    // 笔记引用节点右键（渲染层先报 ref）：逃生门「在文档库打开来源」。
-    // 引用行文本是 textarea（editable），所以不分 editable 都追加。
-    const refCtx = getRefContext()
-    if (refCtx) {
-      template.push(
-        {
-          label: '在文档库打开来源',
-          click: () => {
-            win.webContents.send('outlines:openSource', refCtx)
-            clearRefContext()
-          }
-        },
-        { type: 'separator' }
-      )
-    }
     if (params.isEditable) {
       template.push(
         { role: 'undo', label: '撤销' },
@@ -127,11 +112,6 @@ function createWindow(): void {
           {
             label: '添加批注',
             click: () => win.webContents.send('annotations:addRequest')
-          },
-          {
-            // 读→写唯一通道：复制《法规》第X条+选中原文，粘进笔记成引用节点
-            label: '复制引用',
-            click: () => win.webContents.send('reading:copyRefRequest')
           }
         )
       }
@@ -140,8 +120,6 @@ function createWindow(): void {
       template.push({ role: 'selectAll', label: '全选' })
     }
     const menu = Menu.buildFromTemplate(template)
-    // 菜单关闭即清引用上下文（点「打开来源」除外——那里已先清）
-    menu.on('menu-will-close', () => clearRefContext())
     menu.popup({ window: win })
   })
 
@@ -181,12 +159,6 @@ ipcMain.on('app:flush-done', (e) => {
 ipcMain.handle('app:relaunch', () => {
   app.relaunch()
   app.exit(0)
-})
-
-// 「复制引用」写剪贴板：text/plain 给任意应用干净文本，text/html 带 ref 元数据
-// （笔记编辑器粘贴时据此生成引用节点；主进程 clipboard 比渲染层 navigator.clipboard 稳）
-ipcMain.handle('clipboard:writeRef', (_e, payload: { text: string; html: string }): Promise<void> => {
-  return clipboard.write([new ClipboardItem({ 'text/plain': payload.text, 'text/html': payload.html })])
 })
 
 app.whenReady().then(async () => {

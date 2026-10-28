@@ -51,8 +51,8 @@ export function buildGuideSteps(opts: GuideStepOptions): GuideStep[] {
     opts.hasStatute
       ? {
           id: 'reading',
-          title: '阅读法条：目录、批注与引用',
-          body: '右侧目录可以跳转；顶部能缩放、标星；选中文字右键可以添加批注，或复制带《法规名》条款的引用。',
+          title: '阅读法条：目录与批注',
+          body: '右侧目录可以跳转；顶部能缩放、标星；选中文字右键可以添加批注。',
           target: '[data-guide="reading-head"]',
           placement: 'bottom',
           dim: 0.32
@@ -75,7 +75,7 @@ export function buildGuideSteps(opts: GuideStepOptions): GuideStep[] {
     {
       id: 'editor',
       title: '大纲：Enter 新行，Tab 缩进',
-      body: 'Enter 新建同级，Tab 缩进；行首输入 / 或 @ 可以插入文档库里的法条引用。行悬停还有备注、待办和图片。',
+      body: 'Enter 新建同级，Tab 缩进；行首输入 / 或 @ 可以插入文档库里的法条原文。行悬停还有备注、待办和图片。',
       target: '[data-guide="outline-head"]',
       placement: 'bottom'
     },

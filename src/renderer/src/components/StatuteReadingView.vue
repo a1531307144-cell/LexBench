@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { buildHighlightTerms, highlightText } from '@shared/highlight'
-import { shortLawName } from '@shared/lawName'
 import { parseLocateQuery } from '@shared/locate'
 import { buildStatuteToc, type StatuteTocEntry, type StatuteTocLevel } from '@shared/statuteToc'
 import { usePageZoom } from '../composables/usePageZoom'
@@ -498,36 +497,6 @@ function tryAddFromSelection(): void {
   void nextTick(() => annoPopEl.value?.focus())
 }
 
-/**
- * 右键菜单「复制引用」（读→写唯一通道）：《法规》第X条 + 选中原文写剪贴板。
- * text/plain 给任意应用干净文本；text/html 在条名上带 ref 元数据——
- * 笔记编辑器粘贴时据此生成引用节点（可右键「在文档库打开来源」）。
- */
-function tryCopyRefFromSelection(): void {
-  const sel = window.getSelection()
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
-  const range = sel.getRangeAt(0)
-  const startEl = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement
-  const articleEl = startEl?.closest('.sv-article')
-  if (!articleEl) return
-  const order = Number(articleEl.getAttribute('data-order'))
-  const article = props.doc.articles.find((x) => x.order_index === order)
-  if (!article) return
-  const quote = sel.toString().trim()
-  if (!quote) return
-  const citeText = `《${shortLawName(props.doc.title)}》${article.article_label}`
-  const esc = (s: string): string =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-  const refAttr = esc(JSON.stringify({ docId: props.doc.id, articleId: article.id }))
-  void window.lexbench.clipboard
-    .writeRef({
-      text: `${citeText}\n${quote}`,
-      html: `<span data-lb-ref="${refAttr}">${esc(citeText)}</span><br>${esc(quote)}`
-    })
-    .then(() => emit('notice', '已复制引用，可粘贴到笔记'))
-    .catch((e: unknown) => emit('error', errText(e)))
-}
-
 /** 点 ★ / 点批注正文：打开已有批注 */
 function openAnnoById(id: number): void {
   const an = annos.value.find((x) => x.id === id)
@@ -700,16 +669,14 @@ async function saveProgressNow(): Promise<void> {
 
 // ---------- 生命周期 ----------
 
-/** 右键菜单「添加批注 / 复制引用」通知的退订 */
+/** 右键菜单「添加批注」通知的退订 */
 let unsubAddRequest: (() => void) | null = null
-let unsubCopyRef: (() => void) | null = null
 
 onMounted(async () => {
   document.addEventListener('click', onDocClickForStatute)
-  // 批注上下文：本页在场时主进程右键菜单才追加「添加批注 / 复制引用」
+  // 批注上下文：本页在场时主进程右键菜单才追加「添加批注」
   window.lexbench.annotations.setActive(true)
   unsubAddRequest = window.lexbench.annotations.onAddRequest(() => tryAddFromSelection())
-  unsubCopyRef = window.lexbench.reading.onCopyRefRequest(() => tryCopyRefFromSelection())
   void loadAnnos()
   void loadStars()
   await nextTick()
@@ -739,8 +706,6 @@ onBeforeUnmount(() => {
   window.lexbench.annotations.setActive(false)
   unsubAddRequest?.()
   unsubAddRequest = null
-  unsubCopyRef?.()
-  unsubCopyRef = null
   // 续读契约：防抖未到期也要冲刷进度（切去笔记等场景不丢最后半秒位置）
   clearTimeout(progTimer)
   void saveProgressNow()

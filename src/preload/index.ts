@@ -67,11 +67,6 @@ const api = {
     /** 告知主进程未落盘内容已冲刷完毕，可以关窗 */
     flushDone: (): void => ipcRenderer.send('app:flush-done')
   },
-  clipboard: {
-    /** 「复制引用」：plain 干净文本 + html 带 ref 元数据（笔记粘贴时生成引用节点） */
-    writeRef: (payload: { text: string; html: string }): Promise<void> =>
-      invoke('clipboard:writeRef', payload)
-  },
   win: {
     /** 无边框窗口自绘控制按钮（─ □ ✕） */
     minimize: (): void => ipcRenderer.send('win:minimize'),
@@ -235,18 +230,7 @@ const api = {
     listStarred: (): Promise<StarredArticleRow[]> => invoke('articles:listStarred'),
     /** 点亮/熄灭法条星标 */
     setStarred: (articleId: number, starred: boolean): Promise<void> =>
-      invoke('articles:setStarred', articleId, starred),
-    /** 引用行按下右键时先报 ref（主进程菜单据此追加「在文档库打开来源」） */
-    setRefContext: (ref: { docId: number; articleId: number } | null): void =>
-      ipcRenderer.send('outlines:setRefContext', ref),
-    /** 主菜单「在文档库打开来源」点击通知；返回退订函数 */
-    onOpenSource: (cb: (ref: { docId: number; articleId: number }) => void): (() => void) => {
-      const handler = (_e: unknown, ref: { docId: number; articleId: number }): void => cb(ref)
-      ipcRenderer.on('outlines:openSource', handler)
-      return () => {
-        ipcRenderer.removeListener('outlines:openSource', handler)
-      }
-    }
+      invoke('articles:setStarred', articleId, starred)
   },
   noteGroups: {
     list: (): Promise<NoteGroupRow[]> => invoke('noteGroups:list'),
@@ -299,15 +283,7 @@ const api = {
       invoke('reading:getPdfData', documentId),
     /** PDF 原件本机路径（优先归档副本）——内置 PDF 阅读器以 file:// 加载 */
     getPdfPath: (documentId: number): Promise<string> =>
-      invoke('reading:getPdfPath', documentId),
-    /** 主进程菜单「复制引用」点击通知（法规阅读页有选区时出现）；返回退订函数 */
-    onCopyRefRequest: (cb: () => void): (() => void) => {
-      const handler = (): void => cb()
-      ipcRenderer.on('reading:copyRefRequest', handler)
-      return () => {
-        ipcRenderer.removeListener('reading:copyRefRequest', handler)
-      }
-    }
+      invoke('reading:getPdfPath', documentId)
   },
   backup: {
     /** 弹出保存对话框 → 打包全部数据（数据库+原件+AI 配置）→ 写盘 */

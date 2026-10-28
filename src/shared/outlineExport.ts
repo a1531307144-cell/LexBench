@@ -1,5 +1,5 @@
 // 笔记导出（阶段2）：大纲树 → Markdown / docx 段落结构
-// 纯函数层（vitest 可直测）：树降级为嵌套列表；引用节点（ref）导出为《法规》第X条 + 正文子行。
+// 纯函数层（vitest 可直测）：树降级为嵌套列表。
 
 import { nodeMarkdownText } from './outlineRichText'
 import type { OutlineNode } from './types'
@@ -15,8 +15,6 @@ export interface OutlineFlatLine {
   heading?: 1 | 2 | 3
   /** 1=待办 2=已完成 */
   task?: 1 | 2
-  /** 引用节点行（导出时可加重号/样式区分） */
-  isRef: boolean
 }
 
 /**
@@ -28,8 +26,7 @@ export function flattenOutline(nodes: OutlineNode[], depth = 0, out: OutlineFlat
     const line: OutlineFlatLine = {
       depth,
       text: n.text,
-      markdownText: nodeMarkdownText(n),
-      isRef: !!n.ref
+      markdownText: nodeMarkdownText(n)
     }
     if (n.note) line.note = n.note
     if (n.heading) line.heading = n.heading

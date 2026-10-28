@@ -38,7 +38,6 @@ export function createOutlineNode(text = '', partial: Partial<OutlineNode> = {})
     children: partial.children ? partial.children : []
   }
   if (partial.fold) node.fold = true
-  if (partial.ref) node.ref = { ...partial.ref }
   if (partial.image) node.image = partial.image
   if (partial.images?.length) node.images = [...partial.images]
   if (partial.html) node.html = partial.html
@@ -141,7 +140,6 @@ export function cloneSubtree(node: OutlineNode, genId: (() => string) | null = n
     children: (node.children ?? []).map((c) => cloneSubtree(c, genId))
   }
   if (node.fold) copy.fold = true
-  if (node.ref) copy.ref = { ...node.ref }
   if (node.image) copy.image = node.image
   if (node.images?.length) copy.images = [...node.images]
   if (node.html) copy.html = node.html
@@ -408,11 +406,18 @@ export function expandAll(nodes: OutlineNode[]): void {
   walk(nodes)
 }
 
-/** 展开某节点的所有祖先（聚焦被折叠里的节点时用） */
-export function expandAncestors(nodes: OutlineNode[], id: string): void {
+/** 展开某节点的所有祖先（聚焦被折叠里的节点时用）；返回是否真的改了折叠态 */
+export function expandAncestors(nodes: OutlineNode[], id: string): boolean {
   const path = nodePath(nodes, id)
-  if (!path) return
-  for (const node of path) if (node.fold) delete node.fold
+  if (!path) return false
+  let changed = false
+  for (const node of path) {
+    if (node.fold) {
+      delete node.fold
+      changed = true
+    }
+  }
+  return changed
 }
 
 /** 读入时的兜底归一化：补齐 id/text/children，修掉重复 id（返回新树，不原地改） */
@@ -433,12 +438,7 @@ export function normalizeOutlineTree(raw: unknown, genId: () => string = newOutl
         children: walk(it.children)
       }
       if (it.fold === true) node.fold = true
-      if (it.ref && typeof it.ref === 'object') {
-        const ref = it.ref as Record<string, unknown>
-        if (Number.isFinite(Number(ref.docId)) && Number.isFinite(Number(ref.articleId))) {
-          node.ref = { docId: Number(ref.docId), articleId: Number(ref.articleId) }
-        }
-      }
+      // 旧引用节点（ref）不再解析：读入即普通文本，保存后元数据自然消失
       if (typeof it.image === 'string' && it.image) node.image = it.image
       if (Array.isArray(it.images)) {
         const images = it.images.filter((x): x is string => typeof x === 'string' && !!x)
@@ -476,4 +476,48 @@ export function collectOutlineImages(nodes: OutlineNode[]): string[] {
   }
   walk(nodes)
   return [...out]
+}
+
+/** 树同构比较：逐字段 + 递归（含全部持久化字段；缺省字段按等价处理） */
+export function sameOutlineTree(a: OutlineNode[], b: OutlineNode[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (!x || !y) return false
+    if (
+      x.id !== y.id ||
+      x.text !== y.text ||
+      (x.fold === true) !== (y.fold === true) ||
+      x.task !== y.task ||
+      x.heading !== y.heading ||
+      (x.note ?? '') !== (y.note ?? '') ||
+      (x.image ?? '') !== (y.image ?? '') ||
+      (x.html ?? '') !== (y.html ?? '') ||
+      nodeImages(x).join('\u0000') !== nodeImages(y).join('\u0000')
+    ) {
+      return false
+    }
+    if (!sameOutlineTree(x.children ?? [], y.children ?? [])) return false
+  }
+  return true
+}
+
+/** 稳定序列化：对象键递归排序，逻辑相同的树得到同一字符串（历史快照/指纹用） */
+export function stableStringify(value: unknown): string {
+  return JSON.stringify(sortKeys(value))
+}
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortKeys(item))
+  if (value && typeof value === 'object') {
+    const src = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(src).sort()) {
+      const item = src[key]
+      if (item !== undefined) out[key] = sortKeys(item)
+    }
+    return out
+  }
+  return value
 }

@@ -19,7 +19,6 @@ import type {
   NoteGroupRow,
   OutlineListRow,
   OutlineNode,
-  OutlineRef,
   OutlineRow,
   StarredArticleRow
 } from '../shared/types'
@@ -168,20 +167,6 @@ function searchSnippet(treeJson: string, kw: string): string | null {
   return null
 }
 
-// ---------- 引用节点右键上下文（照批注 setActive 的既有模式） ----------
-// 渲染层在引用行上按下右键时先送来 ref（DOM contextmenu 先于主进程 context-menu 事件，
-// 同一 IPC 管道保序），主进程拼菜单时据此追加「在文档库打开来源」；菜单关闭即清。
-
-let refContext: OutlineRef | null = null
-
-export function getRefContext(): OutlineRef | null {
-  return refContext
-}
-
-export function clearRefContext(): void {
-  refContext = null
-}
-
 // ---------- 笔记导出（md / docx；承接原专题导出能力） ----------
 
 /** Windows 文件名非法字符清洗（与读书笔记导出同规则） */
@@ -209,7 +194,7 @@ async function generateOutlineFile(
           new Paragraph({
             children: [
               new TextRun({
-                text: `${'　'.repeat(line.depth)}${line.isRef ? '' : '· '}${taskMark}${line.text}`,
+                text: `${'　'.repeat(line.depth)}· ${taskMark}${line.text}`,
                 bold: !!line.heading,
                 size: line.heading ? 30 - line.heading * 2 : 24
               })
@@ -256,14 +241,6 @@ export function registerOutlinesIpc(): void {
     const full = join(getAttachmentsDir(), safe)
     if (!existsSync(full)) throw new Error('附件不存在')
     return readFileSync(full)
-  })
-
-  // 引用行右键：渲染层先报 ref，主进程菜单据此追加「在文档库打开来源」
-  ipcMain.on('outlines:setRefContext', (_e, ref: OutlineRef | null) => {
-    refContext =
-      ref && Number.isFinite(ref.docId) && Number.isFinite(ref.articleId)
-        ? { docId: Number(ref.docId), articleId: Number(ref.articleId) }
-        : null
   })
 
   // 笔记列表（更新时间序；列表页不带 tree，轻载；groupId 过滤分类列）

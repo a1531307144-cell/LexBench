@@ -19,7 +19,9 @@ import {
   normalizeOutlineTree,
   outdentNode,
   rangeNodeIds,
+  sameOutlineTree,
   splitOutlineNode,
+  stableStringify,
   visibleNodeIds
 } from './outlineTree'
 import type { OutlineNode } from './types'
@@ -216,5 +218,51 @@ describe('outlineTree 折叠与归一化', () => {
     findNode(tree, 'a1')!.node.images = ['new1.png', 'new2.png']
     expect(nodeImages(findNode(tree, 'a')!.node)).toEqual(['old.png'])
     expect(collectOutlineImages(tree).sort()).toEqual(['new1.png', 'new2.png', 'old.png'])
+  })
+})
+
+describe('大纲树比较与稳定序列化', () => {
+  it('stableStringify 与对象键插入顺序无关', () => {
+    const a = { id: 'x', text: 'T', note: 'N', children: [{ id: 'y', text: 'Y', children: [] }] }
+    const b = { children: [{ children: [], text: 'Y', id: 'y' }], note: 'N', text: 'T', id: 'x' }
+    expect(stableStringify(a)).toBe(stableStringify(b))
+    expect(stableStringify(a)).not.toBe(stableStringify({ ...a, text: 'U' }))
+  })
+
+  it('sameOutlineTree 覆盖全部持久化字段并递归', () => {
+    const a = normalizeOutlineTree([
+      { id: 'a', text: 'A', children: [{ id: 'b', text: 'B', children: [] }] }
+    ])
+    const b = normalizeOutlineTree([
+      { id: 'a', text: 'A', children: [{ id: 'b', text: 'B', children: [] }] }
+    ])
+    expect(sameOutlineTree(a, b)).toBe(true)
+    b[0]!.children[0]!.note = '备注'
+    expect(sameOutlineTree(a, b)).toBe(false)
+    b[0]!.children[0]!.note = undefined
+    b[0]!.children[0]!.images = ['x.png']
+    expect(sameOutlineTree(a, b)).toBe(false)
+  })
+
+  it('sameOutlineTree 把缺省备注/图片与空串视为等价', () => {
+    const a: OutlineNode[] = [{ id: 'a', text: 'A', children: [] }]
+    const b: OutlineNode[] = [{ id: 'a', text: 'A', children: [], note: '', image: '' }]
+    expect(sameOutlineTree(a, b)).toBe(true)
+  })
+
+  it('normalize 丢弃旧 ref 元数据', () => {
+    const tree = normalizeOutlineTree([
+      { id: 'a', text: '《民法典》第一条', children: [], ref: { docId: 1, articleId: 2 } }
+    ])
+    expect('ref' in tree[0]!).toBe(false)
+  })
+
+  it('expandAncestors 返回是否真的改了折叠态', () => {
+    const tree = sample()
+    expect(expandAncestors(tree, 'a2x')).toBe(false)
+    findNode(tree, 'a')!.node.fold = true
+    findNode(tree, 'a2')!.node.fold = true
+    expect(expandAncestors(tree, 'a2x')).toBe(true)
+    expect(expandAncestors(tree, 'a2x')).toBe(false)
   })
 })
