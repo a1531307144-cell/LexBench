@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import AiPanel from './components/AiPanel.vue'
 import AiSettingsDialog from './components/AiSettingsDialog.vue'
+import { syncThemeFromSettings, watchThemeAcrossWindows } from './composables/useTheme'
 
 /**
  * AI 独立窗口壳（main.ts 按 ?aiWindow=1 挂载，替代主应用）：
@@ -50,9 +51,17 @@ function openArticleInMain(articleId: number): void {
   void window.lexbench.aiWindow.openArticle(articleId).catch((e) => showError(e))
 }
 
+let unsubTheme: (() => void) | null = null
+
+onMounted(() => {
+  void syncThemeFromSettings()
+  unsubTheme = watchThemeAcrossWindows()
+})
+
 onBeforeUnmount(() => {
   clearTimeout(errTimer)
   clearTimeout(noticeTimer)
+  unsubTheme?.()
 })
 </script>
 
@@ -134,8 +143,8 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     to right,
     transparent 0,
-    rgba(0, 0, 0, 0.08) 32px,
-    rgba(0, 0, 0, 0.08) calc(100% - 32px),
+    var(--lb-border) 32px,
+    var(--lb-border) calc(100% - 32px),
     transparent 100%
   );
 }
@@ -160,7 +169,7 @@ onBeforeUnmount(() => {
   height: 32px;
   border-radius: var(--lb-radius-s);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-family: var(--lb-serif);
   font-size: 18px;
   font-weight: 600;
@@ -193,22 +202,22 @@ onBeforeUnmount(() => {
 }
 
 .wc:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--lb-hover);
   color: var(--lb-text);
 }
 
 .wc:active {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--lb-border-strong);
   transform: none; /* 窗口控制按钮不缩放，保持系统感 */
 }
 
 .wc.wc-close:hover {
-  background: #ff3b30;
+  background: var(--lb-danger);
   color: #fff;
 }
 
 .wc.wc-close:active {
-  background: #e03027;
+  background: var(--lb-danger-strong);
   color: #fff;
 }
 
@@ -270,7 +279,7 @@ onBeforeUnmount(() => {
 
 .win-bar-close:hover {
   opacity: 1;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--lb-hover);
 }
 
 .win-bar-enter-active,

@@ -313,7 +313,7 @@ await evalJs(`(() => {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
   setter.call(input, '3')
   input.dispatchEvent(new Event('input', { bubbles: true }))
-  ;[...document.querySelectorAll('.rv-top-btn')].find((b) => b.textContent.trim() === '跳转')?.click()
+  document.querySelector('[data-pdf-action="jump"]')?.click()
   return 'ok'
 })()`)
 await new Promise((r) => setTimeout(r, 800))

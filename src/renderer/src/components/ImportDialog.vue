@@ -310,7 +310,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
 .mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -477,7 +477,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
   font-size: 13px;
   color: var(--lb-text);
   outline: none;
-  background: #fff;
+  background: var(--lb-panel);
 }
 
 .type-select:focus {
@@ -575,7 +575,7 @@ onBeforeUnmount(() => clearTimeout(noteTimer))
 .dlg-btn.primary {
   border-color: var(--lb-accent);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .dlg-btn:disabled {

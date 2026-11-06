@@ -63,7 +63,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .cm-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -111,13 +111,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .cm-btn:hover {
-  background: #f2f3f8;
+  background: var(--lb-panel-2);
 }
 
 .cm-btn.confirm {
   border-color: var(--lb-accent);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .cm-btn.confirm:hover {
@@ -126,12 +126,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 /* 危险操作：警示红确认键（仅删除等破坏性操作使用） */
 .cm-btn.confirm.danger {
-  border-color: #d70015;
-  background: #ff3b30;
+  border-color: var(--lb-danger-strong);
+  background: var(--lb-danger);
 }
 
 .cm-btn.confirm.danger:hover {
-  background: #e03027;
+  background: var(--lb-danger-strong);
   filter: none;
 }
 

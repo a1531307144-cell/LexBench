@@ -12,6 +12,23 @@ import type { BookNoteInput } from '../shared/ipc'
 import type { BookNoteRow, ExportFormat, ExportResult, ReadingProgress } from '../shared/types'
 import { getDb, getSetting, initDb, setSetting } from './db'
 
+/** pdfjs 只在这个 IPC 用到：按需加载，避免启动时拖慢 */
+type PdfjsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs')
+let pdfjsModule: PdfjsModule | null = null
+/** 同一篇 PDF 多窗打开时只探测一次页数 */
+const pdfPageCountCache = new Map<number, number>()
+async function pdfPageCount(filePath: string): Promise<number> {
+  if (!pdfjsModule) pdfjsModule = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const data = new Uint8Array(readFileSync(filePath))
+  const loadingTask = pdfjsModule.getDocument({ data })
+  try {
+    const doc = await loadingTask.promise
+    return doc.numPages
+  } finally {
+    await loadingTask.destroy()
+  }
+}
+
 // ---------- 行映射（node:sqlite 的整型可能以 bigint 到达，统一 Number() 收窄） ----------
 
 /** node:sqlite 原始行：字段值一律 unknown，经转换函数收窄成 shared 类型 */
@@ -325,6 +342,26 @@ export function registerReadingIpc(): void {
     const original = String(row['original_path'] || '')
     if (original && existsSync(original)) return original
     throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
+  })
+
+  // PDF 真实页数：文字版 PDF 的 chunk 数 ≠ 页数，自定义 PDF 顶栏的「共 N 页」用这个
+  ipcMain.handle('reading:getPdfPageCount', async (_e, documentId: number): Promise<number> => {
+    const id = Number(documentId)
+    const cached = pdfPageCountCache.get(id)
+    if (cached) return cached
+    const db = getDb()
+    const row = db
+      .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
+      .get(Number(documentId)) as DbRow | undefined
+    if (!row) throw new Error('文档不存在')
+    const ext = String(row['file_ext'] || '.pdf')
+    const archived = join(app.getPath('userData'), 'files', `${String(row['file_hash'])}${ext}`)
+    const original = String(row['original_path'] || '')
+    const path = existsSync(archived) ? archived : original || archived
+    if (!existsSync(path)) throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
+    const count = await pdfPageCount(path)
+    pdfPageCountCache.set(id, count)
+    return count
   })
 
   // 读取 PDF 原件（优先归档副本，原件路径失效也能读），供渲染层 pdfjs 渲染页面

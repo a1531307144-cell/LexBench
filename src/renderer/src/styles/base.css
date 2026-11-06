@@ -23,8 +23,8 @@ body {
     'Microsoft YaHei',
     sans-serif;
   font-size: 14px;
-  color: #1d1d1f;
-  background: #f5f5f7;
+  color: var(--lb-text, #1d1d1f);
+  background: var(--lb-bg, #f5f5f7);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -108,11 +108,11 @@ select {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--lb-scrollbar, rgba(0, 0, 0, 0.18));
   border-radius: var(--lb-radius-micro);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--lb-scrollbar-hover, rgba(0, 0, 0, 0.32));
 }
 ::-webkit-scrollbar-track {
   background: transparent;

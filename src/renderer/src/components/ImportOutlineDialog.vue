@@ -191,7 +191,7 @@ const formatNames: Record<string, string> = { opml: 'OPML', html: 'HTML', md: 'M
   position: fixed;
   inset: 0;
   z-index: 700;
-  background: rgba(30, 28, 40, 0.4);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -265,7 +265,7 @@ const formatNames: Record<string, string> = { opml: 'OPML', html: 'HTML', md: 'M
 }
 
 .id-item:hover {
-  background: #f4f4f8;
+  background: var(--lb-hover);
 }
 
 .id-item.static {
@@ -368,13 +368,13 @@ const formatNames: Record<string, string> = { opml: 'OPML', html: 'HTML', md: 'M
 .id-btn.primary {
   background: var(--lb-accent);
   border-color: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .id-btn.primary:hover:not(:disabled) {
   background: var(--lb-accent-2);
   border-color: var(--lb-accent-2);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .id-btn:disabled {

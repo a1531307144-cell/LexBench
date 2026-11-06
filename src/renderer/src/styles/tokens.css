@@ -3,19 +3,38 @@
   /* ---------- 颜色 ---------- */
   --lb-bg: #f5f5f7;
   --lb-panel: #ffffff;
+  /* 次级表面：输入框/内嵌卡片等比面板略低一档的底色 */
+  --lb-panel-2: #fbfbfe;
   /* 窗口 chrome 底色：顶栏 / 竖排 / 内容画布外沿留白共用 */
   --lb-chrome: #fbfbfd;
   --lb-text: #1d1d1f;
   --lb-muted: #86868b;
   --lb-border: rgba(0, 0, 0, 0.07);
   --lb-border-strong: rgba(0, 0, 0, 0.12);
+  /* 中性悬停底：列表行/图标按钮 hover 用 */
+  --lb-hover: #f0f0f6;
   /* 搜索关键词高亮：accent 同源浅蓝胶囊（与 hover/选中态同色相，inline 尺寸） */
   --lb-hit: rgba(0, 113, 227, 0.14);
   --lb-accent: #0071e3;
   --lb-accent-2: #0077ed;
   --lb-grad: #0071e3; /* 主按钮为纯色，不使用渐变 */
   --lb-accent-soft: rgba(0, 113, 227, 0.1);
+  /* accent 家族派生：聚焦环 / 柔光 / 大面积淡染 / 选区 */
+  --lb-accent-ring: rgba(0, 113, 227, 0.55);
+  --lb-accent-glow: rgba(0, 113, 227, 0.14);
+  --lb-accent-wash: rgba(0, 113, 227, 0.1);
+  --lb-accent-selection: rgba(0, 113, 227, 0.14);
+  /* accent 底上的文字（深色主题的浅色 accent 需要深字） */
+  --lb-on-accent: #ffffff;
   --lb-chip: #e8e8ed;
+  /* 遮罩 / 滚动条 */
+  --lb-overlay: rgba(0, 0, 0, 0.32);
+  --lb-overlay-soft: rgba(0, 0, 0, 0.25);
+  --lb-scrollbar: rgba(0, 0, 0, 0.18);
+  --lb-scrollbar-hover: rgba(0, 0, 0, 0.32);
+  /* 危险操作色（删除按钮等） */
+  --lb-danger: #ff3b30;
+  --lb-danger-strong: #e03027;
   --lb-warn-bg: #fdf3e3;
   --lb-warn-fg: #9a6a15;
   --lb-err-bg: #fdecea;

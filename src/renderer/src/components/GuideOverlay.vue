@@ -465,9 +465,9 @@ onBeforeUnmount(() => {
   position: fixed;
   z-index: 1200;
   pointer-events: none;
-  border: 2px solid rgba(0, 113, 227, 0.92);
+  border: 2px solid var(--lb-accent-ring);
   border-radius: 12px;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.2);
+  box-shadow: 0 0 0 3px var(--lb-accent-glow);
   transition:
     left 0.24s ease,
     top 0.24s ease,
@@ -600,7 +600,7 @@ onBeforeUnmount(() => {
 
 .guide-btn.primary {
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .guide-btn.primary:hover {
@@ -667,7 +667,7 @@ onBeforeUnmount(() => {
   height: 46px;
   border-radius: var(--lb-radius-s);
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-size: 23px;
   font-weight: 700;
   font-family: var(--lb-serif);

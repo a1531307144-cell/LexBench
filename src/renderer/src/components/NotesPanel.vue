@@ -14,6 +14,8 @@ import type { NoteGroupRow, OutlineListRow, StarredArticleRow } from '@shared/ty
  */
 const emit = defineEmits<{
   (e: 'open', id: number): void
+  /** 在平行视图打开这篇笔记（没有存档时按默认布局新建） */
+  (e: 'open-parallel', id: number): void
   (e: 'create', groupId: number | null): void
   /** 卡片右键删除：App 走与编辑器「⋯→删除笔记」同一套确认弹窗 */
   (e: 'remove', note: { id: number; title: string }): void
@@ -923,6 +925,9 @@ defineExpose({ refreshStarred })
 
         <template v-else>
           <button class="np-menu-item" @click="closeMenu(); $emit('open', menu.id)">打开</button>
+          <button class="np-menu-item" @click="closeMenu(); $emit('open-parallel', menu.id)">
+            在平行视图打开
+          </button>
           <button
             class="np-menu-item"
             @click="startRename('note', menu.id, notes.find((n) => n.id === menu.id)?.title ?? '')"
@@ -1130,8 +1135,8 @@ defineExpose({ refreshStarred })
 
 .np-search-input:focus {
   outline: none;
-  border-color: rgba(0, 113, 227, 0.55);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: var(--lb-accent-ring);
+  box-shadow: 0 0 0 3px var(--lb-accent-soft);
 }
 
 .np-search-icon {
@@ -1388,7 +1393,7 @@ defineExpose({ refreshStarred })
 }
 
 .np-item:hover {
-  background: #f0f0f6;
+  background: var(--lb-hover);
 }
 
 .np-item.on {
@@ -1400,7 +1405,8 @@ defineExpose({ refreshStarred })
 .np-item-dot {
   flex-shrink: 0;
   font-size: 7px;
-  color: rgba(0, 0, 0, 0.25);
+  color: var(--lb-muted);
+  opacity: 0.6;
 }
 
 .np-item.on .np-item-dot {
@@ -1552,7 +1558,7 @@ defineExpose({ refreshStarred })
 }
 
 .np-star-toggle:hover {
-  background: #f0f0f6;
+  background: var(--lb-hover);
 }
 
 .np-star-mark {
@@ -1598,7 +1604,7 @@ defineExpose({ refreshStarred })
 }
 
 .np-star-item:hover {
-  background: #f0f0f6;
+  background: var(--lb-hover);
 }
 
 .nsi-label {

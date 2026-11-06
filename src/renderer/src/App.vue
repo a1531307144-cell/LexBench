@@ -9,13 +9,19 @@ import GuideOverlay from './components/GuideOverlay.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import NotesPanel from './components/NotesPanel.vue'
 import OutlineEditor from './components/OutlineEditor.vue'
+import ParallelCreateDialog from './components/ParallelCreateDialog.vue'
+import ParallelViewsPanel from './components/ParallelViewsPanel.vue'
+import ParallelWorkspace from './components/ParallelWorkspace.vue'
 import ReadingView from './components/ReadingView.vue'
 import ResultList from './components/ResultList.vue'
 import StatuteReadingView from './components/StatuteReadingView.vue'
+import ThemeDialog from './components/ThemeDialog.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
 import { GUIDE_KEY, buildGuideSteps } from './guide/guideSteps'
 import { dropNoteHistory } from './composables/noteHistoryStore'
+import { syncThemeFromSettings, watchThemeAcrossWindows } from './composables/useTheme'
 import { newOutlineId } from '@shared/outlineTree'
+import { createDefaultLayout, serializeParallelLayout } from '@shared/parallelLayout'
 import { TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
 import type {
   DocGroupRow,
@@ -25,6 +31,7 @@ import type {
   OutlineListRow,
   OutlineNode,
   OutlineRow,
+  ParallelViewListRow,
   SearchHit,
   SearchMode,
   SearchOutcome
@@ -115,7 +122,9 @@ const documents = ref<DocumentRow[]>([])
 /** 用户自建分类文件夹（全类型，DocLibrary / ImportDialog 各自按类型过滤） */
 const groups = ref<DocGroupRow[]>([])
 /** 主板块方向：文档库 / 笔记（左导航两项，阶段2） */
-const tab = ref<'library' | 'notes'>('library')
+type NavTab = 'library' | 'notes' | 'workspace'
+
+const tab = ref<NavTab>('library')
 /**
  * 续读契约（§3.5，用户点名必须做好）：离开阅读（返回）时记住文档；
  * 从笔记切回文档库方向时**静默**重开该文档并恢复位置（不弹横幅）。
@@ -128,7 +137,7 @@ const resumeDoc = ref<{ id: number; type: 'statute' | 'book' } | null>(null)
 // 面板是覆盖式浮层（不推挤正文），动画沿用现成配方（0.18s cubic-bezier(0.25,0.1,0.25,1)）。
 const panelOpen = ref(false)
 /** 面板显示哪个方向的内容：悬停项优先，决定面板内容而非当前方向 */
-const panelTab = ref<'library' | 'notes'>('library')
+const panelTab = ref<NavTab>('library')
 /** 阅读页右上「全区展开」：true=隐藏竖排（仅阅读时生效，离开阅读复位） */
 const railHidden = ref(false)
 let panelCloseTimer: ReturnType<typeof setTimeout> | undefined
@@ -142,8 +151,8 @@ const lastPointer = { x: -1, y: -1 }
 
 type GuideMode = 'closed' | 'welcome' | 'tour'
 interface GuideSnapshot {
-  tab: 'library' | 'notes'
-  panelTab: 'library' | 'notes'
+  tab: NavTab
+  panelTab: NavTab
   panelOpen: boolean
   railHidden: boolean
   reader: ReaderState
@@ -204,10 +213,11 @@ function onDocumentLeave(): void {
   panelOpen.value = false
 }
 
-function railEnter(which: 'library' | 'notes'): void {
+function railEnter(which: NavTab): void {
   clearTimeout(panelCloseTimer)
   panelTab.value = which
   panelOpen.value = true
+  if (which === 'workspace') void refreshParallelViews()
 }
 
 function railLeave(): void {
@@ -224,11 +234,19 @@ function panelLeave(): void {
 }
 
 /** 点击竖排项：切方向 + 展开面板（阅读中切方向由 watch(tab) 关阅读并记续读） */
-function pickNav(which: 'library' | 'notes'): void {
+function pickNav(which: NavTab): void {
   clearTimeout(panelCloseTimer)
   tab.value = which
   panelTab.value = which
   panelOpen.value = true
+  if (which === 'workspace') void refreshParallelViews()
+}
+
+/** 点竖排「平行」：进入工作区并收起面板（面板只负责挑存档） */
+function openWorkspaceTab(): void {
+  clearTimeout(panelCloseTimer)
+  tab.value = 'workspace'
+  panelOpen.value = false
 }
 
 /** 点内容区空白处收起面板（补悬停机制之外的兜底）；命中目标可能被瞬时重排（按钮换输入框）重定向到正文，
@@ -242,6 +260,7 @@ function onBodyClick(): void {
 /** 阅读页「全区展开」开关（右上角按钮转发） */
 function toggleRail(): void {
   railHidden.value = !railHidden.value
+  if (railHidden.value) panelOpen.value = false
 }
 /** 笔记列表（更新时间序）与当前打开的笔记全文 */
 const notes = ref<OutlineListRow[]>([])
@@ -261,6 +280,23 @@ const showImport = ref(false)
 const showBackup = ref(false)
 /** AI 模型档案设置对话框（v0.7.0） */
 const showAiSettings = ref(false)
+/** 外观主题选择器（全局配色） */
+const showTheme = ref(false)
+/** 平行视图存档列表（左侧第三项悬停面板） */
+const parallelViews = ref<ParallelViewListRow[]>([])
+/** 创建平行视图的二选一对话框 */
+const showParallelCreate = ref(false)
+/** 平行视图工作区实例（flush / drop 转发） */
+const workspaceRef = ref<InstanceType<typeof ParallelWorkspace> | null>(null)
+/** 切到平行视图时要先打开的笔记（任务式传参，watch(tab) 执行后清空） */
+let pendingWorkspaceNoteId: number | null = null
+/** 最近一次成功挂载的笔记 id：快速连点 tab 时 activeOutline 已被清空，用它兜底找目标笔记 */
+let lastActiveNoteId: number | null = null
+watch(activeOutline, (v) => {
+  if (v) lastActiveNoteId = v.id
+})
+/** 切 tab 异步任务的序号：只允许最后一次生效 */
+let tabWatchSeq = 0
 /**
  * AI 独立窗口（2026-10-17 用户定位：真·独立窗口，与主窗口互不隶属，
  * 系统原生标题栏拖动/缩放/右上角关闭；不设 alwaysOnTop——绝不永远前置）。
@@ -363,11 +399,103 @@ async function refreshNoteGroups(): Promise<void> {
   }
 }
 
+// ---------- 平行视图存档 ----------
+
+async function refreshParallelViews(): Promise<void> {
+  try {
+    parallelViews.value = await window.lexbench.parallelViews.list()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** 打开某篇笔记的平行视图；没有存档时先建一份默认布局 */
+async function openParallelView(noteId: number): Promise<void> {
+  panelOpen.value = false
+  try {
+    const exists = await window.lexbench.parallelViews.get(noteId)
+    if (!exists) {
+      await window.lexbench.parallelViews.save(
+        noteId,
+        serializeParallelLayout(createDefaultLayout()),
+        ''
+      )
+      await refreshParallelViews()
+    }
+    if (tab.value === 'workspace') {
+      await workspaceRef.value?.flush()
+      activeOutline.value = await window.lexbench.outlines.get(noteId)
+      outlineRev.value += 1
+    } else {
+      pendingWorkspaceNoteId = noteId
+      tab.value = 'workspace'
+    }
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** 左侧面板「新建」：先明确二选一（新建笔记 / 从现有笔记创建） */
+async function openParallelCreate(): Promise<void> {
+  // 打开前重取笔记列表：避免外部导入/新建的笔记不在选择器里
+  await refreshNotes()
+  showParallelCreate.value = true
+}
+
+/** 二选一：新建一篇笔记并打开它的视图 */
+async function createParallelView(): Promise<void> {
+  try {
+    const row = await window.lexbench.outlines.create('未命名笔记')
+    await refreshNotes()
+    await refreshParallelViews()
+    setNotice('已新建一篇笔记与对应的平行视图')
+    await openParallelView(row.id)
+  } catch (e) {
+    showError(e)
+  }
+}
+
+async function renameParallelView(noteId: number, name: string): Promise<void> {
+  try {
+    await window.lexbench.parallelViews.rename(noteId, name)
+    await refreshParallelViews()
+  } catch (e) {
+    showError(e)
+  }
+}
+
+/** 工作区切换分屏/浮动前刷新笔记快照：编辑器会重挂，不能拿 App 手里的旧树 */
+function onWorkspaceNoteRefreshed(row: OutlineRow): void {
+  // 异步刷新回来时用户可能已经切到别的笔记：只接受当前笔记的快照
+  if (activeOutline.value?.id !== row.id) return
+  activeOutline.value = row
+  outlineRev.value += 1
+}
+
+/** 重置布局但保留笔记与自定义名称（一一对应后不再提供“删除存档”） */
+async function resetParallelView(noteId: number): Promise<void> {
+  try {
+    if (tab.value === 'workspace' && activeOutline.value?.id === noteId) {
+      workspaceRef.value?.cancelPendingSave()
+    }
+    await window.lexbench.parallelViews.reset(noteId)
+    await refreshParallelViews()
+    if (tab.value === 'workspace' && activeOutline.value?.id === noteId) {
+      await workspaceRef.value?.reloadLayout()
+    }
+    setNotice('平行视图布局已重置')
+  } catch (e) {
+    showError(e)
+  }
+}
+
 async function openNote(id: number): Promise<void> {
   try {
     // 切到另一篇前先把当前编辑器防抖窗口里的内容落盘：
     // 否则随后 get 到的是旧树，撤销历史按「当前树」校验会被整段丢弃
-    if (id !== activeOutline.value?.id) await outlineEditorRef.value?.flush()
+    // 同 note 也先冲刷：App 手里可能是旧快照，后续任何重挂都会用到它
+    await outlineEditorRef.value?.flush()
+    await workspaceRef.value?.flush()
     activeOutline.value = await window.lexbench.outlines.get(id)
   } catch (e) {
     activeOutline.value = null
@@ -377,8 +505,13 @@ async function openNote(id: number): Promise<void> {
 
 async function createNote(groupId?: number | null): Promise<void> {
   try {
+    // 平行视图里从笔记面板新建：先把当前笔记与布局落盘，再切到新笔记
+    await outlineEditorRef.value?.flush()
+    await workspaceRef.value?.flush()
     const row = await window.lexbench.outlines.create('未命名笔记', groupId ?? null)
     await refreshNotes()
+    // 一键一视图：新建笔记后平行视图列表同步多一行
+    await refreshParallelViews()
     activeOutline.value = row
   } catch (e) {
     showError(e)
@@ -584,6 +717,7 @@ async function ensureGuideNote(view: 'outline' | 'map'): Promise<void> {
     await window.lexbench.outlines.save(row.id, JSON.stringify(guideSampleTree()))
     guideSampleId.value = row.id
     await refreshNotes()
+    await refreshParallelViews()
     note = notes.value.find((n) => n.id === row.id) ?? null
   } else {
     guideSampleId.value = note.id
@@ -594,6 +728,7 @@ async function ensureGuideNote(view: 'outline' | 'map'): Promise<void> {
   } catch {
     // 视图模式写失败不影响演示，按当前模式打开即可
   }
+  await flushOutgoingEditors()
   const fresh = await window.lexbench.outlines.get(note.id)
   reader.value = null
   railHidden.value = false
@@ -626,15 +761,12 @@ async function restoreGuideState(): Promise<void> {
   const snap = guideSnapshot
   guideSnapshot = null
   if (!snap) return
-  reader.value = snap.reader
-  tab.value = snap.tab
-  panelTab.value = snap.panelTab
-  panelOpen.value = snap.panelOpen
-  railHidden.value = snap.railHidden
+  // 先把笔记快照取回来，再切 tab：否则工作区/笔记编辑器会先用旧快照挂一次
   if (snap.activeOutline) {
     try {
       // 重新取快照：卸载冲刷后旧对象可能落后（见笔记编辑器的落盘契约）
       await outlineEditorRef.value?.flush()
+      await workspaceRef.value?.flush()
       activeOutline.value = await window.lexbench.outlines.get(snap.activeOutline.id)
       outlineRev.value += 1
     } catch {
@@ -643,6 +775,11 @@ async function restoreGuideState(): Promise<void> {
   } else {
     activeOutline.value = null
   }
+  reader.value = snap.reader
+  panelTab.value = snap.panelTab
+  panelOpen.value = snap.panelOpen
+  railHidden.value = snap.railHidden
+  tab.value = snap.tab
 }
 
 /** 星标法条入口：直达全页阅读并跳到该条 */
@@ -656,10 +793,18 @@ async function confirmDeleteNote(): Promise<void> {
   pendingNoteDelete.value = null
   if (!target) return
   try {
+    if (tab.value === 'workspace' && activeOutline.value?.id === target.id) {
+      workspaceRef.value?.cancelPendingSave()
+    }
     await window.lexbench.outlines.remove(target.id)
     dropNoteHistory(target.id)
-    if (activeOutline.value?.id === target.id) activeOutline.value = null
+    if (activeOutline.value?.id === target.id) {
+      // 删笔记会级联删视图：别让切空那一轮再尝试保存已删除的布局
+      workspaceRef.value?.discardCurrentLayout()
+      activeOutline.value = null
+    }
     await refreshNotes()
+    await refreshParallelViews()
     setNotice('笔记已删除')
   } catch (e) {
     showError(e)
@@ -674,12 +819,15 @@ function askDeleteNote(note: { id: number; title: string }): void {
 /** 编辑器标题改名后列表要重排（updated_at 序）；树的静默保存不触发 */
 async function onNoteListChanged(): Promise<void> {
   await refreshNotes()
+  await refreshParallelViews()
 }
 
 /** 笔记面板改过名/导入后：刷列表，并把当前打开笔记的标题同步给编辑器
  *  （否则编辑器手里的旧标题会在卸载冲刷时把刚改的名字写回去） */
 async function onNotesPanelChanged(): Promise<void> {
   await refreshNotes()
+  // 存档列表 JOIN 笔记标题：改名/移动后一起刷新
+  await refreshParallelViews()
   const cur = activeOutline.value
   if (!cur) return
   const row = notes.value.find((n) => n.id === cur.id)
@@ -691,12 +839,66 @@ async function onNotesPanelChanged(): Promise<void> {
 // 直接重挂会用旧树覆盖刚存的内容。save/get 走同一 renderer→main IPC 队列，main 侧
 // node:sqlite 同步按序处理，get 一定读到 flush 之后的状态（不依赖卸载 emit，那条链不可靠）。
 // 切回文档库方向时：续读契约——离开时在读（resumeDoc 有值）则静默重开该文档恢复位置。
-watch(tab, async (t) => {
+/**
+ * 切方向前的统一冲刷：先把仍挂载的编辑器（笔记 tab / 平行视图）落盘，再发 get。
+ * 主进程 node:sqlite 的 get/save 按消息顺序同步处理，所以必须保证 save 已经发出并完成。
+ */
+async function flushOutgoingEditors(): Promise<void> {
+  // 关键：两个 flush 必须在第一个 await 之前同步发起。
+  // 默认 pre-watcher 会在同一个 flushJobs 里继续渲染并卸载当前 tab，等完第一个再取另一个 ref 已是 null。
+  const pending: Array<Promise<unknown>> = []
+  try {
+    const p = outlineEditorRef.value?.flush()
+    if (p) pending.push(p)
+  } catch {
+    /* 单篇保存失败不阻断切换，错误由编辑器提示 */
+  }
+  try {
+    const p = workspaceRef.value?.flush()
+    if (p) pending.push(p)
+  } catch {
+    /* 同上 */
+  }
+  await Promise.allSettled(pending)
+}
+
+watch(tab, async (t, prev) => {
   // 指引自己编排视图：不要让切 tab 触发续读/重取快照，结束后统一恢复现场
   if (guideActive.value) return
+  const seq = ++tabWatchSeq
+  // 全局模式只属于当前方向：离开/进入平行视图时恢复左侧导航
+  if (t !== prev && (t === 'workspace' || prev === 'workspace')) railHidden.value = false
   // 阅读中经竖排切方向：关阅读（卸载冲刷进度 + 记 resumeDoc，回库方向时静默重开）
   if (reader.value) closeReading()
+  if (t === 'workspace') {
+    void notesPanelRef.value?.refreshStarred()
+    const target =
+      pendingWorkspaceNoteId ??
+      activeOutline.value?.id ??
+      lastActiveNoteId ??
+      parallelViews.value[0]?.note_id ??
+      null
+    pendingWorkspaceNoteId = null
+    // 先同步清空旧快照（避免旧树先挂一次冲掉历史），再冲刷、最后 get 新快照。
+    // 不能先 await：await 会让 Vue 先渲染新 tab，用旧 activeOutline 挂编辑器。
+    activeOutline.value = null
+    await flushOutgoingEditors()
+    if (seq !== tabWatchSeq) return
+    if (target == null) return
+    try {
+      const row = await window.lexbench.outlines.get(target)
+      if (seq !== tabWatchSeq) return
+      activeOutline.value = row
+      outlineRev.value += 1
+    } catch {
+      if (seq === tabWatchSeq) activeOutline.value = null
+    }
+    return
+  }
   if (t === 'library') {
+    // 离开笔记/平行视图前先落盘，避免 <500ms 的编辑停在防抖窗口里
+    await flushOutgoingEditors()
+    if (seq !== tabWatchSeq) return
     const resume = resumeDoc.value
     // readerLoading 在途 = 正在打开另一文档（如从笔记面板直接点开）——不抢，留给它
     if (resume && !reader.value && !readerLoading.value) {
@@ -708,15 +910,17 @@ watch(tab, async (t) => {
   }
   void notesPanelRef.value?.refreshStarred()
   const cur = activeOutline.value
-  if (!cur) return
+  // 先同步清空 + 冲刷编辑器，最后再 get；顺序反了会把未落盘的编辑丢在旧快照里
+  activeOutline.value = null
+  await flushOutgoingEditors()
+  if (seq !== tabWatchSeq || !cur) return
   try {
-    // 先清空，避免用 App 手里过期的旧快照先把编辑器挂起来：
-    // 那样会以空树初始化一次，把会话内的撤销历史缓存冲掉。取到新快照后再挂。
-    activeOutline.value = null
-    activeOutline.value = await window.lexbench.outlines.get(cur.id)
+    const row = await window.lexbench.outlines.get(cur.id)
+    if (seq !== tabWatchSeq) return
+    activeOutline.value = row
     outlineRev.value += 1 // 强制编辑器用新快照重挂
   } catch {
-    activeOutline.value = null // 笔记已被删（如数据包导入后）
+    if (seq === tabWatchSeq) activeOutline.value = null // 笔记已被删（如数据包导入后）
   }
 })
 
@@ -1012,6 +1216,16 @@ function onDrop(e: DragEvent): void {
   dragDepth = 0
   dragging.value = false
   if (showImport.value) return
+  // 落在平行视图的文档区：交给工作区直接导入并在该区开窗
+  const dropTarget = e.target instanceof HTMLElement ? e.target : null
+  if (
+    tab.value === 'workspace' &&
+    dropTarget?.closest('[data-parallel-drop]') &&
+    workspaceRef.value
+  ) {
+    void workspaceRef.value.handleDrop(e.dataTransfer)
+    return
+  }
   const all = Array.from(e.dataTransfer?.files ?? [])
   const ok = all.filter((f) => /\.(docx|pdf|txt|doc)$/i.test(f.name))
   if (!ok.length) {
@@ -1041,6 +1255,7 @@ watch(showImport, (open) => {
 let unsubAiVis: (() => void) | null = null
 let unsubAiArticle: (() => void) | null = null
 let unsubBeforeClose: (() => void) | null = null
+let unsubTheme: (() => void) | null = null
 
 onMounted(() => {
   // 命名监听器，卸载时全部注销（修复旧版 #6）
@@ -1052,6 +1267,9 @@ onMounted(() => {
   window.addEventListener('dragover', onDragOver)
   window.addEventListener('drop', onDrop)
   document.addEventListener('click', onDocClickForMode)
+  // 主题：与设置表对齐（启动缓存先行上色），并跟随另一窗口的换肤
+  void syncThemeFromSettings()
+  unsubTheme = watchThemeAcrossWindows()
   // AI 独立窗：顶栏按钮态同步 + 窗内引用跳转转发
   unsubAiVis = window.lexbench.aiWindow.onVisibility((v) => {
     aiWinOpen.value = v
@@ -1062,6 +1280,7 @@ onMounted(() => {
     void (async () => {
       try {
         await outlineEditorRef.value?.flush()
+        await workspaceRef.value?.flush()
       } catch {
         // 落盘失败不阻断关窗（错误已在编辑器内提示）
       }
@@ -1069,7 +1288,13 @@ onMounted(() => {
     })()
   })
   // 首屏数据与首启指引都等列表就绪后再决定（预置法条的一次性提示也在 initOnboarding 里）
-  const boot = Promise.allSettled([refreshDocs(), refreshGroups(), refreshNotes(), refreshNoteGroups()])
+  const boot = Promise.allSettled([
+    refreshDocs(),
+    refreshGroups(),
+    refreshNotes(),
+    refreshNoteGroups(),
+    refreshParallelViews()
+  ])
   void boot.then(() => void initOnboarding())
   void window.lexbench.app
     .getVersion()
@@ -1091,6 +1316,7 @@ onBeforeUnmount(() => {
   unsubAiVis?.()
   unsubAiArticle?.()
   unsubBeforeClose?.()
+  unsubTheme?.()
   clearTimeout(noticeTimer)
   clearTimeout(errorTimer)
   clearTimeout(topTimer)
@@ -1194,6 +1420,9 @@ onBeforeUnmount(() => {
       <button class="top-btn" title="配置 AI 模型档案（接口地址 / 模型 / 密钥）" @click="showAiSettings = true">
         AI 设置
       </button>
+      <button class="top-btn" title="切换外观主题（浅色 / 深色配色）" @click="showTheme = true">
+        主题
+      </button>
       <button
         class="top-btn"
         data-guide="top-data"
@@ -1267,6 +1496,22 @@ onBeforeUnmount(() => {
           <span class="rail-label">笔记</span>
           <span class="rail-count">{{ notes.length }}</span>
         </button>
+        <button
+          class="rail-item"
+          data-guide="rail-workspace"
+          :class="{ active: tab === 'workspace' }"
+          title="平行视图（边读文档边记笔记）"
+          @mouseenter="railEnter('workspace')"
+          @click="openWorkspaceTab"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+            <rect x="2.5" y="2.5" width="13" height="13" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.3" />
+            <path d="M9 3v12" stroke="currentColor" stroke-width="1.3" opacity="0.65" />
+            <path d="M4.8 6h1.8M4.8 8.5h1.8M11.4 6h1.8M11.4 8.5h1.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.5" />
+          </svg>
+          <span class="rail-label">平行</span>
+          <span class="rail-count">{{ parallelViews.length }}</span>
+        </button>
       </nav>
 
       <!-- 悬停浮层面板：覆盖式滑入（配方时长 0.18s/缓动同 menu-pop），DOM 常驻控显隐 -->
@@ -1301,6 +1546,16 @@ onBeforeUnmount(() => {
           @error="showError"
           @groups-changed="refreshNoteGroups"
           @imported="onNotesPanelChanged"
+          @open-parallel="openParallelView"
+        />
+        <ParallelViewsPanel
+          v-show="panelTab === 'workspace'"
+          :views="parallelViews"
+          :active-note-id="tab === 'workspace' ? activeOutline?.id ?? null : null"
+          @open="openParallelView"
+          @create="openParallelCreate"
+          @rename="renameParallelView"
+          @reset="resetParallelView"
         />
       </aside>
 
@@ -1332,6 +1587,24 @@ onBeforeUnmount(() => {
           @notice="setNotice"
           @doc-changed="reloadStatuteDoc"
           @toggle-rail="toggleRail"
+        />
+      </main>
+
+      <!-- 平行视图：一篇笔记 + 多个文档窗（分屏网格 / 浮动窗口） -->
+      <main v-else-if="tab === 'workspace'" class="workspace-main">
+        <ParallelWorkspace
+          ref="workspaceRef"
+          :note="activeOutline"
+          :note-rev="outlineRev"
+          :documents="documents"
+          :groups="groups"
+          :rail-hidden="railHidden"
+          @error="showError"
+          @notice="setNotice"
+          @docs-changed="onImported"
+          @views-changed="refreshParallelViews"
+          @toggle-rail="toggleRail"
+          @note-refreshed="onWorkspaceNoteRefreshed"
         />
       </main>
 
@@ -1377,6 +1650,15 @@ onBeforeUnmount(() => {
       v-model:visible="showAiSettings"
       @error="showError"
       @notice="setNotice"
+    />
+
+    <ThemeDialog v-model:visible="showTheme" />
+
+    <ParallelCreateDialog
+      v-model:visible="showParallelCreate"
+      :notes="notes"
+      @create="createParallelView"
+      @existing="openParallelView"
     />
 
     <AboutDialog v-model:visible="showAbout" @error="showError" @guide="onAboutGuide" />
@@ -1441,6 +1723,8 @@ onBeforeUnmount(() => {
   background: var(--lb-chrome);
   flex-shrink: 0;
   -webkit-app-region: drag; /* 顶栏空白处可拖动窗口 */
+  /* 平行视图窗内 fixed 浮层最高 120，顶栏再压一层 */
+  z-index: 200;
 }
 
 /* 顶栏底边：两端渐隐，避免通到底的矩形切割线 */
@@ -1455,8 +1739,8 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     to right,
     transparent 0,
-    rgba(0, 0, 0, 0.08) 32px,
-    rgba(0, 0, 0, 0.08) calc(100% - 32px),
+    var(--lb-border) 32px,
+    var(--lb-border) calc(100% - 32px),
     transparent 100%
   );
 }
@@ -1497,22 +1781,22 @@ onBeforeUnmount(() => {
 }
 
 .wc:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--lb-hover);
   color: var(--lb-text);
 }
 
 .wc:active {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--lb-border-strong);
   transform: none; /* 窗口控制按钮不缩放，保持系统感 */
 }
 
 .wc.wc-close:hover {
-  background: #ff3b30;
+  background: var(--lb-danger);
   color: #fff;
 }
 
 .wc.wc-close:active {
-  background: #e03027;
+  background: var(--lb-danger-strong);
   color: #fff;
 }
 
@@ -1531,7 +1815,7 @@ onBeforeUnmount(() => {
   height: 32px;
   border-radius: var(--lb-radius-s);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-family: var(--lb-serif);
   font-size: 18px;
   font-weight: 600;
@@ -1544,12 +1828,13 @@ onBeforeUnmount(() => {
   letter-spacing: -0.01em;
 }
 
+
 .brand-en {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #9a9aa8;
+  color: var(--lb-muted);
 }
 
 .brand-ver {
@@ -1594,9 +1879,9 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: 720px;
   background: var(--lb-panel);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--lb-border-strong);
   border-radius: var(--lb-radius-full);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--lb-shadow-1);
   transition: border-color 0.25s, box-shadow 0.25s;
 }
 
@@ -1639,7 +1924,7 @@ onBeforeUnmount(() => {
   min-width: 148px;
   padding: 5px;
   background: var(--lb-panel);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
   corner-shape: var(--lb-corner-shape);
   box-shadow: var(--lb-shadow-2);
@@ -1702,8 +1987,8 @@ onBeforeUnmount(() => {
 }
 
 .search-group:focus-within {
-  border-color: rgba(0, 113, 227, 0.55);
-  box-shadow: 0 2px 10px rgba(0, 113, 227, 0.16);
+  border-color: var(--lb-accent-ring);
+  box-shadow: 0 2px 10px var(--lb-accent-glow);
 }
 
 .search-btn {
@@ -1713,7 +1998,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: var(--lb-radius-full);
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-size: 13px;
   flex-shrink: 0;
   transition: background 0.2s;
@@ -1774,7 +2059,7 @@ onBeforeUnmount(() => {
 }
 
 .error-close:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--lb-hover);
 }
 
 /* 消息条变体：复用错误条容器（成功=绿 / 提示=黄） */
@@ -1809,8 +2094,9 @@ onBeforeUnmount(() => {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.7;
   border-radius: 50%;
   animation: lb-spin 0.7s linear infinite;
 }
@@ -1860,6 +2146,14 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
+/* 平行视图占满内容画布（画布本身的 4px 留白/26px 圆角由 .body > main 统一提供） */
+.workspace-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* 书籍沉浸阅读（竖排常驻；rail-off 时隐藏 rail 占满正文） */
 .reading-full {
   display: flex;
@@ -1893,8 +2187,8 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     to bottom,
     transparent 0,
-    rgba(0, 0, 0, 0.08) 32px,
-    rgba(0, 0, 0, 0.08) calc(100% - 32px),
+    var(--lb-border) 32px,
+    var(--lb-border) calc(100% - 32px),
     transparent 100%
   );
 }
@@ -1913,7 +2207,7 @@ onBeforeUnmount(() => {
 }
 
 .rail-item:hover {
-  background: #f0f0f6;
+  background: var(--lb-hover);
   color: var(--lb-text);
 }
 
@@ -2061,7 +2355,7 @@ onBeforeUnmount(() => {
 .drag-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(30, 28, 40, 0.45);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2077,5 +2371,28 @@ onBeforeUnmount(() => {
   color: #fff;
   font-size: 18px;
   font-family: var(--lb-serif);
+}
+
+/* 最小窗口宽度下顶栏按钮较多：收起英文品牌与多余留白，避免「导入文档」压到检索按钮 */
+@media (max-width: 1100px) {
+  .topbar {
+    gap: 10px;
+    padding-left: 14px;
+  }
+
+  .brand-en {
+    display: none;
+  }
+
+  .top-btn {
+    padding: 0 12px;
+  }
+}
+
+@media (max-width: 980px) {
+  .top-btn {
+    padding: 0 9px;
+    font-size: 12px;
+  }
 }
 </style>

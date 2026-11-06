@@ -118,13 +118,13 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
   right: 22px;
   bottom: 22px;
   width: 320px;
-  background: #fff;
+  background: var(--lb-panel);
   border: 1px solid var(--lb-border, rgba(0, 0, 0, 0.08));
   border-radius: var(--lb-radius-l);
   corner-shape: var(--lb-corner-shape);
   box-shadow: var(--lb-shadow-2);
   padding: 16px 18px;
-  z-index: 90;
+  z-index: 300;
 }
 
 .update-card.mini {
@@ -160,29 +160,29 @@ onBeforeUnmount(() => clearTimeout(transientTimer))
 }
 
 .ub.plain {
-  background: #f2f3f8;
-  color: #5c5c74;
+  background: var(--lb-panel-2);
+  color: var(--lb-muted);
 }
 
 .ub.plain:hover {
-  background: #e8e9f2;
+  background: var(--lb-chip);
 }
 
 .ub.primary {
   background: var(--lb-grad, #0071e3);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .dl-text {
   font-size: 12px;
-  color: #5c5c74;
+  color: var(--lb-muted);
 }
 
 .dl-bar {
   margin-top: 7px;
   height: 4px;
   border-radius: var(--lb-radius-micro);
-  background: #ececf3;
+  background: var(--lb-hover);
   overflow: hidden;
 }
 

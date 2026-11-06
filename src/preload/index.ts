@@ -29,6 +29,8 @@ import type {
   NoteGroupRow,
   OutlineListRow,
   OutlineRow,
+  ParallelViewListRow,
+  ParallelViewRow,
   ReadingProgress,
   SearchMode,
   SearchOutcome,
@@ -245,6 +247,20 @@ const api = {
     /** 删除分类：其子文件夹提升到当前层，直属笔记归「未分类」 */
     remove: (id: number): Promise<void> => invoke('noteGroups:remove', id)
   },
+  /** 平行视图存档（一篇笔记唯一一份布局） */
+  parallelViews: {
+    list: (): Promise<ParallelViewListRow[]> => invoke('parallelViews:list'),
+    get: (noteId: number): Promise<ParallelViewRow | null> =>
+      invoke('parallelViews:get', noteId),
+    /** 保存布局；name 省略/空串时保留已有自定义名 */
+    save: (noteId: number, layout: string, name?: string): Promise<ParallelViewRow> =>
+      invoke('parallelViews:save', noteId, layout, name ?? ''),
+    /** 改名；空串表示恢复为笔记标题 */
+    rename: (noteId: number, name: string): Promise<void> =>
+      invoke('parallelViews:rename', noteId, name),
+    /** 重置为默认布局（保留自定义名称） */
+    reset: (noteId: number): Promise<void> => invoke('parallelViews:reset', noteId)
+  },
   /** 通用键值偏好（settings 表）：目前用于记住每篇文档的阅读缩放 */
   settings: {
     get: (key: string): Promise<string | null> => invoke('settings:get', key),
@@ -281,6 +297,9 @@ const api = {
     /** 读取 PDF 原件（优先归档副本，路径失效也能读），供渲染层 pdfjs 渲染页面 */
     getPdfData: (documentId: number): Promise<ArrayBuffer> =>
       invoke('reading:getPdfData', documentId),
+    /** PDF 真实页数（扫描件与文字版都准确） */
+    getPdfPageCount: (documentId: number): Promise<number> =>
+      invoke('reading:getPdfPageCount', documentId),
     /** PDF 原件本机路径（优先归档副本）——内置 PDF 阅读器以 file:// 加载 */
     getPdfPath: (documentId: number): Promise<string> =>
       invoke('reading:getPdfPath', documentId)

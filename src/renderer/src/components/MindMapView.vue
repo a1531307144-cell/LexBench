@@ -34,6 +34,8 @@ const emit = defineEmits<{
 const hostEl = ref<HTMLElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
 let jm: jsMind | null = null
+/** 宿主尺寸监听：平行视图拖动分隔条/窗口缩放后让 jsMind 重新适配 */
+let hostResizeObserver: ResizeObserver | null = null
 /** 画布当前实际渲染的树（自身 sync 或 loadTree 后更新）；回流与它同构就只刷装饰 */
 let lastSync: OutlineNode[] | null = null
 /** >0 时吞掉 jsMind 内部事件：批量命令只允许显式 syncToParent 提交一次 */
@@ -470,7 +472,9 @@ async function loadTree(nodes: OutlineNode[]): Promise<void> {
   const keepView = initialFitDone
   const scroll = panel ? { left: panel.scrollLeft, top: panel.scrollTop } : null
   const selectedId = jm.get_selected_node()?.id ?? null
-  metaById = indexTree(nodes)
+  // 深拷贝：metaById 会被贴图等操作就地写入，不能直接引用父级 tree（否则父级树被改后
+  // onMapChange 会误判“没有变化”而跳过保存，图片只停在画布上）
+  metaById = indexTree(cloneTree(nodes))
   // 图片先转成 Blob URL 再渲染：自定义节点渲染是同步的，URL 没就绪会只剩文字
   await preloadImages(nodes)
   if (seq !== loadSeq || !jm) return
@@ -531,11 +535,22 @@ async function loadTree(nodes: OutlineNode[]): Promise<void> {
   void restoreZoom()
 }
 
+function safeResize(): void {
+  try {
+    jm?.resize()
+  } catch {
+    // jsMind 在切换视图/宿主瞬间可能读到空布局；resize 是纯视觉适配，失败可忽略
+  }
+}
+
 function scheduleResize(): void {
+  const host = hostEl.value
+  // 宿主不可见/被切走时 jsMind 计算节点最小尺寸会拿到空数据而抛错，直接跳过
+  if (!jm || !host || host.clientWidth < 40 || host.clientHeight < 40) return
   for (const t of resizeTimers) clearTimeout(t)
   resizeTimers = []
-  resizeTimers.push(setTimeout(() => jm?.resize(), 0))
-  resizeTimers.push(setTimeout(() => jm?.resize(), 300))
+  resizeTimers.push(setTimeout(safeResize, 0))
+  resizeTimers.push(setTimeout(safeResize, 300))
 }
 
 /** 等 resize/布局完成后把视口放回中间（不被 scheduleResize 清掉） */
@@ -1774,6 +1789,15 @@ onMounted(async () => {
     document.addEventListener('click', onDocumentClick)
     // 拖动中途窗口失焦（Alt+Tab/切屏）可能再无 pointerup：遗留落点线/幽灵就是那条“蓝线”
     window.addEventListener('blur', cancelPointerDrag)
+    // 平行视图里拖动分隔条/缩放窗口后，宿主尺寸变了要重新适配画布
+    if (typeof ResizeObserver !== 'undefined') {
+      hostResizeObserver = new ResizeObserver((entries) => {
+        const box = entries[0]?.contentRect
+        if (!box || box.width < 40 || box.height < 40) return
+        scheduleResize()
+      })
+      hostResizeObserver.observe(hostEl.value)
+    }
     // 关窗时渲染进程直接销毁、onBeforeUnmount 不跑：把防抖里的缩放记忆先写出去
     unsubBeforeClose = window.lexbench.app.onBeforeClose(() => flushZoomSave())
   } catch (e) {
@@ -1849,7 +1873,8 @@ watch(
   (t) => {
     // lastSync = 画布当前渲染的树：同构即自身回流（或外部无变化），只刷装饰
     if (lastSync && sameOutlineTree(t, lastSync)) {
-      metaById = indexTree(t)
+      // 同样必须克隆：metaById 会被贴图操作就地写入，不能反向污染父级 tree
+      metaById = indexTree(cloneTree(t))
       paintDecorations()
       return
     }
@@ -1873,6 +1898,8 @@ watch(
 onBeforeUnmount(() => {
   // 切视图/换笔记即销毁实例：弹出的比例先把防抖里的那笔写完
   flushZoomSave()
+  hostResizeObserver?.disconnect()
+  hostResizeObserver = null
   unsubBeforeClose?.()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('blur', cancelPointerDrag)
@@ -2322,7 +2349,7 @@ body.mm-dragging {
   justify-content: center;
   border: 1px solid var(--lb-border);
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--lb-panel);
   color: var(--lb-muted);
   box-shadow: var(--lb-shadow-1);
   backdrop-filter: blur(8px);
@@ -2657,7 +2684,7 @@ body.mm-dragging {
   max-width: 220px;
   padding: 6px 11px;
   border-radius: 12px;
-  background: #fff;
+  background: var(--lb-panel);
   border: 1px solid var(--lb-accent);
   box-shadow: 0 8px 24px rgba(0, 60, 140, 0.18);
   font-size: 13px;
@@ -2750,7 +2777,7 @@ body.mm-dragging {
   border: none;
   border-radius: 8px;
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-size: 12px;
 }
 

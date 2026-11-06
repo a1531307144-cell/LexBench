@@ -221,6 +221,8 @@ function onDocDragStart(d: DocumentRow, e: DragEvent): void {
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', String(d.id))
+    // 平行视图用它识别“从文档库拖一篇文档进阅读窗”，普通库内排序仍走 text/plain
+    e.dataTransfer.setData('application/x-lexbench-doc', String(d.id))
   }
 }
 
@@ -606,7 +608,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 }
 
 .group-row:hover {
-  background: #f0f0f6;
+  background: var(--lb-hover);
 }
 
 .group-row.on {
@@ -657,7 +659,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 
 .chip-act:hover {
   opacity: 1;
-  background: rgba(156, 52, 40, 0.14);
+  background: var(--lb-err-bg);
 }
 
 
@@ -668,7 +670,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   padding: 0 10px;
   border: 1px solid var(--lb-accent-2);
   border-radius: var(--lb-radius-xs);
-  background: #fff;
+  background: var(--lb-panel);
   color: var(--lb-text);
   font-size: 13px;
   outline: none;
@@ -681,7 +683,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   padding: 3px 10px;
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-full);
-  background: #fff;
+  background: var(--lb-panel);
   color: var(--lb-muted);
   font-size: 12px;
 }
@@ -847,7 +849,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
 
 .review-btn:hover {
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .move-btn {
@@ -873,7 +875,7 @@ async function moveDoc(d: DocumentRow, value: string): Promise<void> {
   padding: 0 4px;
   border: 1px solid var(--lb-accent-2);
   border-radius: var(--lb-radius-xs);
-  background: #fff;
+  background: var(--lb-panel);
   color: var(--lb-text);
   font-size: 12px;
   outline: none;

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ConfirmModal from './ConfirmModal.vue'
 import { usePageZoom } from '../composables/usePageZoom'
+import { cachePdfBlob, getCachedPdfBlob } from '../composables/pdfBlobCache'
 import type { BookNoteRow, DocumentDetail, ExportFormat } from '@shared/types'
 
 /**
@@ -9,7 +10,8 @@ import type { BookNoteRow, DocumentDetail, ExportFormat } from '@shared/types'
  * - 文字模式（docx/txt）：chunks 渲染段落，划选记笔记 → <mark class="bn"> 高亮恢复
  * - 页面模式（.pdf）：系统内置 PDF 阅读器（iframe file://）呈现原书页面，批注按页码记录
  */
-const props = defineProps<{
+const props = withDefaults(
+  defineProps<{
   /** 书籍详情：chunks 每项即一段；批注 start_para/end_para 与 chunk.seq 对应 */
   doc: DocumentDetail
   /** 进入时定位的段落 seq（检索命中传入，定位后短暂高亮）；缺省走阅读进度恢复 */
@@ -18,7 +20,26 @@ const props = defineProps<{
   silentRestore?: boolean
   /** 使用指引演示态：只展示，不写阅读进度 */
   guide?: boolean
-}>()
+  /** 嵌在平行视图中：紧凑顶栏、默认收起批注栏、不抢全局快捷键 */
+  embedded?: boolean
+  /** 窄窗：面板内进一步压缩 */
+  narrow?: boolean
+  /** 当前窗口是否是焦点窗（决定全局快捷键与进度归属） */
+  paneActive?: boolean
+  /** 是否写阅读进度（平行视图只让焦点窗写，避免多窗互相覆盖） */
+  persistProgress?: boolean
+  /** 是否写阅读缩放（同上） */
+  persistZoom?: boolean
+}>(), {
+  silentRestore: false,
+  guide: false,
+  embedded: false,
+  narrow: false,
+  paneActive: false,
+  // Vue 的 Boolean prop 缺省会被当成 false，这里必须显式默认 true，否则整页阅读不再记忆进度/缩放
+  persistProgress: true,
+  persistZoom: true
+})
 
 const emit = defineEmits<{
   /** 返回（App 恢复原 Tab） */
@@ -30,12 +51,13 @@ const emit = defineEmits<{
   'toggle-rail': []
 }>()
 
+const rootEl = ref<HTMLElement | null>(null)
 const scrollEl = ref<HTMLElement | null>(null)
 const contentEl = ref<HTMLElement | null>(null)
 const sideEl = ref<HTMLElement | null>(null)
 const noteAreaEl = ref<HTMLTextAreaElement | null>(null)
 
-const showSide = ref(true)
+const showSide = ref(!props.embedded)
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? '')
@@ -380,7 +402,7 @@ function onScroll(): void {
 
 /** 找视口顶部可见段落的 data-para 存为进度（文字模式） */
 async function saveProgressNow(): Promise<void> {
-  if (props.guide) return
+  if (props.guide || props.persistProgress === false) return
   const el = scrollEl.value
   if (!el) return
   const box = el.getBoundingClientRect()
@@ -441,20 +463,29 @@ const isPdf = computed(() => props.doc.file_ext === '.pdf')
 
 /** 正文缩放（触控板双指捏合）：按文档记住比例；PDF 交给内置阅读器自己缩放，故不记忆 */
 const { pageZoom, resetZoom } = usePageZoom({
+  // 始终用同一个记忆键读取：只有焦点窗写回，避免多窗失焦时缩放被重置为 100%
   zoomKey: () => (isPdf.value ? null : `read:zoom:doc:${props.doc.id}`),
-  target: scrollEl
+  target: scrollEl,
+  persist: () => props.persistZoom !== false
 })
-/** PDF 书籍一页一 chunk：chunk 数即总页数 */
-const pdfTotal = computed(() => props.doc.chunks.length)
+/** PDF 真实页数（主进程探测；失败时退回 chunk 数——扫描件恰好一页一 chunk） */
+const pdfPageCount = ref(0)
+const pdfTotal = computed(() => pdfPageCount.value || props.doc.chunks.length)
 /** 原件字节的 blob 地址（http 页面不能直接载入 file://，用 blob 喂内置阅读器） */
 const pdfBlob = ref<Blob | null>(null)
 const pdfBlobUrl = ref('')
-/** 当前页（1 基）：用于跳页与页笔记定位 */
+/** 当前页（1 基）：用于跳页与页笔记定位（原生阅读器内部滚动读不回来，只代表“最后一次跳转”） */
 const pdfPage = ref(1)
 const notePageInput = ref(1)
+/** 缩放预设：由 URL 片段交给内置阅读器，切换时重建 blob 地址 */
+const pdfZoom = ref<'page-width' | 'page-fit' | '75' | '100' | '125' | '150'>('page-width')
 
+// 隐藏 Chromium 自带工具栏/侧栏/状态栏，外面用应用自己的 PDF 顶栏；
+// 原生阅读器内部的当前页读不回来，所以页面输入只做“跳至”，不做实时回显。
 const pdfViewerUrl = computed(() =>
-  pdfBlobUrl.value ? `${pdfBlobUrl.value}#page=${pdfPage.value}&zoom=page-width` : ''
+  pdfBlobUrl.value
+    ? `${pdfBlobUrl.value}#page=${pdfPage.value}&zoom=${pdfZoom.value}&toolbar=0&navpanes=0&statusbar=0`
+    : ''
 )
 
 /** 用当前页码重建 blob 地址（内置阅读器按 URL 片段跳页，换地址即重新定位） */
@@ -467,8 +498,22 @@ function rebuildBlobUrl(): void {
 
 async function loadPdf(): Promise<void> {
   try {
-    const buf = await window.lexbench.reading.getPdfData(props.doc.id)
-    pdfBlob.value = new Blob([buf], { type: 'application/pdf' })
+    let blob = getCachedPdfBlob(props.doc.id)
+    if (!blob) {
+      const buf = await window.lexbench.reading.getPdfData(props.doc.id)
+      blob = new Blob([buf], { type: 'application/pdf' })
+      cachePdfBlob(props.doc.id, blob)
+    }
+    pdfBlob.value = blob
+    // 页数以 PDF 目录为准（文字版 PDF 的 chunk 是段落，不等于页）；
+    // 不阻塞首屏：大文件探测慢时先显示 PDF，页数随后补上
+    const countDocId = props.doc.id
+    void window.lexbench.reading
+      .getPdfPageCount(countDocId)
+      .then((count) => {
+        if (props.doc.id === countDocId && count > 0) pdfPageCount.value = count
+      })
+      .catch(() => {})
     if (props.focusPara !== undefined) {
       // 检索命中进入：直达对应页
       pdfPage.value = props.focusPara + 1
@@ -491,10 +536,30 @@ async function loadPdf(): Promise<void> {
   }
 }
 
+/** PDF 进度按页保存（文字模式的 saveProgressNow 不适用于页面模式） */
+function persistPdfPage(): void {
+  if (props.guide || props.persistProgress === false) return
+  void window.lexbench.reading
+    .saveProgress(props.doc.id, pdfPage.value - 1)
+    .catch((e) => emit('error', errText(e)))
+}
+
 /** 跳到指定页（1 基）：重建地址让内置阅读器定位 */
 function jumpToPdfPage(page: number): void {
   pdfPage.value = Math.min(Math.max(1, Math.round(page)), Math.max(1, pdfTotal.value))
   notePageInput.value = pdfPage.value
+  rebuildBlobUrl()
+  persistPdfPage()
+}
+
+function stepPdfPage(delta: number): void {
+  jumpToPdfPage(pdfPage.value + delta)
+}
+
+function setPdfZoom(value: string): void {
+  const allowed = ['page-width', 'page-fit', '75', '100', '125', '150'] as const
+  if (!(allowed as readonly string[]).includes(value)) return
+  pdfZoom.value = value as (typeof allowed)[number]
   rebuildBlobUrl()
 }
 
@@ -506,7 +571,7 @@ function openPageNoteForm(): void {
   )
   pdfPage.value = p
   notePageInput.value = p
-  void window.lexbench.reading.saveProgress(props.doc.id, p - 1).catch(() => {})
+  persistPdfPage()
   const vh = window.innerHeight
   form.value = {
     top: Math.max(8, Math.round(vh / 2 - POP_H / 2)),
@@ -543,6 +608,7 @@ async function exportNotes(format: ExportFormat): Promise<void> {
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return
+  if (props.embedded && !props.paneActive) return
   if (form.value) cancelForm()
   else pendingSel = null
 }
@@ -592,10 +658,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="rv">
+  <div
+    ref="rootEl"
+    class="rv"
+    :class="{ 'is-embedded': embedded, narrow, 'pdf-mode': isPdf }"
+  >
     <!-- 顶栏 -->
     <header class="rv-top">
-      <button class="rv-back" @click="emit('back')">← 返回</button>
+      <button v-if="!embedded" class="rv-back" @click="emit('back')">← 返回</button>
       <div class="rv-title-wrap">
         <h1 class="rv-title" :title="doc.title">{{ doc.title }}</h1>
         <transition name="rv-fade">
@@ -611,27 +681,22 @@ onBeforeUnmount(() => {
         >
           {{ Math.round(pageZoom * 100) }}%
         </button>
-        <template v-if="isPdf">
-          <span class="rv-page-ind">共 {{ pdfTotal }} 页</span>
-          <label class="rv-page-jump">
-            第
-            <input
-              v-model.number="notePageInput"
-              class="rv-page-input"
-              type="number"
-              min="1"
-              :max="pdfTotal"
-              @keydown.enter="jumpToPdfPage(notePageInput)"
-            />
-            页
-          </label>
-          <button class="rv-top-btn" title="跳到该页" @click="jumpToPdfPage(notePageInput)">跳转</button>
-          <button class="rv-top-btn" title="给该页记批注" @click="openPageNoteForm">✎ 本页笔记</button>
-        </template>
-        <button class="rv-top-btn" :disabled="exporting" title="导出批注为 Markdown" @click="exportNotes('md')">
+        <button
+          v-if="!embedded"
+          class="rv-top-btn"
+          :disabled="exporting"
+          title="导出批注为 Markdown"
+          @click="exportNotes('md')"
+        >
           导出 .md
         </button>
-        <button class="rv-top-btn" :disabled="exporting" title="导出批注为 Word" @click="exportNotes('docx')">
+        <button
+          v-if="!embedded"
+          class="rv-top-btn"
+          :disabled="exporting"
+          title="导出批注为 Word"
+          @click="exportNotes('docx')"
+        >
           导出 .docx
         </button>
         <button
@@ -642,22 +707,101 @@ onBeforeUnmount(() => {
         >
           ☰
         </button>
-        <button class="rv-top-btn" title="隐藏左侧导航（全区阅读；再点恢复）" @click="emit('toggle-rail')">
+        <button
+          v-if="!embedded"
+          class="rv-top-btn"
+          title="隐藏左侧导航（全区阅读；再点恢复）"
+          @click="emit('toggle-rail')"
+        >
           ⛶ 全区
         </button>
       </div>
     </header>
 
     <div class="rv-main">
-      <!-- PDF 页面模式：系统内置 PDF 阅读器（翻页/缩放/搜索由内置引擎负责） -->
+      <!-- PDF 页面模式：原生阅读器负责渲染/滚动，应用只做外壳顶栏（跳页/缩放/本页笔记） -->
       <div v-if="isPdf" class="rv-pdf-frame">
-        <iframe
-          v-if="pdfViewerUrl"
-          :src="pdfViewerUrl"
-          class="pdf-iframe"
-          title="PDF 阅读器"
-        ></iframe>
-        <div v-else class="rv-pdf-loading">正在加载 PDF…</div>
+        <div class="rv-pdf-bar">
+          <button
+            class="rv-pdf-nav"
+            title="上一页"
+            :disabled="pdfPage <= 1"
+            @click="stepPdfPage(-1)"
+          >
+            ‹
+          </button>
+          <label class="rv-pdf-jump">
+            跳至
+            <input
+              v-model.number="notePageInput"
+              class="rv-page-input"
+              type="number"
+              min="1"
+              :max="pdfTotal"
+              @keydown.enter="jumpToPdfPage(notePageInput)"
+            />
+            页
+          </label>
+          <button
+            class="rv-pdf-btn"
+            data-pdf-action="jump"
+            title="跳到该页"
+            @click="jumpToPdfPage(notePageInput)"
+          >
+            跳转
+          </button>
+          <button
+            class="rv-pdf-nav"
+            title="下一页"
+            :disabled="pdfPage >= pdfTotal"
+            @click="stepPdfPage(1)"
+          >
+            ›
+          </button>
+          <span class="rv-page-ind">共 {{ pdfTotal }} 页</span>
+          <span class="rv-pdf-spacer"></span>
+          <label class="rv-pdf-zoom">
+            缩放
+            <select
+              class="rv-pdf-select"
+              :value="pdfZoom"
+              @change="setPdfZoom(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="page-width">适应宽度</option>
+              <option value="page-fit">适应页面</option>
+              <option value="75">75%</option>
+              <option value="100">100%</option>
+              <option value="125">125%</option>
+              <option value="150">150%</option>
+            </select>
+          </label>
+          <button
+            class="rv-pdf-btn"
+            data-pdf-action="page-note"
+            title="给该页记批注"
+            @click="openPageNoteForm"
+          >
+            ✎ 本页笔记
+          </button>
+          <button
+            v-if="embedded"
+            class="rv-pdf-btn"
+            :class="{ on: showSide }"
+            :title="showSide ? '收起批注栏' : '展开批注栏'"
+            @click="showSide = !showSide"
+          >
+            ☰ 批注
+          </button>
+        </div>
+        <div class="rv-pdf-canvas">
+          <iframe
+            v-if="pdfViewerUrl"
+            :src="pdfViewerUrl"
+            class="pdf-iframe"
+            title="PDF 阅读器"
+          ></iframe>
+          <div v-else class="rv-pdf-loading">正在加载 PDF…</div>
+        </div>
       </div>
       <!-- 文字模式：滚动正文 -->
       <div
@@ -809,8 +953,8 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     to right,
     transparent 0,
-    rgba(0, 0, 0, 0.06) 32px,
-    rgba(0, 0, 0, 0.06) calc(100% - 32px),
+    var(--lb-border) 32px,
+    var(--lb-border) calc(100% - 32px),
     transparent 100%
   );
 }
@@ -1050,7 +1194,7 @@ onBeforeUnmount(() => {
   border-radius: var(--lb-radius-s);
   margin-bottom: 8px;
   cursor: pointer;
-  background: #fbfbfe;
+  background: var(--lb-panel-2);
 }
 
 .rv-note:hover {
@@ -1073,7 +1217,7 @@ onBeforeUnmount(() => {
     background: var(--lb-accent-soft);
   }
   100% {
-    background: #fbfbfe;
+    background: var(--lb-panel-2);
   }
 }
 
@@ -1131,7 +1275,7 @@ onBeforeUnmount(() => {
   color: var(--lb-text);
   outline: none;
   resize: vertical;
-  background: #fff;
+  background: var(--lb-panel);
 }
 
 .rv-flex {
@@ -1185,7 +1329,7 @@ onBeforeUnmount(() => {
   color: var(--lb-text);
   outline: none;
   resize: vertical;
-  background: #fff;
+  background: var(--lb-panel);
 }
 
 .rv-pop-input:focus {
@@ -1218,7 +1362,7 @@ onBeforeUnmount(() => {
 .rv-mini.primary {
   border-color: var(--lb-accent);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .rv-mini:disabled {
@@ -1230,7 +1374,86 @@ onBeforeUnmount(() => {
 .rv-pdf-frame {
   flex: 1;
   min-width: 0;
-  background: #525659;
+  display: flex;
+  flex-direction: column;
+  background: var(--lb-panel-2);
+}
+
+/* 自定义 PDF 顶栏：原生工具栏已由 #toolbar=0 隐藏 */
+.rv-pdf-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: var(--lb-panel);
+  border-bottom: 1px solid var(--lb-border);
+  font-size: 12px;
+  color: var(--lb-muted);
+}
+
+.rv-pdf-nav {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-xs);
+  background: var(--lb-panel);
+  color: var(--lb-text);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.rv-pdf-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rv-pdf-btn {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--lb-border-strong);
+  border-radius: var(--lb-radius-xs);
+  background: var(--lb-panel);
+  color: var(--lb-text);
+  font-size: 12px;
+}
+
+.rv-pdf-btn:hover,
+.rv-pdf-btn.on {
+  border-color: var(--lb-accent-2);
+  color: var(--lb-accent);
+}
+
+.rv-pdf-btn.on {
+  background: var(--lb-accent-soft);
+}
+
+.rv-pdf-spacer {
+  flex: 1;
+}
+
+.rv-pdf-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rv-pdf-select {
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-xs);
+  background: var(--lb-panel);
+  color: var(--lb-text);
+  font-size: 12px;
+  outline: none;
+}
+
+.rv-pdf-canvas {
+  flex: 1;
+  min-height: 0;
+  background: var(--lb-panel-2);
 }
 
 .pdf-iframe {
@@ -1245,12 +1468,12 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #d7d7de;
+  color: var(--lb-muted);
 }
 
 .rv-page-ind {
   font-size: 12px;
-  color: #7c7c92;
+  color: var(--lb-muted);
   padding: 0 4px;
   white-space: nowrap;
 }
@@ -1260,7 +1483,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #7c7c92;
+  color: var(--lb-muted);
 }
 
 .rv-page-input {
@@ -1268,8 +1491,9 @@ onBeforeUnmount(() => {
   padding: 3px 6px;
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-xs);
+  background: var(--lb-panel);
   font-size: 12px;
-  color: #24242e;
+  color: var(--lb-text);
   text-align: center;
 }
 
@@ -1280,5 +1504,57 @@ onBeforeUnmount(() => {
   background: var(--lb-warn-bg);
   color: var(--lb-warn-fg);
   font-size: 12px;
+}
+
+/* ---------- 平行视图嵌入态 ---------- */
+/* PDF 窗：控件都在自定义 PDF 顶栏里，阅读器自己的顶栏整条隐藏 */
+.rv.is-embedded.pdf-mode .rv-top {
+  display: none;
+}
+
+.rv.is-embedded .rv-top {
+  height: 38px;
+  padding: 0 8px;
+  gap: 8px;
+}
+
+/* 窗口自己的标题栏已经显示文档名，阅读器内不再重复 */
+.rv.is-embedded .rv-title-wrap {
+  display: none;
+}
+
+.rv.is-embedded .rv-ops {
+  gap: 4px;
+  margin-left: auto;
+}
+
+.rv.is-embedded .rv-ops .rv-top-btn {
+  padding: 0 7px;
+  font-size: 12px;
+}
+
+.rv.is-embedded .rv-main {
+  position: relative;
+}
+
+.rv.is-embedded .rv-col {
+  padding: 18px 18px 90px;
+}
+
+/* 窄窗里批注栏改成覆盖式，避免把正文挤到不可读 */
+.rv.is-embedded .rv-side {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  bottom: 6px;
+  width: min(300px, calc(100% - 12px));
+  z-index: 20;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-l);
+  box-shadow: var(--lb-shadow-2);
+}
+
+.rv.is-embedded .rv-pop {
+  width: min(360px, calc(100% - 16px));
 }
 </style>

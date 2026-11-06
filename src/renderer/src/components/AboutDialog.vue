@@ -187,7 +187,7 @@ onBeforeUnmount(() => unsubscribe?.())
 .ab-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -222,7 +222,7 @@ onBeforeUnmount(() => unsubscribe?.())
   height: 42px;
   border-radius: var(--lb-radius-s);
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-size: 21px;
   font-weight: 700;
 }
@@ -273,7 +273,7 @@ onBeforeUnmount(() => unsubscribe?.())
 }
 
 .ab-dot.ok {
-  background: #34c759;
+  background: var(--lb-ok-fg);
 }
 
 .ab-dot.new {
@@ -281,7 +281,7 @@ onBeforeUnmount(() => unsubscribe?.())
 }
 
 .ab-dot.err {
-  background: #ff3b30;
+  background: var(--lb-danger);
 }
 
 .ab-dot.busy {
@@ -340,7 +340,7 @@ onBeforeUnmount(() => unsubscribe?.())
 
 .ab-btn.primary {
   background: var(--lb-accent);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .ab-btn.primary:disabled {

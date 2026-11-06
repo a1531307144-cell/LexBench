@@ -223,6 +223,66 @@ export interface OutlineListRow {
   snippet?: string | null
 }
 
+// ---------- 平行视图（2026-11） ----------
+
+/** 窗口矩形：相对工作区画布归一化（0..1） */
+export interface PaneRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** 平行视图中的一个窗口：一篇笔记窗 + 若干文档窗 */
+export interface ParallelPane {
+  /** 窗内唯一 id（笔记窗固定为 note） */
+  id: string
+  kind: 'note' | 'doc'
+  /** 文档窗对应的 documents.id（笔记窗没有） */
+  docId?: number
+  rect: PaneRect
+  /** 浮动态的叠放顺序（仅作排序键，不写进 CSS z-index） */
+  z: number
+  /** 浮动态「常驻置顶」：不随选中态下沉，仍低于当前选中窗 */
+  pinned?: boolean
+}
+
+/** 平行视图布局（一套存档对应一篇笔记） */
+export interface ParallelLayout {
+  v: 1
+  mode: 'split' | 'float'
+  /** 笔记窗宽度占比（0.25..0.7） */
+  noteRatio: number
+  /** 分屏时每一行的高度占比（长度 = 行数，和为 1） */
+  rowRatios: number[]
+  /** 分屏时每一行两列之间的宽度占比（长度 = 行数；单列行忽略） */
+  colRatios: number[]
+  panes: ParallelPane[]
+}
+
+/** 平行视图存档行（含完整布局） */
+export interface ParallelViewRow {
+  id: number
+  note_id: number
+  name: string
+  layout: string
+  created_at: string
+  updated_at: string
+}
+
+/** 平行视图列表项（轻载，不带 layout） */
+export interface ParallelViewListRow {
+  /** 尚未打开过的笔记没有存档行，id 为 null（列表仍显示，打开时再落默认布局） */
+  id: number | null
+  note_id: number
+  note_title: string
+  name: string
+  /** 存档更新时间；从未打开过的笔记落在笔记更新时间 */
+  updated_at: string
+  /** 已摆放的文档窗数量（用于卡片摘要） */
+  doc_count: number
+}
+
 /** 笔记自定义分类（note_groups；表删后笔记归未分类；支持嵌套：parent_id=NULL 为根层） */
 export interface NoteGroupRow {
   id: number

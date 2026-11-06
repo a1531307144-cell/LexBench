@@ -297,7 +297,7 @@ watch(
 }
 
 .ol-text ::selection {
-  background: rgba(0, 113, 227, 0.18);
+  background: var(--lb-accent-selection);
 }
 
 .ol-text a {

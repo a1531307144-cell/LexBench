@@ -794,14 +794,17 @@ let headMenuFitOk = false
   }
 
   // 导图节点内插入图片（根节点选中时也要能落图）
-  await evalJs(`(() => {
-    const n = document.querySelector('jmnode[nodeid="a"]')
+  // 用 jsMind 直选，避免前序缩放/平移后合成指针坐标落空导致误判（图片插入本身才是断言目标）
+  const mapRootSelected = await evalJs(`(() => {
+    const s = document.querySelector('.ol-mind')?.__vueParentComponent?.setupState
+    const n = s?.jm?.mind?.nodes?.['a']
     if (!n) return false
-    const r = n.getBoundingClientRect()
-    n.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
-    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }))
+    // 前一步“编辑框随输入扩展”可能还停在编辑态：先结束，再选目标节点
+    if (s.jm.view.is_editing()) s.jm.view.edit_node_end()
+    s.jm.select_node(n)
     return true
   })()`)
+  if (!mapRootSelected) console.log('mapRootSelect: FAILED')
   await sleep(250)
   await evalJs(`(() => {
     const host = document.querySelector('.ol-mind')
@@ -826,6 +829,7 @@ let headMenuFitOk = false
     })
   })
   mapImageOk = mapImageUi && mapImageDb
+
 
   // 正在键入节点时粘贴图片：挂在当前主题，不新建方框
   const editImgCount0 = await evalJs(`document.querySelectorAll('jmnode').length`)

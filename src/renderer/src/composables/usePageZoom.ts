@@ -13,6 +13,8 @@ export function usePageZoom(opts: {
   zoomKey: () => string | null
   /** 手势监听目标（滚动容器） */
   target: Ref<HTMLElement | null>
+  /** 是否允许写回记忆（平行视图只让焦点窗写；读取仍用同一个 key，避免失焦后缩放被重置） */
+  persist?: () => boolean
   /** 缩放变化后的回调（例如重新居中横向滚动） */
   onChange?: () => void
 }): {
@@ -41,6 +43,7 @@ export function usePageZoom(opts: {
 
   function scheduleSave(): void {
     if (!opts.zoomKey()) return
+    if (opts.persist && !opts.persist()) return
     pendingSave = true
     clearTimeout(saveTimer)
     saveTimer = setTimeout(() => flushSave(), 320)

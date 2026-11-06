@@ -6,6 +6,8 @@
 
 import { BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import { themeWindowBackground } from '@shared/themes'
+import { getSetting } from './db'
 
 let aiWin: BrowserWindow | null = null
 /** 最近一次的位置尺寸（hide/close 时保存，重建恢复） */
@@ -31,7 +33,8 @@ function createAiWindow(getMainWindow: () => BrowserWindow | null): void {
     minHeight: 260,
     show: false,
     title: 'AI 助手',
-    backgroundColor: '#f5f5f7', // 与主窗口同底（载入前的窗口底色）
+    // 与主窗口同底（载入前底色跟随已保存主题）
+    backgroundColor: themeWindowBackground(getSetting('ui:theme')),
     // 无边框 + 自绘标题栏（用户 2026-10-17：风格必须延续主窗口——同顶栏配方、同 ─□✕ 按钮；
     // 拖动走 -webkit-app-region、缩放走无边框窗口边缘命中，与主窗口同一套机制）
     frame: false,

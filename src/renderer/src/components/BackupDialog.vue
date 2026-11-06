@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
 .bd-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -331,12 +331,12 @@ onBeforeUnmount(() => {
 .bd-btn.primary {
   border-color: var(--lb-accent);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .bd-btn.primary:hover:not(:disabled) {
   filter: brightness(1.06);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .bd-btn:disabled {

@@ -374,6 +374,23 @@ ALTER TABLE note_groups ADD COLUMN parent_id INTEGER REFERENCES note_groups(id);
 CREATE INDEX IF NOT EXISTS idx_note_groups_parent ON note_groups(parent_id, sort_order);
 `
 
+// 021_parallel_views：平行视图存档（一篇笔记唯一一份布局）。
+// - layout 为渲染层布局 JSON（窗口矩形 / 模式 / 比例），主进程写入前做严格校验；
+// - note_id 唯一 + ON DELETE CASCADE：删笔记时存档随笔记一起消失；
+// - 表结构随 VACUUM INTO 自动进入数据包备份，无需额外导出逻辑。
+const MIGRATION_021_PARALLEL_VIEWS = `-- 021_parallel_views
+
+CREATE TABLE IF NOT EXISTS parallel_views (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id INTEGER NOT NULL UNIQUE REFERENCES outlines(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '',
+  layout TEXT NOT NULL DEFAULT '{"v":1,"mode":"split","noteRatio":0.42,"rowRatios":[],"colRatios":[],"panes":[{"id":"note","kind":"note","rect":{"x":0,"y":0,"w":0.42,"h":1},"z":0}]}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_parallel_views_updated ON parallel_views(updated_at);
+`
+
 /** version 对应迁移文件名的数字前缀：user_version >= N 表示第 N 个迁移已执行 */
 const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 1, sql: MIGRATION_001_INIT },
@@ -395,7 +412,8 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 17, sql: MIGRATION_017_OUTLINES_STAR },
   { version: 18, sql: MIGRATION_018_NOTE_GROUPS },
   { version: 19, sql: MIGRATION_019_SOURCE_KEY },
-  { version: 20, sql: MIGRATION_020_NOTE_GROUP_NEST }
+  { version: 20, sql: MIGRATION_020_NOTE_GROUP_NEST },
+  { version: 21, sql: MIGRATION_021_PARALLEL_VIEWS }
 ]
 
 /** 全局唯一连接（单例） */

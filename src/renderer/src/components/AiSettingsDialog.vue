@@ -361,7 +361,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .as-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--lb-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -547,8 +547,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .as-op.danger:hover:not(:disabled) {
-  border-color: #b3352a;
-  color: #b3352a;
+  border-color: var(--lb-danger);
+  color: var(--lb-danger);
 }
 
 .as-op:disabled {
@@ -579,7 +579,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   padding: 3px;
   border: 1px solid var(--lb-border-strong);
   border-radius: var(--lb-radius-s);
-  background: #fbfbfe;
+  background: var(--lb-panel-2);
 }
 
 .as-seg-btn {
@@ -598,7 +598,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .as-seg-btn.on {
-  background: #fff;
+  background: var(--lb-panel);
   color: var(--lb-text);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
@@ -616,7 +616,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   padding: 0 12px;
   border: 1px solid var(--lb-border-strong);
   border-radius: var(--lb-radius-s);
-  background: #fbfbfe;
+  background: var(--lb-panel-2);
   color: var(--lb-text);
   font-size: 13px;
   outline: none;
@@ -624,7 +624,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 .as-input:focus {
   border-color: var(--lb-accent-2);
-  background: #fff;
+  background: var(--lb-panel);
 }
 
 .as-input:disabled {
@@ -680,12 +680,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .as-btn.primary {
   border-color: var(--lb-accent);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .as-btn.primary:hover:not(:disabled) {
   filter: brightness(1.06);
-  color: #fff;
+  color: var(--lb-on-accent);
 }
 
 .as-btn:disabled {

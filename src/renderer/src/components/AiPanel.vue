@@ -462,7 +462,7 @@ onBeforeUnmount(() => {
 }
 
 .ai-warn-btn:hover {
-  background: rgba(154, 106, 21, 0.1);
+  background: var(--lb-warn-bg);
 }
 
 /* ---------- 操作 ---------- */
@@ -504,7 +504,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
   corner-shape: var(--lb-corner-shape);
-  background: #fbfbfe;
+  background: var(--lb-panel-2);
   margin-bottom: 14px;
 }
 
@@ -742,7 +742,7 @@ onBeforeUnmount(() => {
   padding: 0 12px;
   border: 1px solid var(--lb-border-strong);
   border-radius: var(--lb-radius-s);
-  background: #fbfbfe;
+  background: var(--lb-panel-2);
   color: var(--lb-text);
   font-size: 13px;
   outline: none;
@@ -750,7 +750,7 @@ onBeforeUnmount(() => {
 
 .ai-input:focus {
   border-color: var(--lb-accent-2);
-  background: #fff;
+  background: var(--lb-panel);
 }
 
 .ai-input:disabled {
@@ -763,7 +763,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--lb-accent);
   border-radius: var(--lb-radius-s);
   background: var(--lb-grad);
-  color: #fff;
+  color: var(--lb-on-accent);
   font-size: 13px;
   flex-shrink: 0;
 }

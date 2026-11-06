@@ -44,6 +44,7 @@ import {
   type HistoryState
 } from '@shared/noteHistory'
 import { escapeHtml, hasInlineFormatting, htmlFromPlainText } from '@shared/outlineRichText'
+import { buildHighlightTerms, highlightText } from '@shared/highlight'
 import type { ExportFormat, OutlineNode, OutlineRow, SearchHit } from '@shared/types'
 import { dropNoteHistory, loadNoteHistory, saveNoteHistory } from '../composables/noteHistoryStore'
 
@@ -54,7 +55,20 @@ import { dropNoteHistory, loadNoteHistory, saveNoteHistory } from '../composable
  * 富文本（B/I/U/S、高亮、颜色）走选区浮动工具栏 + 快捷键；任务、标题、备注、贴图；
  * 数据仍是一棵 OutlineNode 树，500ms 防抖整树落库，卸载强制冲刷。
  */
-const props = defineProps<{ outline: OutlineRow }>()
+const props = withDefaults(
+  defineProps<{
+  outline: OutlineRow
+  /** 嵌在平行视图中：紧凑头部、页面自适应宽度、少抢全局焦点 */
+  embedded?: boolean
+  /** 窄窗：进一步收起按钮文字 */
+  narrow?: boolean
+  /** 当前所处的平行窗口是否是焦点窗（决定全局快捷键归属） */
+  paneActive?: boolean
+}>(), {
+  embedded: false,
+  narrow: false,
+  paneActive: false
+})
 const emit = defineEmits<{
   (e: 'error', err: unknown): void
   (e: 'list-changed'): void
@@ -98,7 +112,10 @@ watch(
     }
   }
 )
-const viewMode = ref<'outline' | 'map'>(props.outline.view_mode === 'map' ? 'map' : 'outline')
+// 平行视图里固定用大纲：导图在 300-500px 的窗口里不可用，且不写回笔记的 view_mode
+const viewMode = ref<'outline' | 'map'>(
+  props.embedded ? 'outline' : props.outline.view_mode === 'map' ? 'map' : 'outline'
+)
 /** 大纲页面缩放（触控板双指捏合 / Ctrl+滚轮 / Ctrl+= / Ctrl+-） */
 const pageZoom = ref(1)
 const rootEl = ref<HTMLElement | null>(null)
@@ -147,6 +164,7 @@ function setPageZoom(next: number): void {
 
 /** 左右留出的可平移空间默认居中；缩放后重新居中，触控板横向滑动才有意义 */
 function centerOutlineScroll(): void {
+  if (props.embedded) return
   nextTick(() => {
     const el = scrollEl.value
     if (!el) return
@@ -1246,6 +1264,16 @@ function activeRowId(): string | null {
   return focusedId.value
 }
 
+/** 弹层坐标基准：嵌入窗内用窗矩形，整页用视口 */
+function popoverBounds(): { left: number; top: number; width: number; height: number } {
+  const root = props.embedded ? rootEl.value : null
+  if (root) {
+    const r = root.getBoundingClientRect()
+    return { left: r.left, top: r.top, width: r.width, height: r.height }
+  }
+  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
+}
+
 function refreshToolbar(): void {
   if (drag.active) {
     hideToolbar()
@@ -1260,14 +1288,18 @@ function refreshToolbar(): void {
   const id = activeRowId()
   toolbar.rowId = id
   toolbar.visible = true
-  const width = Math.min(460, window.innerWidth - 24)
-  toolbar.left = Math.max(width / 2 + 12, Math.min(window.innerWidth - width / 2 - 12, rect.left + rect.width / 2))
-  if (rect.top < 64) {
+  const b = popoverBounds()
+  const width = Math.min(460, b.width - 24)
+  const center = rect.left - b.left + rect.width / 2
+  toolbar.left = Math.max(width / 2 + 12, Math.min(b.width - width / 2 - 12, center))
+  const localTop = rect.top - b.top
+  const localBottom = rect.bottom - b.top
+  if (localTop < 64) {
     toolbar.below = true
-    toolbar.top = rect.bottom + 12
+    toolbar.top = localBottom + 12
   } else {
     toolbar.below = false
-    toolbar.top = rect.top - 10
+    toolbar.top = localTop - 10
   }
 }
 
@@ -1285,7 +1317,7 @@ function onSelectionChange(): void {
   const el = (anchor?.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as HTMLElement))?.closest?.(
     '.ol-text'
   )
-  if (!el) {
+  if (!el || (props.embedded && !rootEl.value?.contains(el))) {
     hideToolbar()
     return
   }
@@ -1477,10 +1509,11 @@ function openRowMenu(row: { node: OutlineNode }, ev: MouseEvent): void {
   selectSingle(row.node.id)
   const btn = ev.currentTarget as HTMLElement
   const rect = btn.getBoundingClientRect()
+  const b = popoverBounds()
   rowMenu.open = true
   rowMenu.rowId = row.node.id
-  rowMenu.left = Math.min(window.innerWidth - 210, rect.right - 170)
-  rowMenu.top = Math.min(window.innerHeight - 380, rect.bottom + 6)
+  rowMenu.left = Math.max(8, Math.min(b.width - 210, rect.right - b.left - 170))
+  rowMenu.top = Math.max(8, Math.min(b.height - 380, rect.bottom - b.top + 6))
   hideToolbar()
 }
 
@@ -1819,6 +1852,18 @@ async function runPickerSearch(q: string): Promise<void> {
   }
 }
 
+/** 候选法条正文预览：定位结果只有 content、全文结果只有 snippet，两者都渲染。
+ *  预览截断到约三行，关键词按与结果列表相同的词条规则高亮。 */
+const PICKER_PREVIEW_CLIP = 260
+const pickerHlTerms = computed(() => buildHighlightTerms(picker.value.q))
+function pickerPreviewHtml(r: SearchHit): string {
+  if (r.snippet) return r.snippet
+  const text = (r.content ?? '').replace(/\s+/g, ' ').trim()
+  const clipped =
+    text.length > PICKER_PREVIEW_CLIP ? text.slice(0, PICKER_PREVIEW_CLIP) + '…' : text
+  return highlightText(clipped, pickerHlTerms.value)
+}
+
 /** ↑/↓ 移动键盘高亮项（循环），并把当前项滚进可视区 */
 function movePickerActive(delta: number): void {
   const n = picker.value.results.length
@@ -1905,6 +1950,8 @@ async function setView(mode: 'outline' | 'map'): Promise<void> {
   mapRef.value?.flushEditing()
   await flush()
   viewMode.value = mode
+  // 平行视图里只做窗内切换，不改笔记持久化的 view_mode
+  if (props.embedded) return
   try {
     await window.lexbench.outlines.setViewMode(props.outline.id, mode)
   } catch (e) {
@@ -2007,7 +2054,11 @@ function onBlankClick(): void {
 
 // ---------- 生命周期 ----------
 
-function onScrollHideToolbar(): void {
+function onScrollHideToolbar(ev?: Event): void {
+  if (props.embedded) {
+    const t = ev?.target
+    if (!(t instanceof Node) || !rootEl.value?.contains(t)) return
+  }
   hideToolbar()
 }
 
@@ -2017,13 +2068,14 @@ function onScrollHideToolbar(): void {
  */
 function onGlobalKeydown(ev: KeyboardEvent): void {
   if (ev.isComposing || ev.defaultPrevented) return
+  // 平行视图：只有焦点窗拥有快捷键，避免在文档窗按 Ctrl+Z 反而撤销笔记
+  if (props.embedded && !props.paneActive) return
   const target = ev.target instanceof HTMLElement ? ev.target : null
   const active = document.activeElement
   const root = rootEl.value
   const inside =
     (!!target && !!root?.contains(target)) ||
-    active === document.body ||
-    active === document.documentElement ||
+    (!props.embedded && (active === document.body || active === document.documentElement)) ||
     (!!active && !!root?.contains(active))
   if (!inside) return
   if (!isMod(ev) || ev.altKey) return
@@ -2062,6 +2114,8 @@ onMounted(() => {
   rootEl.value?.addEventListener('wheel', onOutlineWheel, { passive: false })
   centerOutlineScroll()
   nextTick(() => {
+    // 平行视图挂载时不要抢焦点：抢了会把“当前窗”抢到笔记窗，且打断阅读窗操作
+    if (props.embedded) return
     if (rows.value.length === 1 && !rows.value[0]!.node.text) {
       // 新笔记：光标直接给标题，用户先写标题
       ;(document.querySelector('.ol-title') as HTMLInputElement | null)?.focus()
@@ -2100,7 +2154,7 @@ onBeforeUnmount(() => {
   <div
     ref="rootEl"
     class="ol"
-    :class="{ 'in-map': viewMode === 'map' }"
+    :class="{ 'in-map': viewMode === 'map', 'is-embedded': embedded, narrow }"
     :data-note-id="outline.id"
     @keydown="onKeydown"
   >
@@ -2114,7 +2168,7 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <header class="ol-head" :class="{ 'head-map': viewMode === 'map' }" data-guide="outline-head">
+    <header class="ol-head" :class="{ 'head-map': viewMode === 'map' }" :data-guide="embedded ? undefined : 'outline-head'">
       <input
         v-model="title"
         class="ol-title"
@@ -2192,7 +2246,7 @@ onBeforeUnmount(() => {
           title="插入文档库法条（纯文本，不关联文档库；空行上按 / 或 @ 也可唤出）"
           @click="openPicker(rows[rows.length - 1]?.node.id ?? null)"
         >
-          <span class="ol-ico">＋</span> 法条
+          <span class="ol-ico">＋</span><span class="ol-insert-label"> 法条</span>
         </button>
         <div class="ol-view-switch" role="group" aria-label="视图">
           <button :class="{ on: viewMode === 'outline' }" title="大纲视图" @click="setView('outline')">大纲</button>
@@ -2510,8 +2564,15 @@ onBeforeUnmount(() => {
               @mouseenter="picker.activeIdx = idx"
             >
               <div class="opi-main">
-                <span class="opi-title">{{ r.title }}</span>
-                <span class="opi-label">{{ r.label }}</span>
+                <div class="opi-head">
+                  <span class="opi-title">{{ r.title }}</span>
+                  <span class="opi-label">{{ r.label }}</span>
+                </div>
+                <p
+                  v-if="r.snippet || r.content"
+                  class="opi-preview"
+                  v-html="pickerPreviewHtml(r)"
+                ></p>
               </div>
               <button class="opi-add" title="插入法条" @click="insertArticleFromPicker(r)">＋</button>
             </div>
@@ -2693,7 +2754,7 @@ onBeforeUnmount(() => {
 }
 
 .ol-save.state-error {
-  border-color: rgba(140, 43, 35, 0.35);
+  border-color: var(--lb-err-fg);
   color: var(--lb-err-fg);
 }
 
@@ -2998,7 +3059,7 @@ onBeforeUnmount(() => {
   height: 6px;
   margin: -3px 0 0 -3px;
   border-radius: 50%;
-  background: #6e6e73;
+  background: var(--lb-muted);
 }
 
 .ol-gutter:hover .ol-bullet {
@@ -3038,11 +3099,11 @@ onBeforeUnmount(() => {
 }
 
 .ol-row.selected .ol-content {
-  background: rgba(0, 113, 227, 0.14);
+  background: var(--lb-accent-glow);
 }
 
 .ol-row.selected .ol-content ::selection {
-  background: rgba(0, 113, 227, 0.22);
+  background: var(--lb-accent-selection);
 }
 
 .ol-row.dragging {
@@ -3131,7 +3192,7 @@ onBeforeUnmount(() => {
 
 .ol-act.danger:hover {
   color: var(--lb-err-fg);
-  box-shadow: 0 0 0 1px rgba(140, 43, 35, 0.3);
+  box-shadow: 0 0 0 1px var(--lb-err-fg);
   background: var(--lb-err-bg);
 }
 
@@ -3318,7 +3379,7 @@ onBeforeUnmount(() => {
   border-radius: 1px;
   background: var(--lb-accent);
   pointer-events: none;
-  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.15);
+  box-shadow: 0 0 0 2px var(--lb-accent-glow);
 }
 
 /* ---------- 浮动格式工具栏 ---------- */
@@ -3398,7 +3459,7 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: center;
   padding-top: 14vh;
-  background: rgba(30, 28, 40, 0.18);
+  background: var(--lb-overlay-soft);
 }
 
 /* 导图模式：退成底部命令条、不要遮罩，画布照常能拖能选，边看导图边插 */
@@ -3415,7 +3476,7 @@ onBeforeUnmount(() => {
 }
 
 .ol-picker-card {
-  width: min(520px, calc(100vw - 48px));
+  width: min(600px, calc(100vw - 48px));
   background: var(--lb-panel);
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius-l);
@@ -3445,8 +3506,8 @@ onBeforeUnmount(() => {
 
 .ol-picker-input:focus {
   outline: none;
-  border-color: rgba(0, 113, 227, 0.55);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: var(--lb-accent-ring);
+  box-shadow: 0 0 0 3px var(--lb-accent-soft);
 }
 
 .ol-picker-close {
@@ -3470,7 +3531,7 @@ onBeforeUnmount(() => {
 }
 
 .ol-picker-list {
-  max-height: 320px;
+  max-height: 380px;
   overflow-y: auto;
   margin-top: 6px;
 }
@@ -3484,7 +3545,7 @@ onBeforeUnmount(() => {
 
 .ol-picker-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 9px 10px;
   border: 1px solid transparent;
@@ -3506,12 +3567,20 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.opi-head {
+  display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
 }
 
 .opi-title {
   font-size: 13px;
+  font-weight: 600;
   color: var(--lb-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3525,10 +3594,31 @@ onBeforeUnmount(() => {
   color: var(--lb-muted);
 }
 
+/* 候选正文预览：三行封顶，便于一眼分辨条目 */
+.opi-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--lb-muted);
+  word-break: break-word;
+}
+
+.opi-preview :deep(em) {
+  font-style: normal;
+  background: var(--lb-hit);
+  border-radius: 3px;
+  padding: 0 1px;
+  color: var(--lb-text);
+}
+
 .opi-add {
   flex-shrink: 0;
   width: 26px;
   height: 26px;
+  margin-top: 1px;
   border: 1px solid var(--lb-border-strong);
   border-radius: var(--lb-radius-xs);
   background: var(--lb-panel);
@@ -3547,5 +3637,74 @@ onBeforeUnmount(() => {
 :global(body.ol-dragging) {
   user-select: none;
   cursor: grabbing;
+}
+
+/* ---------- 平行视图嵌入态 ---------- */
+.ol.is-embedded .ol-breadcrumb {
+  padding: 4px 14px 0;
+  min-height: 26px;
+}
+
+.ol.is-embedded .ol-head {
+  padding: 10px 14px 8px;
+  margin: 0;
+  gap: 8px;
+}
+
+.ol.is-embedded .ol-title {
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.ol.is-embedded .ol-head-actions {
+  gap: 4px;
+}
+
+/* 窗内不提供导图/缩放/导出菜单：平行视图只做“边读边记” */
+.ol.is-embedded .ol-view-switch,
+.ol.is-embedded .ol-zoom-reset,
+.ol.is-embedded .ol-menu-wrap {
+  display: none;
+}
+
+.ol.is-embedded .ol-insert-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.ol.is-embedded.narrow .ol-insert-label {
+  display: none;
+}
+
+.ol.is-embedded .ol-page {
+  width: 100%;
+  max-width: 100%;
+  padding: 14px 16px 0;
+}
+
+.ol.is-embedded .ol-lane {
+  width: auto;
+  min-width: 100%;
+  justify-content: stretch;
+}
+
+/* 窗内浮层改为相对编辑器根定位，避免盖到相邻窗口 */
+.ol.is-embedded .ol-toolbar,
+.ol.is-embedded .ol-row-menu {
+  position: absolute;
+}
+
+.ol.is-embedded .ol-picker,
+.ol.is-embedded .ol-image-preview {
+  position: absolute;
+}
+
+.ol.is-embedded .ol-picker {
+  padding-top: 56px;
+}
+
+.ol.is-embedded .ol-picker-card {
+  width: min(600px, calc(100% - 24px));
 }
 </style>

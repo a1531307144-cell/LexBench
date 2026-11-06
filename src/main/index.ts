@@ -5,6 +5,7 @@ import { setupUpdater } from './updater'
 import { registerLibraryIpc } from './library'
 import { registerAnnotationsIpc, isAnnotationContextActive } from './annotations'
 import { registerOutlinesIpc } from './outlines'
+import { registerParallelViewsIpc } from './parallelViews'
 import { registerSearchIpc } from './search'
 import { registerReadingIpc } from './reading'
 import { registerBackupIpc } from './backup'
@@ -15,7 +16,8 @@ import { registerGroupsIpc } from './groups'
 import { registerSettingsIpc } from './settings'
 import { registerAiIpc } from './ai'
 import { registerAiWindowIpc } from './aiWindow'
-import { initDb } from './db'
+import { getSetting, initDb } from './db'
+import { themeWindowBackground } from '@shared/themes'
 
 /** 主窗口引用（AI 独立窗口向它转发引用跳转/可见性同步用） */
 let mainWindow: BrowserWindow | null = null
@@ -45,7 +47,8 @@ function createWindow(): void {
     title: '法研台',
     // 开发版任务栏/窗口图标；打包版由 electron-builder 把 build/icon.ico 嵌进 exe
     icon: app.isPackaged ? undefined : join(__dirname, '../../build/icon.ico'),
-    backgroundColor: '#f5f5f7',
+    // 载入前底色跟随已保存的主题，深色主题启动不闪白
+    backgroundColor: themeWindowBackground(getSetting('ui:theme')),
     // 无边框窗口：去掉系统标题栏，控制按钮由顶栏自绘（ VS Code / Notion 方案）
     frame: false,
     webPreferences: {
@@ -173,6 +176,7 @@ app.whenReady().then(async () => {
   registerAiIpc()
   registerAnnotationsIpc()
   registerOutlinesIpc()
+  registerParallelViewsIpc()
   registerAiWindowIpc(() => mainWindow)
   // 存量数据修复：旧版吞进正文的分编标题行还原（必须先于 FTS 重建，见 repairSubbranch.ts）
   repairSubbranchIfNeeded()

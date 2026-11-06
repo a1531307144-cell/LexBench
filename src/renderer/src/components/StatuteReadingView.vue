@@ -4,6 +4,7 @@ import { buildHighlightTerms, highlightText } from '@shared/highlight'
 import { parseLocateQuery } from '@shared/locate'
 import { buildStatuteToc, type StatuteTocEntry, type StatuteTocLevel } from '@shared/statuteToc'
 import { usePageZoom } from '../composables/usePageZoom'
+import { claimAnnotationContext } from '../composables/useAnnotationContext'
 import type { AnnotationRow, DocumentDetail } from '@shared/types'
 
 /**
@@ -12,7 +13,8 @@ import type { AnnotationRow, DocumentDetail } from '@shared/types'
  * 法条批注（选中→右键「添加批注」→浮窗→★常驻）+ 条文修正（✎）。
  * AI 已解绑为全局通用问答（App 顶栏「AI 助手」抽屉），本页不再挂 AI 入口。
  */
-const props = defineProps<{
+const props = withDefaults(
+  defineProps<{
   doc: DocumentDetail
   /** 搜索直达 / AI 引用跳转：定位到该 order_index 并高亮；不传则按阅读进度恢复 */
   focusOrder?: number
@@ -20,7 +22,25 @@ const props = defineProps<{
   silentRestore?: boolean
   /** 使用指引演示态：只展示，不写阅读进度 */
   guide?: boolean
-}>()
+  /** 嵌在平行视图中：紧凑顶栏、目录默认收起、不抢全局快捷键 */
+  embedded?: boolean
+  /** 窄窗：进一步压缩 */
+  narrow?: boolean
+  /** 当前窗口是否是焦点窗（决定批注/快捷键归属） */
+  paneActive?: boolean
+  /** 是否写阅读进度（平行视图只让焦点窗写） */
+  persistProgress?: boolean
+  /** 是否写阅读缩放（同上） */
+  persistZoom?: boolean
+}>(), {
+  silentRestore: false,
+  guide: false,
+  embedded: false,
+  narrow: false,
+  paneActive: false,
+  persistProgress: true,
+  persistZoom: true
+})
 
 const emit = defineEmits<{
   /** 返回（App 恢复原视图） */
@@ -33,12 +53,15 @@ const emit = defineEmits<{
   'toggle-rail': []
 }>()
 
+const rootEl = ref<HTMLElement | null>(null)
 const scrollEl = ref<HTMLElement | null>(null)
 
 /** 正文缩放（触控板双指捏合）：按文档记住比例，下次打开该法条仍用原比例 */
 const { pageZoom, resetZoom } = usePageZoom({
+  // 始终用同一个记忆键读取：只有焦点窗写回，避免多窗失焦时缩放被重置为 100%
   zoomKey: () => `read:zoom:doc:${props.doc.id}`,
-  target: scrollEl
+  target: scrollEl,
+  persist: () => props.persistZoom !== false
 })
 
 // ---------- 目录：面板与行内标题同源（唯一来源） ----------
@@ -57,7 +80,7 @@ const headingsByOrder = computed(() => {
   return m
 })
 
-const tocOpen = ref(true)
+const tocOpen = ref(!props.embedded)
 
 // ---------- 法内搜索（独立于顶栏/中栏两个全局搜索框，只搜当前这部法） ----------
 
@@ -87,6 +110,8 @@ watch(q, (v) => {
 /** 点到搜索区之外 → 收起候选；点到批注浮窗之外 → 浮窗落盘收起（外点自动保存语义） */
 function onDocClickForStatute(e: MouseEvent): void {
   const el = e.target as HTMLElement
+  // 平行视图：点击兄弟窗口不应提交/删除本窗的批注草稿
+  if (props.embedded && rootEl.value && !rootEl.value.contains(el)) return
   if (!el.closest('.sv-search')) popOpen.value = false
   if (annoPop.open && !el.closest('.sv-anno-pop') && !el.closest('.sv-anno-star') && !el.closest('.sv-fix-btn')) {
     void commitPop()
@@ -654,7 +679,7 @@ function onScroll(): void {
 
 /** 找视口顶部可见的 [data-order] 存为进度 */
 async function saveProgressNow(): Promise<void> {
-  if (props.guide) return
+  if (props.guide || props.persistProgress === false) return
   const order = topVisibleOrder()
   if (order === null || order === lastSaved) return
   lastSaved = order
@@ -672,11 +697,30 @@ async function saveProgressNow(): Promise<void> {
 /** 右键菜单「添加批注」通知的退订 */
 let unsubAddRequest: (() => void) | null = null
 
+let releaseAnnotationContext: (() => void) | null = null
+
+/** 只有“当前焦点窗”拥有批注上下文：焦点切到书籍窗时右键菜单不应再出现「添加批注」 */
+function syncAnnotationClaim(active: boolean): void {
+  if (active && !releaseAnnotationContext) {
+    releaseAnnotationContext = claimAnnotationContext()
+  } else if (!active && releaseAnnotationContext) {
+    releaseAnnotationContext()
+    releaseAnnotationContext = null
+  }
+}
+
+watch(
+  () => (props.embedded ? !!props.paneActive : true),
+  (active) => syncAnnotationClaim(active),
+  { immediate: true }
+)
+
 onMounted(async () => {
   document.addEventListener('click', onDocClickForStatute)
-  // 批注上下文：本页在场时主进程右键菜单才追加「添加批注」
-  window.lexbench.annotations.setActive(true)
-  unsubAddRequest = window.lexbench.annotations.onAddRequest(() => tryAddFromSelection())
+  unsubAddRequest = window.lexbench.annotations.onAddRequest(() => {
+    if (props.embedded && !props.paneActive) return
+    tryAddFromSelection()
+  })
   void loadAnnos()
   void loadStars()
   await nextTick()
@@ -703,7 +747,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClickForStatute)
-  window.lexbench.annotations.setActive(false)
+  releaseAnnotationContext?.()
+  releaseAnnotationContext = null
   unsubAddRequest?.()
   unsubAddRequest = null
   // 续读契约：防抖未到期也要冲刷进度（切去笔记等场景不丢最后半秒位置）
@@ -716,10 +761,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="sv">
+  <div ref="rootEl" class="sv" :class="{ 'is-embedded': embedded, narrow }">
     <!-- 顶栏 -->
-    <header class="sv-top" data-guide="reading-head">
-      <button class="sv-back" @click="emit('back')">← 返回</button>
+    <header class="sv-top" :data-guide="embedded ? undefined : 'reading-head'">
+      <button v-if="!embedded" class="sv-back" @click="emit('back')">← 返回</button>
       <div class="sv-title-wrap">
         <h1 class="sv-title" :title="doc.title">{{ doc.title }}</h1>
         <transition name="sv-fade">
@@ -783,6 +828,7 @@ onBeforeUnmount(() => {
           ☰ 目录
         </button>
         <button
+          v-if="!embedded"
           class="sv-top-btn"
           title="隐藏左侧导航（全区阅读；再点恢复）"
           @click="emit('toggle-rail')"
@@ -954,8 +1000,8 @@ onBeforeUnmount(() => {
   background: linear-gradient(
     to right,
     transparent 0,
-    rgba(0, 0, 0, 0.06) 32px,
-    rgba(0, 0, 0, 0.06) calc(100% - 32px),
+    var(--lb-border) 32px,
+    var(--lb-border) calc(100% - 32px),
     transparent 100%
   );
 }
@@ -1087,13 +1133,13 @@ onBeforeUnmount(() => {
 
 .sv-search.on {
   padding: 0 8px;
-  border-color: rgba(0, 0, 0, 0.1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-color: var(--lb-border-strong);
+  box-shadow: var(--lb-shadow-1);
 }
 
 .sv-search.on:focus-within {
-  border-color: rgba(0, 113, 227, 0.55);
-  box-shadow: 0 2px 10px rgba(0, 113, 227, 0.16);
+  border-color: var(--lb-accent-ring);
+  box-shadow: 0 2px 10px var(--lb-accent-glow);
 }
 
 .sv-search-input {
@@ -1493,7 +1539,7 @@ onBeforeUnmount(() => {
 
 /* ---------- 批注：点线下划线 + ★（accent 家族，与搜索胶囊区分） ---------- */
 .sv-scroll .sv-anno {
-  background: rgba(0, 113, 227, 0.05);
+  background: var(--lb-accent-wash);
   border-radius: var(--lb-radius-micro);
   text-decoration: underline;
   text-decoration-style: dotted;
@@ -1503,7 +1549,7 @@ onBeforeUnmount(() => {
 }
 
 .sv-scroll .sv-anno:hover {
-  background: rgba(0, 113, 227, 0.1);
+  background: var(--lb-accent-soft);
 }
 
 .sv-anno-star {
@@ -1550,8 +1596,8 @@ onBeforeUnmount(() => {
 }
 
 .sv-anno-input:focus {
-  border-color: rgba(0, 113, 227, 0.55);
-  box-shadow: 0 2px 10px rgba(0, 113, 227, 0.16);
+  border-color: var(--lb-accent-ring);
+  box-shadow: 0 2px 10px var(--lb-accent-glow);
 }
 
 .sv-anno-input::placeholder {
@@ -1600,5 +1646,59 @@ onBeforeUnmount(() => {
   padding-left: 48px;
   font-size: 12.5px;
   color: var(--lb-muted);
+}
+
+/* ---------- 平行视图嵌入态 ---------- */
+.sv.is-embedded .sv-top {
+  height: 38px;
+  padding: 0 8px;
+  gap: 8px;
+}
+
+/* 窗口自己的标题栏已经显示文档名，阅读器内不再重复 */
+.sv.is-embedded .sv-title-wrap {
+  display: none;
+}
+
+.sv.is-embedded .sv-ops {
+  gap: 4px;
+  margin-left: auto;
+}
+
+.sv.is-embedded .sv-top-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+.sv.is-embedded .sv-meta,
+.sv.is-embedded .sv-chip-warn {
+  display: none;
+}
+
+.sv.is-embedded .sv-main {
+  position: relative;
+}
+
+.sv.is-embedded .sv-col {
+  padding: 22px 18px 90px;
+}
+
+/* 目录改为覆盖式，窄窗不再挤压正文 */
+.sv.is-embedded .sv-side {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  bottom: 6px;
+  width: min(300px, calc(100% - 12px));
+  z-index: 30;
+  border: 1px solid var(--lb-border);
+  border-left: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-l);
+  box-shadow: var(--lb-shadow-2);
+}
+
+.sv.is-embedded .sv-search-pop {
+  width: min(380px, calc(100vw - 32px));
 }
 </style>
