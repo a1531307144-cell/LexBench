@@ -39,6 +39,8 @@ import { getDb, initDb } from './db'
 
 // ---------- 常量 ----------
 
+/** 历史面板一次取多少条（界面展示上限；与提示词用的 HISTORY_LIMIT=6 无关） */
+const AI_HISTORY_MAX = 200
 /** 「测试连接」超时（毫秒）；正式问答是流式长回答，不设超时（只受 ai:cancel 控制） */
 const TEST_TIMEOUT_MS = 30_000
 /** 相邻条文跨度：同文档 order_index ±2（不含自身） */
@@ -291,7 +293,11 @@ async function streamChat(
   const decoder = new TextDecoder()
   let buffer = ''
   let answer = ''
-  for (;;) {
+  // 标记「收到过协议的结束标记」。[DONE] 不能直接 return——那会跳过下面的空回答守卫，
+  // 于是 OpenAI 兼容端点「200 + 只有 [DONE]」这类情况（推理模型、网关拦截）会被当成
+  // 一次成功的空回答归档，之后再进提示词还会让 Anthropic 协议 400。
+  let finished = false
+  stream: for (;;) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
@@ -300,7 +306,10 @@ async function streamChat(
       const line = buffer.slice(0, at).replace(/\r$/, '')
       buffer = buffer.slice(at + 1)
       const parsed = parseSseLine(cfg.protocol, line)
-      if (parsed.kind === 'done') return answer
+      if (parsed.kind === 'done') {
+        finished = true
+        break stream
+      }
       if (parsed.kind === 'error') throw new Error(`接口返回：${parsed.message}`)
       if (parsed.kind === 'delta') {
         answer += parsed.text
@@ -309,15 +318,17 @@ async function streamChat(
       at = buffer.indexOf('\n')
     }
   }
-  // 流结束时缓冲区可能还剩最后一行（无尾随换行的实现）：按同一规则再解一次，避免丢尾段
-  const tail = buffer.replace(/\r$/, '')
-  if (tail.trim()) {
-    const parsed = parseSseLine(cfg.protocol, tail)
-    if (parsed.kind === 'delta') {
-      answer += parsed.text
-      onDelta(parsed.text)
+  if (!finished) {
+    // 流结束时缓冲区可能还剩最后一行（无尾随换行的实现）：按同一规则再解一次，避免丢尾段
+    const tail = buffer.replace(/\r$/, '')
+    if (tail.trim()) {
+      const parsed = parseSseLine(cfg.protocol, tail)
+      if (parsed.kind === 'delta') {
+        answer += parsed.text
+        onDelta(parsed.text)
+      }
+      if (parsed.kind === 'error') throw new Error(`接口返回：${parsed.message}`)
     }
-    if (parsed.kind === 'error') throw new Error(`接口返回：${parsed.message}`)
   }
   if (!answer.trim()) {
     // 一个增量都没收到：多半是「200 + 错误体」（协议选错 / 端点填错）——
@@ -696,17 +707,19 @@ export function registerAiIpc(): void {
     state.controller.abort()
   })
 
-  // 历史问答（时间正序）：articleId=null → 全局时间线（通用问答面板用）；否则该条文的问答
+  // 历史问答：articleId=null → 全局时间线（通用问答面板用）；否则该条文的问答。
+  // 只取最近 AI_HISTORY_MAX 条再反转成正序：全局时间线无上限增长，全量返回会随使用时长
+  // 线性膨胀（IPC 拷贝 + 渲染层内存），而界面一次也看不完。
   ipcMain.handle('ai:history', (_e, articleId: number | null): AiMessageRow[] => {
     const rows =
       articleId == null
         ? (getDb()
-            .prepare('SELECT * FROM ai_messages ORDER BY id')
-            .all() as unknown as DbRow[])
+            .prepare('SELECT * FROM ai_messages ORDER BY id DESC LIMIT ?')
+            .all(AI_HISTORY_MAX) as unknown as DbRow[])
         : (getDb()
-            .prepare('SELECT * FROM ai_messages WHERE article_id=? ORDER BY id')
-            .all(Number(articleId)) as unknown as DbRow[])
-    return rows.map(toMessageRow)
+            .prepare('SELECT * FROM ai_messages WHERE article_id=? ORDER BY id DESC LIMIT ?')
+            .all(Number(articleId), AI_HISTORY_MAX) as unknown as DbRow[])
+    return rows.reverse().map(toMessageRow)
   })
 
   // 删除一条问答

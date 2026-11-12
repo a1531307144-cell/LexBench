@@ -231,6 +231,10 @@ function indexChunks(db: DatabaseSync, documentId: number, chunks: string[], tit
   const insertFts = db.prepare('INSERT INTO chunks_fts(chunk_id, content) VALUES(?,?)')
   for (let i = 0; i < chunks.length; i++) {
     const info = insertChunk.run(documentId, i, chunks[i])
+    // 空正文的块（PDF 书籍一页一 chunk）只为页定位而生：每一页都写一条「只有书名」的
+    // FTS 行，会让搜书名时整本书的每一页各占一条结果，把其它文档的正文命中挤出配额。
+    // 只在第 0 块保留一条「书名命中」行。
+    if (!chunks[i] && i > 0) continue
     insertFts.run(Number(info.lastInsertRowid), chunkFtsText(title, chunks[i]))
   }
 }
@@ -344,17 +348,22 @@ async function importOne(
           : 0
       if (articles.length === 0 || avg < MIN_AVG_ARTICLE_LEN) status = 'needs_review'
     }
+    // 法规一条都没切出来（条文写成「一、二、」的规范、网页/markdown 导出的法规等）：
+    // 若仍按 statute 入库，正文既不进 articles 也不进 chunks → 文档变成不可读、不可搜的空壳，
+    // 而 file_hash 去重又让「重新导入」永远被短路。这里降级为普通文档按段落入库，
+    // 至少可读可搜；status 仍是 needs_review，用户能看出切条失败。
+    const effectiveDocType: DocType = docType === 'statute' && articles.length === 0 ? 'other' : docType
 
     // 先归档原件再入库：入库失败不产生数据库半成品（归档文件按内容哈希命名，重导直接覆盖）
     mkdirSync(filesDir, { recursive: true })
     copyFileSync(filePath, join(filesDir, `${fileHash}${suffix}`))
 
     let chunks: string[] = []
-    if (docType === 'book') {
+    if (effectiveDocType === 'book') {
       // PDF 书籍：一页一 chunk（seq=页序，页笔记/进度以页定位），内容留空——
       // 页面按需渲染，全文检索 PDF 书籍留给 OCR/按需回填阶段；其余书籍一段一 chunk
       chunks = pdfFast ? Array.from({ length: pdfFast.numPages }, () => '') : paragraphs
-    } else if (docType !== 'statute') {
+    } else if (effectiveDocType !== 'statute') {
       chunks = chunkParagraphs(paragraphs)
     }
     const docId = withTransaction(db, () => {
@@ -363,9 +372,9 @@ async function importOne(
           'INSERT INTO documents(title, doc_type, category, file_hash, original_path, status, file_ext, group_id)' +
             ' VALUES(?,?,?,?,?,?,?,?)'
         )
-        .run(title, docType, category, fileHash, filePath, status, suffix, resolveGroupId(db, docType, category))
+        .run(title, effectiveDocType, category, fileHash, filePath, status, suffix, resolveGroupId(db, effectiveDocType, category))
       const id = Number(info.lastInsertRowid)
-      if (docType === 'statute') indexArticles(db, id, articles, title)
+      if (effectiveDocType === 'statute') indexArticles(db, id, articles, title)
       else indexChunks(db, id, chunks, title)
       return id
     })
@@ -373,7 +382,7 @@ async function importOne(
       status: 'imported',
       title,
       document_id: docId,
-      doc_type: docType,
+      doc_type: effectiveDocType,
       article_count: articles.length,
       message: ''
     }
@@ -457,8 +466,9 @@ export function registerLibraryIpc(): void {
       .all() as unknown as DocumentRow[]
   })
 
-  // 文档库拖动排序：按传入的 id 顺序整体重排（界面只传当前文件夹里的那批）。
-  // 跨文件夹出现相同的 sort_order 不影响显示——顺序只在同一文件夹内部比较。
+  // 文档库拖动排序：按传入的 id 顺序整体重排。
+  // 必须是**全量** id 顺序——sort_order 是全局列，只传筛选后的子集会把它写成 0..k-1，
+  // 与其它文档撞号并打乱「全部」视图（渲染层负责把子集顺序合并回全量）。
   ipcMain.handle('library:reorder', (_e, ids: number[]): void => {
     const db = getDb()
     const list = Array.isArray(ids)
@@ -618,9 +628,23 @@ export function registerLibraryIpc(): void {
         .all(id) as unknown as Array<{ id: number; quote: string; start_offset: number }>
       const reloc = db.prepare('UPDATE statute_annotations SET start_offset=?, end_offset=? WHERE id=?')
       for (const an of annos) {
-        const idx = content.indexOf(an.quote)
+        // 同一段文字在条文里可能出现多次（法条常见重复表述）。只取 indexOf 的第一处，
+        // 会把锚在第二处的批注钉到第一处；这里取「离原偏移最近的一次出现」。
+        const quote = String(an.quote ?? '')
+        let idx = -1
+        if (quote) {
+          let from = 0
+          for (;;) {
+            const at = content.indexOf(quote, from)
+            if (at < 0) break
+            if (idx < 0 || Math.abs(at - an.start_offset) < Math.abs(idx - an.start_offset)) {
+              idx = at
+            }
+            from = at + 1
+          }
+        }
         if (idx >= 0) {
-          reloc.run(idx, idx + an.quote.length, an.id)
+          reloc.run(idx, idx + quote.length, an.id)
         } else {
           const s = Math.min(an.start_offset, content.length)
           reloc.run(s, Math.min(s + an.quote.length, content.length), an.id)

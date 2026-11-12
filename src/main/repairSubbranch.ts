@@ -43,6 +43,13 @@ export function repairSubbranchIfNeeded(): void {
     try {
       for (const d of docs) {
         const rows = selArticle.all(d.id) as unknown as RepairRow[]
+        // 幂等保护：正文里已经没有分编标题行 → 这篇要么本来就是新版切分导入的，
+        // 要么上一轮已经修过。此时若继续回放，prevExtract 恒为 null，会把正确的
+        // subbranch 全部算成空串（旧实现重跑一次就抹平全库分编）。
+        const hasSubLine = rows.some((r) =>
+          r.content.split('\n').some((line) => SUB_LINE.test(line))
+        )
+        if (!hasSubLine) continue
         // 上一条回放态：戳记值 / 正文里剥出的分编标题（供下一条用）
         let prevBranch: string | null = null
         let prevSub = ''
@@ -76,6 +83,13 @@ export function repairSubbranchIfNeeded(): void {
           prevExtract = lastExtract
         }
       }
+      // 门控标记与修复动作必须在同一个事务里：否则 COMMIT 之后、写标记之前进程被杀
+      // （或写标记失败）会让下次启动重跑，而重跑在旧实现下是破坏性的。
+      setSetting('subbranch_repaired', '1')
+      if (changed > 0) {
+        // 正文/戳记变了 → 同轮 reindex 必须重建（reindex 在本函数之后执行，见文件头注释）
+        setSetting('fts_version', '0')
+      }
       db.exec('COMMIT')
     } catch (e) {
       try {
@@ -86,10 +100,7 @@ export function repairSubbranchIfNeeded(): void {
       throw e
     }
 
-    setSetting('subbranch_repaired', '1')
     if (changed > 0) {
-      // 正文/戳记变了 → 同轮 reindex 必须重建（reindex 在本函数之后执行，见文件头注释）
-      setSetting('fts_version', '0')
       console.log(`分编层级已修复：${changed} 条法条（正文剥标题 + 补戳记），本轮将重建全文索引`)
     }
   } catch (e) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { registerBeforeCloseFlush } from '../composables/beforeCloseFlush'
 import ConfirmModal from './ConfirmModal.vue'
 import { usePageZoom } from '../composables/usePageZoom'
 import { cachePdfBlob, getCachedPdfBlob } from '../composables/pdfBlobCache'
@@ -514,7 +515,11 @@ async function loadPdf(): Promise<void> {
         if (props.doc.id === countDocId && count > 0) pdfPageCount.value = count
       })
       .catch(() => {})
-    if (props.focusPara !== undefined) {
+    // 只有「一页一 chunk」的扫描件（chunk 正文全为空）里 seq 才是页序；
+    // 文字版 PDF 的 chunk 是段落，把 seq 直接当页码会跳到不存在的页，
+    // 而且随后的翻页会把越界页码写进阅读进度。
+    const pageAligned = props.doc.chunks.length > 0 && props.doc.chunks.every((c) => !c.content)
+    if (props.focusPara !== undefined && pageAligned) {
       // 检索命中进入：直达对应页
       pdfPage.value = props.focusPara + 1
       notePageInput.value = props.focusPara + 1
@@ -529,6 +534,11 @@ async function loadPdf(): Promise<void> {
           backHintTimer = setTimeout(() => (backHint.value = false), 4000)
         }
       }
+    }
+    // 页数已知时夹紧，避免越界页码经 jumpToPdfPage/persistPdfPage 写回进度
+    if (pdfPageCount.value > 0) {
+      pdfPage.value = Math.min(Math.max(1, pdfPage.value), pdfPageCount.value)
+      notePageInput.value = pdfPage.value
     }
     rebuildBlobUrl()
   } catch (e) {
@@ -613,8 +623,16 @@ function onKeydown(e: KeyboardEvent): void {
   else pendingSel = null
 }
 
+/** 关窗冲刷登记（窗口销毁时 onBeforeUnmount 不会执行，防抖中的进度必须靠这条路径落盘） */
+let unregisterFlush: (() => void) | null = null
+
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
+  unregisterFlush = registerBeforeCloseFlush(() => {
+    clearTimeout(progTimer)
+    progTimer = undefined
+    return saveProgressNow()
+  })
   await reloadNotes()
   if (isPdf.value) {
     // 页面模式：内置 PDF 阅读器加载原件；进度/检索命中都以页为定位（loadPdf 内处理）
@@ -644,8 +662,31 @@ onMounted(async () => {
   }
 })
 
+/**
+ * 同一篇文档已打开时再点检索命中：组件按 doc.id 复用、不会重新挂载，
+ * 必须靠 watch 响应 focusPara 变化，否则点了结果界面毫无反应
+ * （法规页 StatuteReadingView 早有对称的 watch，这里是遗漏）。
+ */
+watch(
+  () => props.focusPara,
+  (v) => {
+    if (v === undefined) return
+    void nextTick(() => {
+      if (!isPdf.value) {
+        scrollToSeq(v, 'center')
+        flashParaSeq(v)
+        return
+      }
+      const pageAligned = props.doc.chunks.length > 0 && props.doc.chunks.every((c) => !c.content)
+      if (pageAligned) jumpToPdfPage(v + 1)
+    })
+  }
+)
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  unregisterFlush?.()
+  unregisterFlush = null
   if (pdfBlobUrl.value) URL.revokeObjectURL(pdfBlobUrl.value)
   // 续读契约：防抖未到期也要冲刷进度（切去笔记等场景不丢最后半秒位置）
   clearTimeout(progTimer)

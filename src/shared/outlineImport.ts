@@ -96,9 +96,11 @@ export function parseOpml(content: string, fallbackTitle: string): ImportedDoc {
   const stack: { list: ImportedNode[] }[] = [{ list: roots }]
   let imageCount = 0
 
-  // 注意：属性段用 [^>]* 贪婪到 >，自闭合靠「整标签以 /> 结尾」判定——
-  // 若把 / 放进排除集会截断含斜杠的 URL 属性值
-  const tagRe = /<outline\b([^>]*)>|<\/outline\s*>/gi
+  // 属性段必须识别引号：XML 只强制转义 & 和 <，属性值里的裸 > 是合法写法，
+  // 用 [^>]* 会在属性值内部的 > 处截断标签，导致该行文本为空、后续兄弟节点被挂成它的子级。
+  // 自闭合靠捕获组的 / 判定（不能只看末尾，否则含斜杠的 URL 属性值会误判）。
+  // 未加引号的属性段排除 /，否则自闭合标签的 / 会被吃进属性组
+  const tagRe = /<outline\b((?:[^>"'/]|"[^"]*"|'[^']*')*)(\/?)>|<\/outline\s*>/gi
   let m: RegExpExecArray | null
   while ((m = tagRe.exec(body))) {
     const raw = m[0]
@@ -121,7 +123,8 @@ export function parseOpml(content: string, fallbackTitle: string): ImportedDoc {
     const note = (attrs['_note'] ?? '').trim()
     if (note) node.children.push({ text: note, children: [], images: [] })
     stack[stack.length - 1].list.push(node)
-    if (!/\/\s*>$/.test(raw)) stack.push({ list: node.children }) // 非自闭合 → 进入其 children
+    // 非自闭合 → 进入其 children（自闭合由捕获到的 / 判定）
+    if (!(m[2] ?? '').includes('/')) stack.push({ list: node.children })
   }
 
   return { title, nodes: roots, format: 'opml', imageCount }
@@ -215,32 +218,50 @@ function walkListWithText(html: string): ImportedNode[] {
     parts: string[]
     children: ImportedNode[]
     images: string[]
+    /** 该 li 所属的列表深度（用于判断同级元素何时隐式闭合） */
+    depth: number
   }
   const roots: ImportedNode[] = []
   const stack: LiFrame[] = []
+  /** 每个未闭合 <ul>/<ol> 开启时栈的深度，</ul> 时收尾到该深度 */
+  const listMarks: number[] = []
+  let listDepth = 0
   const cur = (): LiFrame | null => (stack.length ? stack[stack.length - 1] : null)
   const attach = (node: ImportedNode): void => {
     const f = cur()
     if (f) f.children.push(node)
     else roots.push(node)
   }
+  const closeFrame = (frame: LiFrame): void => {
+    const text = stripTags(frame.parts.join(''))
+    if (!text && !frame.images.length && frame.children.length) {
+      // 空壳 li（只有子列表）：子列表上提
+      for (const c of frame.children) attach(c)
+    } else if (text || frame.images.length || frame.children.length) {
+      attach({ text, children: frame.children, images: frame.images })
+    }
+  }
   const tokenRe =
-    /<li\b[^>]*>|<\/li\s*>|<img[^>]*\ssrc\s*=\s*("([^"]*)"|'([^']*)')[^>]*>|<[^>]+>|[^<]+/gi
+    /<li\b[^>]*>|<\/li\s*>|<\/?(?:ul|ol)\b[^>]*>|<img[^>]*\ssrc\s*=\s*("([^"]*)"|'([^']*)')[^>]*>|<[^>]+>|[^<]+/gi
   let m: RegExpExecArray | null
   while ((m = tokenRe.exec(html))) {
     const raw = m[0]
     if (/^<li\b/i.test(raw)) {
-      stack.push({ parts: [], children: [], images: [] })
+      // 同级新 li 会隐式闭合上一个（HTML5：<li>甲<li>乙 无需 </li>）
+      const top = cur()
+      if (top && top.depth === listDepth) closeFrame(stack.pop()!)
+      stack.push({ parts: [], children: [], images: [], depth: listDepth })
     } else if (/^<\/li/i.test(raw)) {
       const frame = stack.pop()
-      if (!frame) continue
-      const text = stripTags(frame.parts.join(''))
-      if (!text && !frame.images.length && frame.children.length) {
-        // 空壳 li（只有子列表）：子列表上提
-        for (const c of frame.children) attach(c)
-      } else {
-        attach({ text, children: frame.children, images: frame.images })
-      }
+      if (frame) closeFrame(frame)
+    } else if (/^<(ul|ol)\b/i.test(raw)) {
+      listDepth += 1
+      listMarks.push(stack.length)
+    } else if (/^<\/(ul|ol)/i.test(raw)) {
+      // 列表结束：本列表内所有未闭合的 li 一起收尾（父级 li 仍打开）
+      const base = listMarks.pop() ?? 0
+      while (stack.length > base) closeFrame(stack.pop()!)
+      if (listDepth > 0) listDepth -= 1
     } else if (/^<img/i.test(raw)) {
       const f = cur()
       const u = decodeEntities(m[2] ?? m[3] ?? '')
@@ -253,6 +274,9 @@ function walkListWithText(html: string): ImportedNode[] {
       // 游走范围之外的散文本忽略（列表外内容不进树）
     }
   }
+  // 收尾：HTML5 允许省略 </li>（如 `<li>甲<li>乙`）。栈里残留的帧不弹出去，
+  // 整篇会解析成空树——预检显示 0 个节点，导入后得到一条空笔记且无任何报错。
+  while (stack.length) closeFrame(stack.pop()!)
   return roots
 }
 

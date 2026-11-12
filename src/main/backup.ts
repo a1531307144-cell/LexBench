@@ -8,11 +8,19 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import AdmZip from 'adm-zip'
 import { DatabaseSync } from 'node:sqlite'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync
+} from 'node:fs'
 import { join } from 'node:path'
 import type { BackupImportOutcome } from '../shared/ipc'
 import type { ExportResult } from '../shared/types'
-import { closeDb, getDb, initDb } from './db'
+import { closeDb, getDb, initDb, verifyDbMigratable } from './db'
 
 // ---------- 内部工具 ----------
 
@@ -159,34 +167,118 @@ function backupCurrentData(): void {
   if (existsSync(attDir)) cpSync(attDir, join(backupDir, 'attachments'), { recursive: true })
 }
 
-/** 换装：关库 → 覆盖 lexbench.db → 清空重建 files/ → 重开新库并验证能查询 documents（全程同步无 await，不给其它 handler 插队机会） */
+/**
+ * 换装：先把包内内容全部落到同卷临时位置，再原子换位。
+ *
+ * 旧实现直接 copyFileSync 覆盖在用的 lexbench.db——中途失败（磁盘满/被占用）会把用户库
+ * 截成半截，且 files/ 已被清空。现在任何破坏性动作都发生在「包内内容已完整落盘」之后：
+ * - 库文件：copy 到 lexbench.db.importing → rename 覆盖（同卷 rename 在 Windows 上也是替换语义）；
+ * - files/、attachments/：先整体改名成 .importing-old 再换位，失败可回滚。
+ * 全程同步无 await，不给其它 handler 插队机会。
+ */
 function swapIn(packDbPath: string, tmpDir: string): void {
+  const userData = app.getPath('userData')
+  const dbTarget = join(userData, 'lexbench.db')
+  const dbStaging = join(userData, 'lexbench.db.importing')
+  const filesDir = filesDirPath()
+  const filesStaging = `${filesDir}.importing`
+  const filesBackup = `${filesDir}.importing-old`
+  const attDir = attachmentsDirPath()
+  const attStaging = `${attDir}.importing`
+  const attBackup = `${attDir}.importing-old`
+  const packFilesDir = join(tmpDir, 'files')
+  const packAttDir = join(tmpDir, 'attachments')
+
   closeDb()
   try {
-    const dbTarget = join(app.getPath('userData'), 'lexbench.db')
-    copyFileSync(packDbPath, dbTarget)
+    // ① 先把包内全部内容拷到临时位置——这一步失败时用户库分毫未动
+    rmSync(dbStaging, { force: true })
+    copyFileSync(packDbPath, dbStaging)
+    // 先确定这份库能被本版本打开并跑完迁移，再动用户库——否则包内库版本过旧导致迁移
+    // 失败时，旧库与原件目录已经被换掉了。迁移结果写进暂存副本，换装后即为最新 schema。
+    verifyDbMigratable(dbStaging)
+
+    rmSync(filesStaging, { recursive: true, force: true })
+    mkdirSync(filesStaging, { recursive: true })
+    if (existsSync(packFilesDir)) cpSync(packFilesDir, filesStaging, { recursive: true })
+
+    rmSync(attStaging, { recursive: true, force: true })
+    mkdirSync(attStaging, { recursive: true })
+    if (existsSync(packAttDir)) cpSync(packAttDir, attStaging, { recursive: true })
+
+    // ② 目录无法原子替换：先备份旧目录 → 换入新目录 → 删备份；失败可回滚。
+    //    放在库替换之前——库的 rename 是不可逆的最后一步，能让前面所有失败都保留原库。
+    const rollbacks: Array<() => void> = []
+    const swapDir = (staging: string, target: string, backup: string): void => {
+      rmSync(backup, { recursive: true, force: true })
+      const hadOld = existsSync(target)
+      if (hadOld) renameSync(target, backup)
+      try {
+        renameSync(staging, target)
+      } catch (e) {
+        if (hadOld) {
+          try {
+            renameSync(backup, target)
+          } catch {
+            /* 回滚失败：旧目录仍在 backup 位置，错误信息里已给出路径 */
+          }
+        }
+        throw e
+      }
+      rollbacks.push(() => {
+        rmSync(target, { recursive: true, force: true })
+        if (hadOld) renameSync(backup, target)
+      })
+    }
+
+    try {
+      swapDir(filesStaging, filesDir, filesBackup)
+      swapDir(attStaging, attDir, attBackup)
+      // ③ 原子换位：库文件用 rename 覆盖（不产生截断的中间态）。
+      //    放在最后——它一旦成功就无法回滚，所以前面的每一步都必须先成功。
+      renameSync(dbStaging, dbTarget)
+    } catch (e) {
+      // 任何一步失败：把已换的目录换回去，用户库保持原样
+      for (const undo of rollbacks.reverse()) {
+        try {
+          undo()
+        } catch {
+          /* 单项回滚失败不掩盖原始错误 */
+        }
+      }
+      throw e
+    }
+
     // 旧连接的 WAL/SHM 残留文件随旧库一起作废，必须清掉
     for (const suffix of ['-wal', '-shm']) {
       const side = dbTarget + suffix
       if (existsSync(side)) rmSync(side)
     }
-    // 清空并重建 files/ 后放入包内原件
-    const filesDir = filesDirPath()
-    rmSync(filesDir, { recursive: true, force: true })
-    mkdirSync(filesDir, { recursive: true })
-    const packFilesDir = join(tmpDir, 'files')
-    if (existsSync(packFilesDir)) cpSync(packFilesDir, filesDir, { recursive: true })
-    // 贴图同理（旧数据包无 attachments 条目则保持空目录——向后兼容）
-    const attDir = attachmentsDirPath()
-    rmSync(attDir, { recursive: true, force: true })
-    mkdirSync(attDir, { recursive: true })
-    const packAttDir = join(tmpDir, 'attachments')
-    if (existsSync(packAttDir)) cpSync(packAttDir, attDir, { recursive: true })
-    // 重开新库（getDb 自动按 user_version 补跑迁移），并验证能查询 documents
+    // 换装成功后旧目录备份已无用，清掉（失败不影响结果）
+    for (const dir of [filesBackup, attBackup]) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* 残留旧目录只会占磁盘 */
+      }
+    }
+
+    // ④ 重开新库（getDb 自动按 user_version 补跑迁移），并验证能查询 documents
     getDb().prepare('SELECT id FROM documents LIMIT 1').get()
   } catch (e) {
-    // 换装中途失败：连接已关，自动备份仍在 userData/backups/ 可恢复
-    throw e instanceof Error ? e : new Error('导入换装失败，可从 backups 目录恢复')
+    const detail = e instanceof Error ? e.message : String(e)
+    const backupHint = join(userData, 'backups')
+    // 清掉可能残留的临时目录，避免下次导入时误用半成品
+    for (const p of [dbStaging, filesStaging, attStaging]) {
+      try {
+        rmSync(p, { recursive: true, force: true })
+      } catch {
+        /* 清理失败不掩盖原始错误 */
+      }
+    }
+    throw new Error(
+      `导入换装失败：${detail}。如本地库异常，可从 ${backupHint} 中最近一次的自动备份恢复。`
+    )
   }
 }
 

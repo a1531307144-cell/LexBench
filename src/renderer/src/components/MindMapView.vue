@@ -1271,7 +1271,7 @@ function clearDropHighlight(): void {
 }
 
 function onPointerUp(): void {
-  window.removeEventListener('pointermove', onPointerMove)
+  removePointerListeners()
   if (!jm) {
     cleanupPointerDrag()
     return
@@ -1308,8 +1308,15 @@ function onPointerUp(): void {
 }
 
 function cancelPointerDrag(): void {
-  window.removeEventListener('pointermove', onPointerMove)
+  removePointerListeners()
   cleanupPointerDrag()
+}
+
+/** 两个 once 监听器必须互删：只删 pointermove 会让每轮拖拽都遗留另一个闭包 */
+function removePointerListeners(): void {
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', cancelPointerDrag)
 }
 
 function cleanupPointerDrag(): void {
@@ -1911,7 +1918,7 @@ onBeforeUnmount(() => {
   hostEl.value?.removeEventListener('input', onEditorInput, true)
   hostEl.value?.removeEventListener('focusin', onEditorFocusIn)
   document.removeEventListener('click', onDocumentClick)
-  window.removeEventListener('pointermove', onPointerMove)
+  removePointerListeners()
   for (const t of resizeTimers) clearTimeout(t)
   resizeTimers = []
   clearTimeout(centerTimer)

@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
+import { applyNavigationGuards } from './windowGuards'
 import { setupUpdater } from './updater'
 import { registerLibraryIpc } from './library'
 import { registerAnnotationsIpc, isAnnotationContextActive } from './annotations'
@@ -15,7 +16,7 @@ import { repairSubbranchIfNeeded } from './repairSubbranch'
 import { registerGroupsIpc } from './groups'
 import { registerSettingsIpc } from './settings'
 import { registerAiIpc } from './ai'
-import { registerAiWindowIpc } from './aiWindow'
+import { closeAiWindow, registerAiWindowIpc } from './aiWindow'
 import { getSetting, initDb } from './db'
 import { themeWindowBackground } from '@shared/themes'
 
@@ -24,6 +25,9 @@ let mainWindow: BrowserWindow | null = null
 
 /** 已答完「关窗前冲刷」的窗口：再收到 close 就直接放行，避免无限拦 */
 const closeFlushAcked = new WeakSet<BrowserWindow>()
+
+/** 用户在「还没建出窗口」期间又启动了一次：窗口一出来就聚焦（首启预置法条可能数十秒） */
+let showWhenReady = false
 
 /** 关窗前问渲染层要一次落盘（笔记 500ms 防抖窗口内关窗会丢最后一笔）；
  *  兜底：渲染层卡死/崩溃时 2s 后强制放行，不能变成关不掉 */
@@ -63,10 +67,17 @@ function createWindow(): void {
 
   win.on('ready-to-show', () => {
     win.show()
+    if (showWhenReady) {
+      showWhenReady = false
+      win.focus()
+    }
   })
   mainWindow = win
   win.on('closed', () => {
     mainWindow = null
+    // 主窗口是应用主体：它关掉后 AI 独立窗若还留着，window-all-closed 永远不会触发，
+    // 进程就变成「看不见也回不到界面」的僵尸进程。这里一并关掉。
+    closeAiWindow()
   })
   win.on('close', (e) => {
     if (closeFlushAcked.has(win) || win.webContents.isDestroyed()) return
@@ -79,17 +90,8 @@ function createWindow(): void {
   // 否则 AI 窗点 ─□✕ 会操作到主窗口（多窗口化的必修坑）。
   // 注册挪到模块级只做一次（createWindow 可能被多次调用，重复 on 会叠监听器）。
 
-  // 外部链接一律交给系统默认浏览器，不在应用内开新窗口
-  win.webContents.setWindowOpenHandler((details) => {
-    if (details.url.startsWith('https://')) shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-  // 富文本里的 <a href> 若触发整页跳转，会把应用界面替换掉——一律拦截，https 交给系统浏览器
-  win.webContents.on('will-navigate', (e, url) => {
-    if (url === win.webContents.getURL()) return
-    e.preventDefault()
-    if (url.startsWith('https://')) shell.openExternal(url)
-  })
+  // 导航防护由模块级 app.on('web-contents-created') 统一挂载（见 windowGuards.ts）：
+  // 主窗口、AI 独立窗以及将来新增的任何窗口都在创建时自动受保护。
 
   // 右键上下文菜单（Electron 默认没有 → 此前右键毫无反应，「选中后复制不了」的根因）：
   // 输入框给 剪切/复制/粘贴，正文选中给 复制，其它给 全选——右键永远有可用项；
@@ -133,6 +135,38 @@ function createWindow(): void {
   }
 }
 
+// 开发环境强制隔离（用户 2026-10-17 硬性要求）：dev 数据一律走 %APPDATA%\lexbench-dev，
+// 与用户真实库（打包版默认 userData）物理分开——用户的库只有用户自己安装/升级应用时才会变化，
+// 开发/自测永不触碰。LEXBENCH_USERDATA 仍可显式覆盖（一次性隔离自测等特殊场景）。
+//
+// 必须在 requestSingleInstanceLock() 之前执行：单实例锁是按 userData 目录落的，
+// 放在后面会让 dev 与安装版共用同一把锁（安装版开着时 dev 一启动就自己退出）。
+if (!app.isPackaged) {
+  const devUserData = process.env.LEXBENCH_USERDATA || join(app.getPath('appData'), 'lexbench-dev')
+  app.setPath('userData', devUserData)
+}
+
+// 任何新建的 webContents（主窗口 / AI 独立窗 / 将来新增的窗口）在创建瞬间就挂上导航防护
+app.on('web-contents-created', (_e, contents) => applyNavigationGuards(contents))
+
+// 单实例锁：第二个实例直接退出，避免两个进程同时读写同一个 sqlite 文件。
+// 首启要在无窗口状态下导入预置法条（可能数十秒），用户很容易以为没启动而再点一次图标。
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      // 首启预置法条期间还没有窗口：记下「用户想要界面」，窗口一出来就聚焦
+      showWhenReady = true
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+}
+
 // 预加载 API 白名单（只读接口）
 ipcMain.handle('app:getVersion', () => app.getVersion())
 
@@ -165,6 +199,8 @@ ipcMain.handle('app:relaunch', () => {
 })
 
 app.whenReady().then(async () => {
+  // 没拿到单实例锁的进程正在退出，不要再跑迁移/建窗
+  if (!hasSingleInstanceLock) return
   // 显式初始化（跑迁移）：此前由 workspace 注册顺带调用，专题切除后必须自己保证
   initDb()
   registerLibraryIpc()
@@ -195,14 +231,6 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
-
-// 开发环境强制隔离（用户 2026-10-17 硬性要求）：dev 数据一律走 %APPDATA%\lexbench-dev，
-// 与用户真实库（打包版默认 userData）物理分开——用户的库只有用户自己安装/升级应用时才会变化，
-// 开发/自测永不触碰。LEXBENCH_USERDATA 仍可显式覆盖（一次性隔离自测等特殊场景）。
-if (!app.isPackaged) {
-  const devUserData = process.env.LEXBENCH_USERDATA || join(app.getPath('appData'), 'lexbench-dev')
-  app.setPath('userData', devUserData)
-}
 
 // 开发模式开放调试端口（自测/排查用；必须在 app ready 前注册；打包版不开启）
 if (!app.isPackaged) {

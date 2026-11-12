@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { registerBeforeCloseFlush } from '../composables/beforeCloseFlush'
 import { buildHighlightTerms, highlightText } from '@shared/highlight'
 import { parseLocateQuery } from '@shared/locate'
 import { buildStatuteToc, type StatuteTocEntry, type StatuteTocLevel } from '@shared/statuteToc'
@@ -130,6 +131,37 @@ interface StatuteHit {
   snippet: string
 }
 
+/**
+ * 条文正文的小写缓存与「无装饰」分段缓存。
+ *
+ * 搜索时每 100ms 就会重算一次分段；《民法典》有上千条，如果每次都把每条正文
+ * toLowerCase 复制一遍、再为每一行新建 Seg 对象，逐字输入会明显卡顿。
+ * 这里按 id + 正文内容缓存：正文没变（修正条文会变）就直接复用。
+ */
+const lowerCache = new Map<number, { content: string; lower: string }>()
+const plainSegCache = new Map<number, { content: string; lines: Seg[][] }>()
+
+function lowerContentOf(a: { id: number; content: string }): string {
+  const cached = lowerCache.get(a.id)
+  if (cached && cached.content === a.content) return cached.lower
+  const lower = a.content.toLowerCase()
+  lowerCache.set(a.id, { content: a.content, lower })
+  return lower
+}
+
+/** 没有搜索命中也没有批注的条文：分段恒等于「每个非空行一段」，按内容缓存复用 */
+function plainSegsOf(a: { id: number; content: string }): Seg[][] {
+  const cached = plainSegCache.get(a.id)
+  if (cached && cached.content === a.content) return cached.lines
+  const lines: Seg[][] = []
+  for (const line of a.content.split('\n')) {
+    if (!line.trim()) continue
+    lines.push([{ text: line }])
+  }
+  plainSegCache.set(a.id, { content: a.content, lines })
+  return lines
+}
+
 /** 命中候选：条标/正文子串 + 条号直查，按条文顺序，封顶 50 条 */
 const hits = computed<StatuteHit[]>(() => {
   const s = q.value
@@ -143,7 +175,7 @@ const hits = computed<StatuteHit[]>(() => {
     out.push({ id: a.id, order: a.order_index, label: a.article_label, snippet })
   }
   for (const a of props.doc.articles) {
-    const idx = a.content.toLowerCase().indexOf(lower)
+    const idx = lowerContentOf(a).indexOf(lower)
     const inLabel = a.article_label.toLowerCase().includes(lower)
     if (idx < 0 && !inLabel) continue
     let snippet: string
@@ -260,8 +292,17 @@ const segsById = computed(() => {
   void annos.value
   const m = new Map<number, Seg[][]>()
   const s = q.value
+  const lowerQ = s.toLowerCase()
   const re = s ? new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') : null
   for (const a of props.doc.articles) {
+    // 快路径：这条既没有批注、也没有命中关键词 → 分段结果与查询无关，直接复用缓存。
+    // 大法典里绝大多数条文都走这里，是逐字搜索不再卡顿的关键。
+    const hasAnno = (annosByArticle.value.get(a.id)?.length ?? 0) > 0
+    const hasHit = lowerQ.length > 0 && lowerContentOf(a).includes(lowerQ)
+    if (!hasAnno && !hasHit) {
+      m.set(a.id, plainSegsOf(a))
+      continue
+    }
     const lines: Seg[][] = []
     let pos = 0
     for (const line of a.content.split('\n')) {
@@ -427,6 +468,9 @@ function jumpFromToc(e: StatuteTocEntry): void {
 // ---------- 批注浮窗 / 条文修正浮窗（共用一个浮窗体） ----------
 
 /** 浮窗状态：anno = 批注（新建/查看编辑）；fix = 条文修正（锚整个 article.content） */
+/** 批注浮窗代号：异步提交收尾时用它判断「我关的是不是我自己打开的那一份」 */
+let popGen = 0
+
 const annoPop = reactive({
   open: false,
   mode: 'anno' as 'anno' | 'fix',
@@ -509,6 +553,8 @@ function tryAddFromSelection(): void {
   const end = Math.max(s, e)
   if (end <= start) return
   commitPop() // 上一个浮窗先落盘
+  // 旧提交仍在途时，它的收尾不能再关掉刚打开的新浮窗
+  popGen += 1
   annoPop.open = true
   annoPop.mode = 'anno'
   annoPop.id = null
@@ -527,6 +573,7 @@ function openAnnoById(id: number): void {
   const an = annos.value.find((x) => x.id === id)
   if (!an) return
   commitPop()
+  popGen += 1
   annoPop.open = true
   annoPop.mode = 'anno'
   annoPop.id = an.id
@@ -544,6 +591,7 @@ function openAnnoById(id: number): void {
 /** 条文修正（✎）：浮窗里编辑整条 content，保存走主进程并重建索引/批注偏移 */
 function openFixPop(a: { id: number; content: string }): void {
   commitPop()
+  popGen += 1
   annoPop.open = true
   annoPop.mode = 'fix'
   annoPop.id = null
@@ -573,12 +621,18 @@ function closeAnnoPop(): void {
  */
 async function commitPop(): Promise<void> {
   if (!annoPop.open) return
+  // 收尾只作用于「本次提交的那一份浮窗」：提交过程中若用户又打开了另一条批注/条文修正，
+  // openAnnoById 等会把 popGen 自增，这里的 closeAnnoPop 就该跳过，否则新浮窗一闪即关。
+  const gen = ++popGen
   const draft = annoPop.draft.trim()
   try {
     if (annoPop.mode === 'fix') {
       if (draft && draft !== annoPop.origin) {
         await window.lexbench.library.updateArticle(annoPop.articleId, draft)
         emit('doc-changed')
+        // 主进程已按 quote 重算了本条的批注偏移；本地 annos 还是旧值，
+        // 不重取就会用旧偏移切新正文，高亮与 ★ 整体错位。
+        await loadAnnos()
       }
     } else if (annoPop.id === null) {
       if (draft && annoPop.end > annoPop.start) {
@@ -606,7 +660,7 @@ async function commitPop(): Promise<void> {
   } catch (err) {
     emit('error', errText(err))
   }
-  closeAnnoPop()
+  if (gen === popGen) closeAnnoPop()
 }
 
 async function deleteFromPop(): Promise<void> {
@@ -715,8 +769,16 @@ watch(
   { immediate: true }
 )
 
+/** 关窗冲刷登记（窗口销毁时 onBeforeUnmount 不会执行，防抖中的进度必须靠这条路径落盘） */
+let unregisterFlush: (() => void) | null = null
+
 onMounted(async () => {
   document.addEventListener('click', onDocClickForStatute)
+  unregisterFlush = registerBeforeCloseFlush(() => {
+    clearTimeout(progTimer)
+    progTimer = undefined
+    return saveProgressNow()
+  })
   unsubAddRequest = window.lexbench.annotations.onAddRequest(() => {
     if (props.embedded && !props.paneActive) return
     tryAddFromSelection()
@@ -747,6 +809,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClickForStatute)
+  unregisterFlush?.()
+  unregisterFlush = null
   releaseAnnotationContext?.()
   releaseAnnotationContext = null
   unsubAddRequest?.()
@@ -845,7 +909,7 @@ onBeforeUnmount(() => {
           <div v-if="!doc.articles.length" class="sv-empty">
             未能解析出可阅读的条文。
             <p class="sv-empty-sub">
-              {{ doc.status === 'needs_review' ? '该文档已标记「需人工复查」。' : '' }}可在文档库重新导入，或在检索结果里查看原文。
+              {{ doc.status === 'needs_review' ? '该文档已标记「需人工复查」。' : '' }}同一文件重复导入会被去重拦下，需先在文档库删除该文档再重新导入。
             </p>
           </div>
           <template v-else>

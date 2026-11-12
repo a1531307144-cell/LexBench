@@ -85,6 +85,23 @@ describe('parseHtmlOutline', () => {
     expect(doc.nodes.length).toBe(1)
     expect(doc.nodes[0].text).toBe('子一')
   })
+  it('省略 </li>（HTML5 合法）时不能整篇解析成空树', () => {
+    const doc = parseHtmlOutline('<ul><li>父项<ul><li>子一<li>子二</ul><li>第二父项</ul>', 'fb')
+    expect(doc.nodes.map((n) => n.text)).toEqual(['父项', '第二父项'])
+    expect(doc.nodes[0].children.map((c) => c.text)).toEqual(['子一', '子二'])
+  })
+})
+
+describe('parseOpml', () => {
+  it('属性值里的裸 > 不截断标签、不错挂层级', () => {
+    // XML 只强制转义 & 和 <，属性值里的裸 > 合法（旧正则会在这里截断标签）
+    const xml =
+      '<opml><body><outline text="A > B"/>' +
+      '<outline text="C > D"/><outline text="E"/></body></opml>'
+    const doc = parseOpml(xml, 'fb')
+    expect(doc.nodes.map((n) => n.text)).toEqual(['A > B', 'C > D', 'E'])
+    expect(doc.nodes.every((n) => n.children.length === 0)).toBe(true)
+  })
 })
 
 describe('parseMarkdownOutline', () => {

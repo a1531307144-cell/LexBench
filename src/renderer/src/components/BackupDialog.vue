@@ -10,7 +10,7 @@ const emit = defineEmits<{
   'update:visible': [v: boolean]
   /** 所有失败进 App 全局错误条 */
   error: [message: string]
-  /** 正向提示（导入完成暂不重启等），走 App 消息条 */
+  /** 正向提示，走 App 消息条 */
   notice: [text: string]
 }>()
 
@@ -49,7 +49,8 @@ watch(
 )
 
 function close(): void {
-  if (busy.value || locked.value) return
+  // needsRestart 时库文件已换装、界面仍是旧数据：此时绝不能回到主界面继续写库
+  if (busy.value || locked.value || needsRestart.value) return
   emit('update:visible', false)
 }
 
@@ -121,18 +122,12 @@ async function restartNow(): Promise<void> {
   }
 }
 
-/** 稍后重启：走 App 消息条提醒数据已导入 */
-function restartLater(): void {
-  emit('notice', '数据包已导入，重启软件后生效')
-  emit('update:visible', false)
-}
-
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e ?? '')
 }
 
 function onKeydown(e: KeyboardEvent): void {
-  if (!props.visible || busy.value || locked.value || confirmImport.value) return
+  if (!props.visible || busy.value || locked.value || confirmImport.value || needsRestart.value) return
   if (e.key === 'Escape') close()
 }
 
@@ -150,7 +145,7 @@ onBeforeUnmount(() => {
         <div class="bd-dialog">
         <div class="bd-head">
           <span class="bd-title">数据备份</span>
-          <button class="bd-close" :disabled="busy || locked" @click="close">✕</button>
+          <button class="bd-close" :disabled="busy || locked || needsRestart" @click="close">✕</button>
         </div>
 
         <div class="bd-body">
@@ -175,9 +170,10 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else>
-            <p class="bd-restart-msg">导入完成，重启软件生效。</p>
+            <p class="bd-restart-msg">
+              导入完成，需要重启软件生效。当前界面仍是导入前的数据，已暂停使用以免写入覆盖刚导入的内容。
+            </p>
             <div class="bd-actions">
-              <button class="bd-btn" :disabled="busy" @click="restartLater">稍后</button>
               <button class="bd-btn primary" :disabled="busy" @click="restartNow">
                 {{ busy ? '重启中…' : '立即重启' }}
               </button>

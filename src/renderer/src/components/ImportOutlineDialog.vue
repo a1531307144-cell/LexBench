@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ImportPreviewItem, ImportRunItem } from '@shared/types'
 
 /**
@@ -45,6 +45,15 @@ function reset(): void {
   runResults.value = []
   dupPolicy.value = 'skip'
 }
+
+// 对话框由笔记面板常驻挂载（v-model:visible），实例不会销毁——每次打开都从「选文件」开始，
+// 否则遮罩/✕ 关闭后重开会停在上一批文件的预览页，一键就把同一批文件再导入一遍。
+watch(
+  () => props.visible,
+  (open) => {
+    if (open) reset()
+  }
+)
 
 async function pickFiles(): Promise<void> {
   try {

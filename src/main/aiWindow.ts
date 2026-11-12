@@ -8,6 +8,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { themeWindowBackground } from '@shared/themes'
 import { getSetting } from './db'
+import { applyNavigationGuards } from './windowGuards'
 
 let aiWin: BrowserWindow | null = null
 /** 最近一次的位置尺寸（hide/close 时保存，重建恢复） */
@@ -49,6 +50,9 @@ function createAiWindow(getMainWindow: () => BrowserWindow | null): void {
   }
   const win = new BrowserWindow(lastBounds ? { ...base, ...lastBounds } : base)
   aiWin = win
+  // 双保险：模块级 web-contents-created 已兜底，这里显式再挂一次（WeakSet 去重）。
+  // AI 窗渲染的是带 Markdown 链接的回答，漏掉拦截就等于把 preload 白名单交给外部页面。
+  applyNavigationGuards(win.webContents)
 
   win.once('ready-to-show', () => win.show())
   // hide（顶栏开关切走）与 close（右上角 ✕）都记下几何，下次原样恢复
@@ -89,6 +93,12 @@ export function toggleAiWindow(getMainWindow: () => BrowserWindow | null): void 
     return
   }
   createAiWindow(getMainWindow)
+}
+
+/** 关闭 AI 独立窗（主窗口关闭时调用：主窗没了，浮窗留着只会让进程退不出去） */
+export function closeAiWindow(): void {
+  if (!aiWin || aiWin.isDestroyed()) return
+  aiWin.close()
 }
 
 export function registerAiWindowIpc(getMainWindow: () => BrowserWindow | null): void {

@@ -188,6 +188,25 @@ async function ensureAllDocs(l: ParallelLayout): Promise<void> {
   await Promise.all(ids.map((id) => ensureDetail(id)))
 }
 
+/** 当前布局引用到的文档 id 集合（用于裁剪详情缓存） */
+function layoutDocIds(): Set<number> {
+  return new Set(
+    layout.value.panes.filter((p) => p.kind === 'doc' && p.docId).map((p) => p.docId as number)
+  )
+}
+
+/**
+ * 丢掉不再被布局引用的文档详情。
+ * details 里存的是 getDocument 的整份返回（doc + 全部法条 + 全部段落，单部大法数 MB），
+ * 切换笔记时不清理会让渲染进程内存随「开过的文档数」一路涨上去。
+ */
+function pruneDetails(): void {
+  const keep = layoutDocIds()
+  for (const id of [...details.keys()]) {
+    if (!keep.has(id)) details.delete(id)
+  }
+}
+
 function docError(pane: ParallelPane): string {
   if (!pane.docId) return ''
   return paneErrors.get(`doc:${pane.docId}`) ?? ''
@@ -291,6 +310,7 @@ watch(
       }
     }
     await loadForNote(id)
+    pruneDetails()
   },
   { immediate: true }
 )
@@ -368,6 +388,7 @@ function closePane(paneId: string): void {
     layout.value = removePane(layout.value, paneId)
     if (activePaneId.value === paneId) activePaneId.value = notePane.value?.id ?? null
     if (maximizedPaneId.value === paneId) maximizedPaneId.value = null
+    pruneDetails()
     scheduleSave()
   } catch (e) {
     emit('error', e)
@@ -631,7 +652,11 @@ function onDragMove(ev: PointerEvent): void {
 }
 
 function endDrag(): void {
+  // pointerup / pointercancel 都是 endDrag 且都是 once：只删 pointermove 会遗留另一个闭包，
+  // 每拖一次窗口上就永久多一个持有整个工作区作用域的监听器。
   window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
   document.body.style.userSelect = ''
   const kind = drag.kind
   drag.kind = null

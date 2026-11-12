@@ -229,17 +229,29 @@ UPDATE ai_profiles SET protocol = 'anthropic'
 // 法条上，导出处也只能掉到文末。这里按笔记把缺失的收藏条目按时间顺序补进 topic_items。
 // 只增不删：order_index 接在该专题现有最大值之后，用 ROW_NUMBER 保证同批不重号。
 const MIGRATION_012_TOPIC_ITEMS_FROM_NOTES = `-- 012_backfill_topic_items_from_notes
+--
+-- 注意：同一专题里「同一法条可以有多条笔记」（notes 无 (topic_id, article_id) 唯一约束），
+-- 而 topic_items 有 UNIQUE(topic_id, article_id)。回填必须先按 (topic_id, article_id) 聚合，
+-- 否则一对重复笔记会产出两行相同键，撞唯一索引 → 整个迁移事务回滚 → 旧库永久卡在 011。
 
 INSERT INTO topic_items(topic_id, article_id, order_index, added_at)
-SELECT topic_id, article_id, base + ROW_NUMBER() OVER (PARTITION BY topic_id ORDER BY created_at, id), created_at
+SELECT topic_id, article_id,
+       base + ROW_NUMBER() OVER (PARTITION BY topic_id ORDER BY first_at, first_id),
+       first_at
   FROM (
-    SELECT n.id, n.topic_id, n.article_id, n.created_at,
-           COALESCE((SELECT MAX(ti.order_index) + 1 FROM topic_items ti WHERE ti.topic_id = n.topic_id), 0) AS base
+    SELECT n.topic_id, n.article_id,
+           MIN(n.created_at) AS first_at,
+           MIN(n.id) AS first_id,
+           COALESCE(
+             (SELECT MAX(ti.order_index) + 1 FROM topic_items ti WHERE ti.topic_id = n.topic_id),
+             0
+           ) AS base
       FROM notes n
      WHERE n.article_id IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM topic_items ti WHERE ti.topic_id = n.topic_id AND ti.article_id = n.article_id
        )
+     GROUP BY n.topic_id, n.article_id
   );
 `
 
@@ -449,9 +461,42 @@ export function initDb(): void {
   if (db) return
   const userData = app.getPath('userData')
   mkdirSync(userData, { recursive: true }) // 父目录不存在时自动创建
-  db = new DatabaseSync(join(userData, 'lexbench.db'))
-  db.exec('PRAGMA foreign_keys = ON')
-  migrate(db)
+  const conn = new DatabaseSync(join(userData, 'lexbench.db'))
+  conn.exec('PRAGMA foreign_keys = ON')
+  try {
+    migrate(conn)
+  } catch (err) {
+    // 迁移失败必须丢弃这个「schema 只跑了一半」的连接：否则进程会继续用它服务，
+    // 后续每条查询都报 no such column，且 initDb() 因 if (db) 变成空操作再也修不回来。
+    try {
+      conn.close()
+    } catch {
+      /* 已异常时放弃关闭 */
+    }
+    throw err
+  }
+  db = conn
+}
+
+/**
+ * 在不动用户库的前提下，验证「这份数据库文件能否被本版本打开并跑完迁移」。
+ *
+ * 数据包导入在换装**之前**对暂存副本调用它：包内库版本过旧、迁移会失败时直接中止，
+ * 用户库与原件目录分毫未动（此前是先覆盖库再补跑迁移，失败时旧库已被换掉）。
+ * 迁移成功会写进暂存副本，随后 rename 到位即是已完成迁移的库。
+ */
+export function verifyDbMigratable(dbPath: string): void {
+  const conn = new DatabaseSync(dbPath)
+  try {
+    conn.exec('PRAGMA foreign_keys = ON')
+    migrate(conn)
+  } finally {
+    try {
+      conn.close()
+    } catch {
+      /* 已异常时放弃关闭 */
+    }
+  }
 }
 
 /** 取全局数据库连接；尚未 initDb 时自动初始化（SQLite 是同步 API，直接返回连接） */

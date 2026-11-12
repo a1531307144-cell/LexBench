@@ -38,7 +38,9 @@ function getAttachmentsDir(): string {
 
 /** 贴图入库：base64（无前缀）→ sha 摘要文件名去重落盘；返回相对文件名 */
 function saveAttachmentImage(b64: string, ext: string): string {
-  const cleanExt = /^\/?\.(png|jpe?g|gif|webp|bmp)$/i.exec(ext)?.[1]?.toLowerCase() ?? 'png'
+  // 调用方传的是不带点的裸扩展名（file.type.split('/')[1]）；带点的也兼容。
+  // 旧正则要求字面点号，导致所有图片一律被写成 .png。
+  const cleanExt = /^\.?(png|jpe?g|gif|webp|bmp)$/i.exec(ext)?.[1]?.toLowerCase() ?? 'png'
   if (!/^[A-Za-z0-9+/=\s]+$/.test(b64)) throw new Error('图片数据格式不正确')
   const buf = Buffer.from(b64.replace(/\s/g, ''), 'base64')
   if (buf.length === 0) throw new Error('图片数据为空')
@@ -115,13 +117,113 @@ async function downloadTreeImages(nodes: OutlineNode[]): Promise<number> {
   return failed
 }
 
+/** 单张图片上限（与 saveAttachmentBuffer 的 20MB 对齐） */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+/**
+ * 内网 / 回环地址判定。
+ *
+ * 导入的是他人给的大纲文件，里面的图片 URL 完全由文件作者决定；主进程 fetch 不受渲染层
+ * CSP 限制，若不过滤就等于给对方一个内网探测/GET 打点的能力。
+ */
+function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (!h) return true
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true
+  if (h === '::1' || h === '::') return true
+  if (h.includes(':')) {
+    // IPv6 链路本地 fe80::/10 与唯一本地 fc00::/7
+    if (/^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{0,2}:/.test(h)) return true
+  }
+  // IPv4 映射的 IPv6（::ffff:192.168.1.1）
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h)
+  const v4 = mapped ? mapped[1]! : h
+  if (/^0\./.test(v4) || v4 === '0.0.0.0') return true
+  if (/^127\./.test(v4)) return true
+  if (/^10\./.test(v4)) return true
+  if (/^192\.168\./.test(v4)) return true
+  if (/^169\.254\./.test(v4)) return true
+  const m172 = /^172\.(\d+)\./.exec(v4)
+  if (m172) {
+    const n = Number(m172[1])
+    if (n >= 16 && n <= 31) return true
+  }
+  return false
+}
+
+/** 流式读取响应体并在超过上限时立即中断（不把超大响应完整读进内存） */
+async function readBodyCapped(res: Response, max: number): Promise<Buffer> {
+  if (!res.body) throw new Error('空响应')
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > max) {
+        try {
+          await reader.cancel()
+        } catch {
+          /* 取消失败不影响报错 */
+        }
+        throw new Error('图片超过 20MB 上限')
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      /* 已释放 */
+    }
+  }
+  return Buffer.concat(chunks)
+}
+
+/** 图片地址校验（协议 + 私网），返回规范化 URL；非法直接抛中文错误 */
+function checkImageUrl(raw: string, base?: URL): URL {
+  let next: URL
+  try {
+    next = base ? new URL(raw, base) : new URL(raw)
+  } catch {
+    throw new Error('图片地址无效')
+  }
+  if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+    throw new Error('只支持 http/https 图片地址')
+  }
+  if (isPrivateHost(next.hostname)) throw new Error('不下载内网/本机地址的图片')
+  return next
+}
+
+/** 最多跟随的跳转次数（跳转目标同样要过私网校验，否则 302 就能绕过） */
+const MAX_REDIRECTS = 4
+
 async function downloadImage(url: string): Promise<Buffer> {
+  const initial = checkImageUrl(url)
+
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      let current = initial
+      let res: Response | null = null
+      for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        // redirect:'manual' 是必须的：默认跟随跳转时，公网地址可以用 302 把请求引到内网
+        res = await fetch(current.toString(), {
+          signal: AbortSignal.timeout(10_000),
+          redirect: 'manual'
+        })
+        if (res.status < 300 || res.status >= 400) break
+        const location = res.headers.get('location')
+        if (!location) throw new Error('图片跳转缺少目标地址')
+        current = checkImageUrl(location, current)
+        if (hop === MAX_REDIRECTS) throw new Error('图片跳转次数过多')
+        res = null
+      }
+      if (!res) throw new Error('图片跳转次数过多')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const buf = Buffer.from(await res.arrayBuffer())
+      const buf = await readBodyCapped(res, MAX_IMAGE_BYTES)
       if (!buf.length) throw new Error('空图片')
       return buf
     } catch (err) {
@@ -606,10 +708,15 @@ export function registerOutlinesIpc(): void {
           )
           // 图片下载：并发 2、单张 10s、重试 1；失败保留 URL（转文本行），不阻断本篇
           const imagesFailed = await downloadTreeImages(tree)
+          // 「仍然导入（标题加序号）」= 旧笔记原样保留 + 新增一份带序号的副本。
+          // source_key 是部分唯一索引：旧行必须先让位（置 NULL）才能插入同一 source_key 的新行。
+          // 旧行的正文编辑、分类归属、视图模式与平行视图存档因此全部保住。
           const title = uniqueTitle(doc.title || name.replace(/\.[^.]+$/, ''))
           db.exec('BEGIN')
           try {
-            if (existing) db.prepare('DELETE FROM outlines WHERE id = ?').run(existing.id)
+            if (existing) {
+              db.prepare('UPDATE outlines SET source_key = NULL WHERE id = ?').run(existing.id)
+            }
             db.prepare('INSERT INTO outlines(title, tree, source_key) VALUES(?, ?, ?)').run(
               title,
               JSON.stringify(tree),
@@ -620,7 +727,7 @@ export function registerOutlinesIpc(): void {
             db.exec('ROLLBACK')
             throw err
           }
-          results.push({ path: p, status: existing ? 'replaced' : 'imported', imagesFailed })
+          results.push({ path: p, status: 'imported', imagesFailed })
         } catch (err) {
           results.push({
             path: p,

@@ -256,8 +256,20 @@ async function onDocDrop(d: DocumentRow): Promise<void> {
   if (targetIdx < 0) return
   ids.splice(after ? targetIdx + 1 : targetIdx, 0, dragged)
   if (ids.join(',') === before.join(',')) return
+  // 把子集的新相对顺序合并回**全量**顺序再提交：sort_order 是全局列，
+  // 只传当前筛选视图的子集会把它写成 0..k-1，与其它文档撞号并打乱「全部」视图。
+  const subset = new Set(ids)
+  const full = props.documents.map((x) => x.id)
+  const slots: number[] = []
+  full.forEach((id, i) => {
+    if (subset.has(id)) slots.push(i)
+  })
+  const merged = [...full]
+  slots.forEach((pos, i) => {
+    merged[pos] = ids[i]!
+  })
   try {
-    await window.lexbench.library.reorder(ids)
+    await window.lexbench.library.reorder(merged)
     emit('docs-changed')
   } catch (e) {
     emit('error', errText(e))

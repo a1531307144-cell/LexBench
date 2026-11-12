@@ -2,7 +2,7 @@
 // 渲染层只负责 DOM 与焦点，所有树结构操作都在这里做（vitest 可直测）。
 // 约定：所有函数直接修改传入的树（Vue 里就是 reactive 树），返回是否发生变动。
 
-import { hasInlineFormatting } from './outlineRichText'
+import { hasInlineFormatting, htmlFromPlainText } from './outlineRichText'
 import type { OutlineNode } from './types'
 
 export interface NodeLocation {
@@ -363,14 +363,32 @@ export function mergeOutlineNode(nodes: OutlineNode[], id: string): MergeResult 
   const prev = previousVisibleRow(nodes, id)
   if (!prev) return null
   const offset = prev.text.length
-  prev.text += hit.node.text
-  if (prev.html || hit.node.html) {
-    // 两端都是富文本时做朴素拼接；一端为空时保留另一端
-    if (prev.html && hit.node.html) prev.html = prev.html + hit.node.html
-    else if (hit.node.html) prev.html = hit.node.html
+  const merged = hit.node
+
+  // 合并后 html 必须仍然是 text 的镜像：任一端是纯文本时，用 htmlFromPlainText 补出它那半段，
+  // 否则会出现「text 有、html 没有」——渲染层优先用 html 重建 DOM，被漏掉的那半行会从界面
+  // 消失，用户再敲一个字就把残缺版本写回库里（静默丢字）。
+  const prevHtml = prev.html ?? htmlFromPlainText(prev.text)
+  const hitHtml = merged.html ?? htmlFromPlainText(merged.text)
+  prev.text += merged.text
+  const mergedHtml = prevHtml + hitHtml
+  if (hasInlineFormatting(mergedHtml, prev.text)) prev.html = mergedHtml
+  else delete prev.html
+
+  prev.children.push(...(merged.children ?? []))
+  if ((merged.task ?? 0) > 0 && !prev.task) prev.task = merged.task
+  // 行下备注 / 贴图 / 标题级别同样不能随被并行走：只含图片的空行合并后整行消失就是这条漏的
+  if (merged.note) prev.note = prev.note ? `${prev.note}\n${merged.note}` : merged.note
+  const images = [
+    ...(prev.images ?? (prev.image ? [prev.image] : [])),
+    ...(merged.images ?? (merged.image ? [merged.image] : []))
+  ]
+  if (images.length) {
+    prev.images = images
+    prev.image = images[0]
   }
-  prev.children.push(...(hit.node.children ?? []))
-  if ((hit.node.task ?? 0) > 0 && !prev.task) prev.task = hit.node.task
+  if (merged.heading && !prev.heading) prev.heading = merged.heading
+
   hit.siblings.splice(hit.index, 1)
   return { node: prev, offset }
 }

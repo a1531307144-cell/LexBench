@@ -428,8 +428,11 @@ function currentHistory(): HistoryState {
 }
 
 function writeHistory(s: HistoryState): void {
-  history.value = s.entries
-  historyIndex.value = s.index
+  // 字符预算必须每次入栈就生效：整树快照在大笔记里单条就有几百 KB，
+  // 只在卸载时裁剪等于整场编辑都顶着上百份快照。
+  const trimmed = trimHistory(s)
+  history.value = trimmed.entries
+  historyIndex.value = trimmed.index
 }
 
 function resetHistory(): void {
@@ -1083,7 +1086,9 @@ function onKeydown(ev: KeyboardEvent): void {
       deleteSelected()
       return
     }
-    if (editor.caretOffset() === 0) {
+    // 有文字选区时必须交还浏览器做原生删除：caretOffset() 量的是选区起点，
+    // 从行首开始拖选几个字时它同样是 0，会被误判成行首退格而把整行并进上一行。
+    if (!editor.hasTextSelection() && editor.caretOffset() === 0) {
       ev.preventDefault()
       handleBackspace(row, editor)
       return
@@ -1461,8 +1466,15 @@ function isAncestorOf(ancestor: OutlineNode, id: string): boolean {
   return false
 }
 
-function onDragUp(): void {
+/** 收尾统一清掉本轮的三个监听器（两个 once 监听器必须互删，否则每次拖拽都会遗留一个） */
+function removeDragListeners(): void {
   window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', onDragUp)
+  window.removeEventListener('pointercancel', cancelDrag)
+}
+
+function onDragUp(): void {
+  removeDragListeners()
   const pending = pendingDrag
   pendingDrag = null
   if (!drag.active) {
@@ -1483,7 +1495,7 @@ function onDragUp(): void {
 }
 
 function cancelDrag(): void {
-  window.removeEventListener('pointermove', onDragMove)
+  removeDragListeners()
   pendingDrag = null
   cleanupDrag()
 }
@@ -2139,7 +2151,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', onScrollHideToolbar, true)
   window.removeEventListener('keydown', onGlobalKeydown, true)
   rootEl.value?.removeEventListener('wheel', onOutlineWheel)
-  window.removeEventListener('pointermove', onDragMove)
+  removeDragListeners()
   document.body.classList.remove('ol-dragging')
   // 卸载即冲刷；不 emit('saved')（见 lessons-log #11）。
   // 标题只认 titleDirty，强写会把列表页刚改的名字盖回旧值

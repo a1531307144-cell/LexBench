@@ -19,6 +19,8 @@ import ThemeDialog from './components/ThemeDialog.vue'
 import UpdateToast from './updaterUI/UpdateToast.vue'
 import { GUIDE_KEY, buildGuideSteps } from './guide/guideSteps'
 import { dropNoteHistory } from './composables/noteHistoryStore'
+import { runBeforeCloseFlushes } from './composables/beforeCloseFlush'
+import { dropCachedPdfBlob } from './composables/pdfBlobCache'
 import { syncThemeFromSettings, watchThemeAcrossWindows } from './composables/useTheme'
 import { newOutlineId } from '@shared/outlineTree'
 import { createDefaultLayout, serializeParallelLayout } from '@shared/parallelLayout'
@@ -497,6 +499,9 @@ async function openNote(id: number): Promise<void> {
     await outlineEditorRef.value?.flush()
     await workspaceRef.value?.flush()
     activeOutline.value = await window.lexbench.outlines.get(id)
+    // 面板在文档库/阅读态也能展开：不切方向的话点了笔记界面毫无反应
+    // （平行视图方向保持原位，只换其中的笔记）
+    if (tab.value !== 'workspace') tab.value = 'notes'
   } catch (e) {
     activeOutline.value = null
     showError(e)
@@ -803,6 +808,8 @@ async function confirmDeleteNote(): Promise<void> {
       workspaceRef.value?.discardCurrentLayout()
       activeOutline.value = null
     }
+    // 否则切到平行视图时会用已删 id 取笔记，get 失败后落到空工作区，不再回落到已有存档
+    if (lastActiveNoteId === target.id) lastActiveNoteId = null
     await refreshNotes()
     await refreshParallelViews()
     setNotice('笔记已删除')
@@ -825,6 +832,9 @@ async function onNoteListChanged(): Promise<void> {
 /** 笔记面板改过名/导入后：刷列表，并把当前打开笔记的标题同步给编辑器
  *  （否则编辑器手里的旧标题会在卸载冲刷时把刚改的名字写回去） */
 async function onNotesPanelChanged(): Promise<void> {
+  // 分类变更（新建/改名/删除）会同时影响文件夹树与笔记的归属：
+  // 删夹时主进程把该夹笔记置为未分类，只刷文件夹会让这些笔记在任何层级都不显示。
+  await refreshNoteGroups()
   await refreshNotes()
   // 存档列表 JOIN 笔记标题：改名/移动后一起刷新
   await refreshParallelViews()
@@ -891,6 +901,21 @@ watch(tab, async (t, prev) => {
       activeOutline.value = row
       outlineRev.value += 1
     } catch {
+      if (seq !== tabWatchSeq) return
+      // 目标笔记可能已被删（存档列表是异步刷新的）：回落到第一篇存档，
+      // 否则平行视图入口会变成一个打不开任何东西的空工作区。
+      const fallback = parallelViews.value[0]?.note_id
+      if (fallback != null && fallback !== target) {
+        try {
+          const row = await window.lexbench.outlines.get(fallback)
+          if (seq !== tabWatchSeq) return
+          activeOutline.value = row
+          outlineRev.value += 1
+          return
+        } catch {
+          /* 继续落到空态 */
+        }
+      }
       if (seq === tabWatchSeq) activeOutline.value = null
     }
     return
@@ -1171,6 +1196,8 @@ async function confirmDelete(): Promise<void> {
   if (!doc) return
   try {
     await window.lexbench.library.deleteDocument(doc.id)
+    // 文档已删：清掉它在渲染层占着的 PDF Blob（模块级 Map 是强引用，不主动删就得等 LRU）
+    dropCachedPdfBlob(doc.id)
     // 删除的正是打开中的文档时才关掉阅读视图
     if (reader.value && reader.value.data.id === doc.id) reader.value = null
     await refreshDocs()
@@ -1281,6 +1308,8 @@ onMounted(() => {
       try {
         await outlineEditorRef.value?.flush()
         await workspaceRef.value?.flush()
+        // 阅读进度等「防抖 + 卸载兜底」的组件由各自登记，窗口销毁时 onBeforeUnmount 不会执行
+        await runBeforeCloseFlushes()
       } catch {
         // 落盘失败不阻断关窗（错误已在编辑器内提示）
       }
@@ -1544,7 +1573,7 @@ onBeforeUnmount(() => {
           @remove="askDeleteNote"
           @open-starred="openStarredArticle"
           @error="showError"
-          @groups-changed="refreshNoteGroups"
+          @groups-changed="onNotesPanelChanged"
           @imported="onNotesPanelChanged"
           @open-parallel="openParallelView"
         />

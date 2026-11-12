@@ -6,7 +6,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import type { DatabaseSync } from 'node:sqlite'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import type { BookNoteInput } from '../shared/ipc'
 import type { BookNoteRow, ExportFormat, ExportResult, ReadingProgress } from '../shared/types'
@@ -17,6 +17,23 @@ type PdfjsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs')
 let pdfjsModule: PdfjsModule | null = null
 /** 同一篇 PDF 多窗打开时只探测一次页数 */
 const pdfPageCountCache = new Map<number, number>()
+/**
+ * 原文归档路径（userData/files/<hash><ext>）。
+ *
+ * hash / ext 全部来自 documents 表——而库文件可以被数据包整体换装，等于外部可控。
+ * 直接把它们拼进 join 会让 `..\..\` 穿出 files 目录，因此这里清洗并做容器校验：
+ * 解析后的绝对路径必须仍在 files 目录之内。
+ */
+function archivedFilePath(hash: unknown, ext: unknown): string {
+  const filesRoot = resolve(app.getPath('userData'), 'files')
+  const safeHash = String(hash ?? '').replace(/[^A-Za-z0-9_-]/g, '')
+  const extStr = String(ext ?? '')
+  const safeExt = /^\.[A-Za-z0-9]{1,10}$/.test(extStr) ? extStr : '.pdf'
+  const full = resolve(filesRoot, `${safeHash}${safeExt}`)
+  if (!full.startsWith(filesRoot + sep)) throw new Error('文件路径异常')
+  return full
+}
+
 async function pdfPageCount(filePath: string): Promise<number> {
   if (!pdfjsModule) pdfjsModule = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const data = new Uint8Array(readFileSync(filePath))
@@ -336,8 +353,7 @@ export function registerReadingIpc(): void {
       .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
       .get(Number(documentId)) as DbRow | undefined
     if (!row) throw new Error('文档不存在')
-    const ext = String(row['file_ext'] || '.pdf')
-    const archived = join(app.getPath('userData'), 'files', `${String(row['file_hash'])}${ext}`)
+    const archived = archivedFilePath(row['file_hash'], row['file_ext'])
     if (existsSync(archived)) return archived
     const original = String(row['original_path'] || '')
     if (original && existsSync(original)) return original
@@ -354,8 +370,7 @@ export function registerReadingIpc(): void {
       .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
       .get(Number(documentId)) as DbRow | undefined
     if (!row) throw new Error('文档不存在')
-    const ext = String(row['file_ext'] || '.pdf')
-    const archived = join(app.getPath('userData'), 'files', `${String(row['file_hash'])}${ext}`)
+    const archived = archivedFilePath(row['file_hash'], row['file_ext'])
     const original = String(row['original_path'] || '')
     const path = existsSync(archived) ? archived : original || archived
     if (!existsSync(path)) throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
@@ -371,9 +386,11 @@ export function registerReadingIpc(): void {
       .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
       .get(Number(documentId)) as DbRow | undefined
     if (!row) throw new Error('文档不存在')
-    const ext = String(row['file_ext'] || '.pdf')
-    const archived = join(app.getPath('userData'), 'files', `${String(row['file_hash'])}${ext}`)
-    const path = existsSync(archived) ? archived : String(row['original_path'] || archived)
+    const archived = archivedFilePath(row['file_hash'], row['file_ext'])
+    const original = String(row['original_path'] || '')
+    // 归档副本优先；原件路径兜底时必须真实存在（不存在就给出明确提示，而不是抛 ENOENT 原文）
+    const path = existsSync(archived) ? archived : original
+    if (!path || !existsSync(path)) throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
     const buf = readFileSync(path)
     // 拷出精确的 ArrayBuffer（Buffer 底层可能带池化偏移，直接给 buffer 会多发字节）
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer

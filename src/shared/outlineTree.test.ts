@@ -107,6 +107,32 @@ describe('outlineTree 结构操作', () => {
     expect(r2?.node.text).toBe('A2A2x')
   })
 
+  it('merge 时一端带 html：补出另一端的纯文本，text 与 html 保持同步', () => {
+    // 上一行纯文本 + 下一行加粗：旧实现只留 <b>def</b>，上一行文字从界面消失
+    const tree = [n('a', 'abc'), Object.assign(n('b', 'def'), { html: '<b>def</b>' })]
+    const r = mergeOutlineNode(tree, 'b')
+    expect(r?.node.text).toBe('abcdef')
+    expect(r?.node.html).toBe('abc<b>def</b>')
+    // 反向：上一行加粗 + 下一行纯文本
+    const tree2 = [Object.assign(n('a', 'abc'), { html: '<b>abc</b>' }), n('b', 'def')]
+    const r2 = mergeOutlineNode(tree2, 'b')
+    expect(r2?.node.html).toBe('<b>abc</b>def')
+  })
+
+  it('merge 不丢行下备注 / 贴图 / 标题级别', () => {
+    const hit = Object.assign(n('b', '乙'), {
+      note: '备注乙',
+      images: ['pic.png'],
+      heading: 2 as const
+    })
+    const tree = [n('a', '甲'), hit]
+    const r = mergeOutlineNode(tree, 'b')
+    expect(r?.node.note).toBe('备注乙')
+    expect(r?.node.images).toEqual(['pic.png'])
+    expect(r?.node.image).toBe('pic.png')
+    expect(r?.node.heading).toBe(2)
+  })
+
   it('insertChild / insertAfter 会展开父级', () => {
     const tree = sample()
     tree[0]!.fold = true

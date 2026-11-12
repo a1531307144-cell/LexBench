@@ -46,9 +46,37 @@ let seq = 0
 
 const taskNames: Record<AiTask, string> = { explain: '解读本条', cases: '找案例', followup: '追问' }
 
+/**
+ * AI 回答的消毒规则。
+ *
+ * DOMPurify 默认白名单包含 style/form/input/button/template，而 index.html 的 CSP 允许
+ * style-src 'unsafe-inline'——AI 回答（可能被本地文档内容提示注入）里的 <style> 会真的生效，
+ * 覆盖整个面板伪造控件。这里禁掉这些标签与行内 style。
+ */
+const SANITIZE_OPTS = {
+  FORBID_TAGS: [
+    'style',
+    'form',
+    'input',
+    'button',
+    'textarea',
+    'select',
+    'option',
+    'iframe',
+    'object',
+    'embed',
+    'template'
+  ],
+  FORBID_ATTR: ['style']
+}
+
+function sanitizeHtml(md: string): string {
+  return DOMPurify.sanitize(marked.parse(md || '') as string, SANITIZE_OPTS)
+}
+
 /** 流式回答：marked 渲染 + DOMPurify 消毒（与 NotePanel 预览同款，禁裸 v-html） */
 const streamHtml = computed(() =>
-  streamText.value.trim() ? DOMPurify.sanitize(marked.parse(streamText.value) as string) : ''
+  streamText.value.trim() ? sanitizeHtml(streamText.value) : ''
 )
 
 const delMessage = computed(() => (pendingDel.value ? '确定删除这条问答记录？此操作不可撤销。' : ''))
@@ -127,8 +155,24 @@ function summary(md: string, max = 80): string {
 }
 
 function renderMd(md: string): string {
-  return DOMPurify.sanitize(marked.parse(md || '') as string)
+  return sanitizeHtml(md)
 }
+
+/**
+ * 历史列表的展示数据一次性算好。
+ *
+ * 以前模板里直接调 summary()/parseCites()：summary 内部每次 createElement('textarea')
+ * + innerHTML 做一次完整 HTML 解析，且是渲染函数内的实时调用——输入框每敲一个字符、
+ * 流式每收到一个 delta，全部历史卡片都会重算一遍，历史越多越卡。
+ */
+const historyView = computed(() =>
+  history.value.map((m) => ({
+    m,
+    q: m.question ? summary(m.question) : '',
+    a: summary(m.answer_md, 120),
+    cites: parseCites(m.citations)
+  }))
+)
 
 async function confirmDel(): Promise<void> {
   const m = pendingDel.value
@@ -325,24 +369,24 @@ onBeforeUnmount(() => {
     <div class="ai-history">
       <div class="ai-sec">历史问答<span class="ai-count">{{ history.length }}</span></div>
       <p v-if="!history.length" class="ai-empty">本条暂无问答记录</p>
-      <div v-for="m in history" :key="m.id" class="ai-card">
+      <div v-for="h in historyView" :key="h.m.id" class="ai-card">
         <div class="ai-card-head">
-          <span class="ai-hcard-tag">{{ taskName(m.action) }}</span>
-          <span class="ai-time">{{ m.created_at.slice(5, 16) }}</span>
+          <span class="ai-hcard-tag">{{ taskName(h.m.action) }}</span>
+          <span class="ai-time">{{ h.m.created_at.slice(5, 16) }}</span>
           <span class="ai-flex"></span>
-          <button class="ai-act" title="展开/收起全文" @click="toggleExpand(m.id)">
-            {{ expandedId === m.id ? '收起' : '展开' }}
+          <button class="ai-act" title="展开/收起全文" @click="toggleExpand(h.m.id)">
+            {{ expandedId === h.m.id ? '收起' : '展开' }}
           </button>
-          <button class="ai-act" title="删除" @click="pendingDel = m">✕</button>
+          <button class="ai-act" title="删除" @click="pendingDel = h.m">✕</button>
         </div>
-        <p v-if="m.question" class="ai-q">问：{{ summary(m.question) }}</p>
-        <p v-if="expandedId !== m.id" class="ai-a">答：{{ summary(m.answer_md, 120) }}</p>
+        <p v-if="h.m.question" class="ai-q">问：{{ h.q }}</p>
+        <p v-if="expandedId !== h.m.id" class="ai-a">答：{{ h.a }}</p>
         <div v-else class="ai-full">
-          <div class="ai-md" v-html="renderMd(m.answer_md)"></div>
-          <div v-if="parseCites(m.citations).length" class="ai-cites">
+          <div class="ai-md" v-html="renderMd(h.m.answer_md)"></div>
+          <div v-if="h.cites.length" class="ai-cites">
             <span class="ai-cites-label">引用：</span>
             <button
-              v-for="(c, i) in parseCites(m.citations)"
+              v-for="(c, i) in h.cites"
               :key="i"
               class="ai-cite"
               :class="{ plain: c.articleId === null }"
