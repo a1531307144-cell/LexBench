@@ -6,9 +6,15 @@
 // 注意一个悖论：不能为了「检查隐私」而把用户的真实姓名写进公开仓库，
 // 所以用户专属的敏感词放在**不提交**的 scripts/.privacy-terms（每行一个，已 gitignore）。
 // 只有用户本机才会跑这部分；CI 跑通用规则（手机号/邮箱/密钥/内嵌图片/本机路径）。
+//
+// 扫描范围（2026-11-12 加固）：
+//   ① 文件内容 —— 手机号 / 邮箱 / 密钥 / base64 图片 / 本机绝对路径 / 专属敏感词
+//   ② 文件路径与文件名 —— 同一套规则（防止「张三笔记.md」这种只有名字在路径上的漏网）
+//   ③ 未登记的文件类型 —— 仓库里出现 .docx/.pdf/图片/压缩包等，除白名单目录外一律报警
+//      （这些文件内容扫不了，只能靠「不该出现就别出现」把关）
 import { readdir, readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { extname, join, relative, sep } from 'node:path'
 
 const ROOT = process.cwd()
 const SKIP_DIRS = new Set([
@@ -22,7 +28,23 @@ const SKIP_DIRS = new Set([
   'pdf-assets' // pdfjs 解码资源（postinstall 从 node_modules 生成；第三方文件里的长数字常量会误报手机号）
 ])
 const SKIP_FILES = new Set(['package-lock.json'])
-const SCAN_EXT = ['.ts', '.tsx', '.vue', '.mjs', '.js', '.json', '.yml', '.yaml', '.md', '.html', '.css', '.txt']
+const SCAN_EXT = [
+  '.ts', '.tsx', '.vue', '.mjs', '.cjs', '.js', '.json', '.yml', '.yaml',
+  '.md', '.html', '.css', '.txt', '.py', '.sh', '.ps1', '.bat', '.cmd'
+]
+
+/** 内容无法扫描、也不该随意进仓库的文件类型 */
+const BINARY_EXT = [
+  '.docx', '.doc', '.pdf', '.xlsx', '.xls', '.pptx', '.ppt',
+  '.db', '.sqlite', '.sqlite3', '.zip', '.7z', '.rar',
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.bmp'
+]
+/** 允许出现这些文件类型的目录（相对仓库根，正斜杠结尾）；新增前先想清楚里面会不会有用户数据 */
+const BINARY_ALLOW_DIRS = [
+  'seed/',             // 预置法条 docx：由 scripts/build-seed.py 生成，带泄露断言
+  'docs/screenshots/', // README 用的应用截图（不含用户数据）
+  'build/'             // 打包图标等构建资源
+]
 
 /**
  * 明确属于合成测试数据、可以放行的值（与用户真实信息无关）：
@@ -50,6 +72,8 @@ async function loadLocalTerms() {
     .filter((l) => l && !l.startsWith('#'))
 }
 
+const toPosix = (p) => p.split(sep).join('/')
+
 async function walk(dir, out = []) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
@@ -57,8 +81,6 @@ async function walk(dir, out = []) {
       await walk(join(dir, entry.name), out)
     } else if (entry.isFile()) {
       if (SKIP_FILES.has(entry.name)) continue
-      const name = entry.name
-      if (!SCAN_EXT.some((e) => name.endsWith(e))) continue
       out.push(join(dir, entry.name))
     }
   }
@@ -68,6 +90,20 @@ async function walk(dir, out = []) {
 function isAllowed(hit) {
   return ALLOW.some((a) => hit.includes(a))
 }
+
+/** 收集一行里所有命中（正则需带 g） */
+function matches(rule, text) {
+  const found = []
+  rule.re.lastIndex = 0
+  let m
+  while ((m = rule.re.exec(text)) !== null) {
+    if (!isAllowed(m[0])) found.push(m[0])
+    if (m[0].length === 0) break // 防空正则死循环
+  }
+  return found
+}
+
+const clip = (v) => (v.length > 60 ? `${v.slice(0, 60)}…` : v)
 
 async function main() {
   const terms = await loadLocalTerms()
@@ -79,9 +115,33 @@ async function main() {
 
   const files = await walk(ROOT)
   const hits = []
+  let textFiles = 0
 
   for (const file of files) {
-    const rel = relative(ROOT, file)
+    const rel = toPosix(relative(ROOT, file))
+
+    // ② 路径 / 文件名扫描
+    for (const rule of rules) {
+      for (const value of matches(rule, rel)) {
+        hits.push({ file: rel, line: 0, rule: `${rule.name}（路径）`, value: clip(value) })
+      }
+    }
+
+    // ③ 未登记的文件类型
+    const ext = extname(rel).toLowerCase()
+    if (BINARY_EXT.includes(ext) && !BINARY_ALLOW_DIRS.some((d) => rel.startsWith(d))) {
+      hits.push({
+        file: rel,
+        line: 0,
+        rule: '未登记的文件类型',
+        value: `${ext} 不在白名单目录内（seed/ · docs/screenshots/ · build/）`
+      })
+    }
+
+    // ① 内容扫描（只扫文本类型）
+    if (!SCAN_EXT.some((e) => rel.endsWith(e))) continue
+    textFiles++
+
     let text
     try {
       text = await readFile(file, 'utf-8')
@@ -91,34 +151,30 @@ async function main() {
     const lines = text.split(/\r?\n/)
     for (const rule of rules) {
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]
-        rule.re.lastIndex = 0
-        let m
-        while ((m = rule.re.exec(line)) !== null) {
-          const value = m[0]
-          if (isAllowed(value)) continue
-          hits.push({ file: rel, line: i + 1, rule: rule.name, value: value.length > 60 ? `${value.slice(0, 60)}…` : value })
+        for (const value of matches(rule, lines[i])) {
+          hits.push({ file: rel, line: i + 1, rule: rule.name, value: clip(value) })
         }
       }
     }
   }
 
-  console.log(`隐私扫描：检查了 ${files.length} 个文件`)
+  console.log(`隐私扫描：检查了 ${files.length} 个文件（其中文本 ${textFiles} 个；内容 + 路径 + 文件类型）`)
   if (terms.length === 0) {
     console.log('  （未发现 scripts/.privacy-terms，本次只跑通用规则；本机跑可补上专属敏感词）')
   }
 
   if (hits.length === 0) {
-    console.log('通过：未发现手机号 / 邮箱 / 密钥 / 内嵌图片 / 本机路径 / 专属敏感词')
+    console.log('通过：未发现手机号 / 邮箱 / 密钥 / 内嵌图片 / 本机路径 / 专属敏感词 / 未登记文件类型')
     return 0
   }
 
   console.log(`\n发现 ${hits.length} 处可疑内容：\n`)
   for (const h of hits.slice(0, 50)) {
-    console.log(`  [${h.rule}] ${h.file}:${h.line}  →  ${h.value}`)
+    const where = h.line ? `${h.file}:${h.line}` : h.file
+    console.log(`  [${h.rule}] ${where}  →  ${h.value}`)
   }
   if (hits.length > 50) console.log(`  …… 另有 ${hits.length - 50} 处`)
-  console.log('\n发布已中止。请先处理上述内容，或确认无误后把合成值加入脚本的 ALLOW 列表。')
+  console.log('\n发布已中止。请先处理上述内容；确属合成数据再把值加入脚本的 ALLOW 列表。')
   return 1
 }
 
