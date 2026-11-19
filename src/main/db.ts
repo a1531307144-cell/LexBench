@@ -428,6 +428,9 @@ const MIGRATIONS: ReadonlyArray<{ version: number; sql: string }> = [
   { version: 21, sql: MIGRATION_021_PARALLEL_VIEWS }
 ]
 
+/** 本版本认识的最高 schema 版本：数据包导入时用它挡「来自更新版本」的库 */
+export const MAX_MIGRATION_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+
 /** 全局唯一连接（单例） */
 let db: DatabaseSync | null = null
 /** getFilesDir() 的懒缓存路径 */
@@ -450,7 +453,12 @@ function migrate(conn: DatabaseSync): void {
       conn.exec(`PRAGMA user_version = ${m.version}`)
       conn.exec('COMMIT')
     } catch (err) {
-      conn.exec('ROLLBACK')
+      // COMMIT 自身失败时 SQLite 可能已自动回滚，再 ROLLBACK 会抛次生异常并盖掉原始错误
+      try {
+        conn.exec('ROLLBACK')
+      } catch {
+        /* 已回滚/无活动事务 */
+      }
       throw err
     }
   }
@@ -503,6 +511,17 @@ export function verifyDbMigratable(dbPath: string): void {
 export function getDb(): DatabaseSync {
   if (!db) initDb()
   return db as DatabaseSync
+}
+
+/** 数据库「代」：每次**成功**换装 +1；长任务用它判断期间库是否真的被替换过 */
+let dbEpoch = 0
+
+export function getDbEpoch(): number {
+  return dbEpoch
+}
+
+export function bumpDbEpoch(): void {
+  dbEpoch += 1
 }
 
 /** 关闭并清空单例连接（数据包导入替换数据库文件前调用；之后 getDb() 会重开新文件） */

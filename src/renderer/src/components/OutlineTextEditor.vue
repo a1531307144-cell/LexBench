@@ -2,6 +2,10 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 import { escapeHtml, normalizeEditorHtml, plainTextFromHtml } from '@shared/outlineRichText'
+import { installStyleSanitizer } from '../composables/domSanitizer'
+
+// 只保留展示类 style；position/inset/z-index/url() 等一律剔除（全局钩子，只装一次）
+installStyleSanitizer()
 
 /**
  * 单行内容编辑区（contenteditable）。

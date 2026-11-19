@@ -4,7 +4,7 @@
 // - 渲染同一份 renderer，以 ?aiWindow=1 分支挂载 AiFloatWindow 壳（见 renderer main.ts）；
 // - 会话内记忆窗口位置尺寸（hide 时存 bounds，重建时恢复）。
 
-import { BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { themeWindowBackground } from '@shared/themes'
 import { getSetting } from './db'
@@ -72,7 +72,8 @@ function createAiWindow(getMainWindow: () => BrowserWindow | null): void {
   win.on('show', () => notifyVisibility(getMainWindow))
   win.on('hide', () => notifyVisibility(getMainWindow))
 
-  const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+  // 与主窗口同一条规则：打包版只加载自带页面
+  const rendererUrl = app.isPackaged ? undefined : process.env['ELECTRON_RENDERER_URL']
   if (rendererUrl) {
     void win.loadURL(`${rendererUrl}/?aiWindow=1`)
   } else {

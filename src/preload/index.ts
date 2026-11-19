@@ -15,6 +15,7 @@ import type {
   AnnotationRow,
   ArticleDetail,
   BookNoteRow,
+  DeleteImpact,
   DocGroupRow,
   DocStatus,
   DocType,
@@ -66,8 +67,8 @@ const api = {
         ipcRenderer.removeListener('app:before-close', handler)
       }
     },
-    /** 告知主进程未落盘内容已冲刷完毕，可以关窗 */
-    flushDone: (): void => ipcRenderer.send('app:flush-done')
+    /** 告知主进程冲刷结果：ok=false 时主进程会先让用户确认再决定是否关窗 */
+    flushDone: (ok = true): void => ipcRenderer.send('app:flush-done', ok)
   },
   win: {
     /** 无边框窗口自绘控制按钮（─ □ ✕） */
@@ -91,6 +92,9 @@ const api = {
       invoke('library:getSeedInfo'),
     getDocument: (id: number): Promise<DocumentDetail> =>
       invoke('library:getDocument', id),
+    /** 删除前的连带影响（批注 / 读书笔记 / AI 问答），确认框据此如实告知 */
+    getDeleteImpact: (id: number): Promise<DeleteImpact> =>
+      invoke('library:getDeleteImpact', id),
     deleteDocument: (id: number): Promise<void> => invoke('library:deleteDocument', id),
     setDocumentStatus: (id: number, status: DocStatus): Promise<void> =>
       invoke('library:setDocumentStatus', id, status),
@@ -299,10 +303,7 @@ const api = {
       invoke('reading:getPdfData', documentId),
     /** PDF 真实页数（扫描件与文字版都准确） */
     getPdfPageCount: (documentId: number): Promise<number> =>
-      invoke('reading:getPdfPageCount', documentId),
-    /** PDF 原件本机路径（优先归档副本）——内置 PDF 阅读器以 file:// 加载 */
-    getPdfPath: (documentId: number): Promise<string> =>
-      invoke('reading:getPdfPath', documentId)
+      invoke('reading:getPdfPageCount', documentId)
   },
   backup: {
     /** 弹出保存对话框 → 打包全部数据（数据库+原件+AI 配置）→ 写盘 */

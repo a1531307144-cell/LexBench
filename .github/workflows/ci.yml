@@ -6,6 +6,10 @@ on:
     branches: [main]
   pull_request:
 
+# 只读令牌：CI 不需要写仓库
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest

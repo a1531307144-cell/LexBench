@@ -5,12 +5,15 @@
 
 import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import { flattenOutline, outlineToMarkdown } from '../shared/outlineExport'
 import { parseImportedFile, toOutlineNodes, type ImportedNode } from '../shared/outlineImport'
+import { isPrivateAddress } from '@shared/netGuard'
 import type {
   ExportFormat,
   ExportResult,
@@ -23,6 +26,7 @@ import type {
   StarredArticleRow
 } from '../shared/types'
 import { getDb } from './db'
+import { assertAppSender } from './ipcGuard'
 
 // ---------- 贴图存储：userData/attachments/（随数据包备份；节点内相对文件名引用） ----------
 
@@ -64,6 +68,16 @@ function saveAttachmentBuffer(buf: Buffer, hintExt: string): string {
 
 // ---------- 导入辅助 ----------
 
+/** 大纲文件大小上限：整份读进内存解析，超大文件会直接拖垮主进程 */
+const MAX_OUTLINE_FILE_BYTES = 50 * 1024 * 1024
+
+/** 读取待导入的大纲文件（先做大小预检，避免 OOM） */
+function readOutlineFile(filePath: string): string {
+  const st = statSync(filePath)
+  if (st.size > MAX_OUTLINE_FILE_BYTES) throw new Error('文件超过 50MB 上限')
+  return readFileSync(filePath, 'utf8')
+}
+
 function countImportedNodes(nodes: ImportedNode[]): number {
   let c = 0
   for (const n of nodes) {
@@ -84,9 +98,18 @@ function uniqueTitle(base: string): string {
   return title
 }
 
-/** 下载节点树内的贴图 URL → attachments 落盘；失败的图转为文本行保留 URL。返回失败数 */
+/** 下载失败的图：URL 保留在文本行，不留悬空 image 字段 */
+function demoteImageToText(node: OutlineNode, url: string): void {
+  node.text = [node.text, `![图片](${url})`].filter(Boolean).join(' ')
+  delete node.image
+}
+
+/**
+ * 下载节点树内的贴图 URL → attachments 落盘；失败的图转为文本行保留 URL。
+ * 预算：最多 500 张 / 200MB / 120 秒（一份恶意大纲不能把主进程变成无限出站请求器）。
+ * 返回失败数与因预算被降级的提示（有降级时由调用方告诉用户）。
+ */
 async function downloadTreeImages(nodes: OutlineNode[]): Promise<number> {
-  // 收集 {node, url}
   const targets: { node: OutlineNode; url: string }[] = []
   const walk = (ns: OutlineNode[]): void => {
     for (const n of ns) {
@@ -96,19 +119,38 @@ async function downloadTreeImages(nodes: OutlineNode[]): Promise<number> {
   }
   walk(nodes)
 
-  let failed = 0
   const queue = [...targets]
+  const startedAt = Date.now()
+  let processed = 0
+  let totalBytes = 0
+  let failed = 0
+
+  const overBudget = (): boolean =>
+    processed >= MAX_IMAGES_PER_IMPORT ||
+    totalBytes >= MAX_IMAGE_TOTAL_BYTES ||
+    Date.now() - startedAt >= MAX_IMAGE_TOTAL_MS
+
   const worker = async (): Promise<void> => {
     for (;;) {
       const t = queue.shift()
       if (!t) return
+      if (overBudget()) {
+        demoteImageToText(t.node, t.url)
+        failed += 1
+        continue
+      }
+      processed += 1
       try {
         const buf = await downloadImage(t.url)
+        if (totalBytes + buf.length > MAX_IMAGE_TOTAL_BYTES) {
+          demoteImageToText(t.node, t.url)
+          failed += 1
+          continue
+        }
+        totalBytes += buf.length
         t.node.image = saveAttachmentBuffer(buf, extFromUrl(t.url))
       } catch {
-        // 失败：URL 保留在文本行，不留悬空 image 字段
-        t.node.text = [t.node.text, `![图片](${t.url})`].filter(Boolean).join(' ')
-        delete t.node.image
+        demoteImageToText(t.node, t.url)
         failed += 1
       }
     }
@@ -119,36 +161,55 @@ async function downloadTreeImages(nodes: OutlineNode[]): Promise<number> {
 
 /** 单张图片上限（与 saveAttachmentBuffer 的 20MB 对齐） */
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+/** 一次导入的图片总预算：防止一份文件把主进程变成无限出站请求器 */
+const MAX_IMAGES_PER_IMPORT = 500
+const MAX_IMAGE_TOTAL_BYTES = 200 * 1024 * 1024
+const MAX_IMAGE_TOTAL_MS = 120_000
+/** DNS 解析超时（防止恶意/故障 DNS 让导入卡死） */
+const DNS_TIMEOUT_MS = 5_000
 
-/**
- * 内网 / 回环地址判定。
- *
- * 导入的是他人给的大纲文件，里面的图片 URL 完全由文件作者决定；主进程 fetch 不受渲染层
- * CSP 限制，若不过滤就等于给对方一个内网探测/GET 打点的能力。
- */
+/** 地址分类在共享层（可单测）：src/shared/netGuard.ts */
+
+/** 主机名字面量判定（域名解析在 assertPublicHost 里做） */
 function isPrivateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (!h) return true
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true
-  if (h === '::1' || h === '::') return true
-  if (h.includes(':')) {
-    // IPv6 链路本地 fe80::/10 与唯一本地 fc00::/7
-    if (/^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{0,2}:/.test(h)) return true
+  if (
+    h === 'localhost' ||
+    h.endsWith('.localhost') ||
+    h.endsWith('.local') ||
+    h.endsWith('.internal')
+  ) {
+    return true
   }
-  // IPv4 映射的 IPv6（::ffff:192.168.1.1）
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h)
-  const v4 = mapped ? mapped[1]! : h
-  if (/^0\./.test(v4) || v4 === '0.0.0.0') return true
-  if (/^127\./.test(v4)) return true
-  if (/^10\./.test(v4)) return true
-  if (/^192\.168\./.test(v4)) return true
-  if (/^169\.254\./.test(v4)) return true
-  const m172 = /^172\.(\d+)\./.exec(v4)
-  if (m172) {
-    const n = Number(m172[1])
-    if (n >= 16 && n <= 31) return true
-  }
+  if (isIP(h)) return isPrivateAddress(h)
   return false
+}
+
+/**
+ * 解析域名并逐个地址校验，防止「公网域名 A 记录指向内网」与 DNS rebinding。
+ * 残留风险：解析与 fetch 之间仍可能被 rebinding 换地址，这里接受该理论风险；
+ * 真正的兜底是把解析结果 pin 到连接（需要自定义 undici Agent）。
+ */
+async function assertPublicHost(hostname: string): Promise<void> {
+  if (isPrivateHost(hostname)) throw new Error('不下载内网/本机地址的图片')
+  const bare = hostname.replace(/^\[|\]$/g, '')
+  if (isIP(bare)) return // 字面 IP 已在上面判过
+  let addrs: Array<{ address: string }>
+  try {
+    addrs = await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('域名解析超时')), DNS_TIMEOUT_MS)
+      )
+    ])
+  } catch {
+    throw new Error('图片域名无法解析')
+  }
+  if (addrs.length === 0) throw new Error('图片域名无法解析')
+  if (addrs.some((a) => isPrivateAddress(a.address))) {
+    throw new Error('不下载内网/本机地址的图片')
+  }
 }
 
 /** 流式读取响应体并在超过上限时立即中断（不把超大响应完整读进内存） */
@@ -182,8 +243,8 @@ async function readBodyCapped(res: Response, max: number): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-/** 图片地址校验（协议 + 私网），返回规范化 URL；非法直接抛中文错误 */
-function checkImageUrl(raw: string, base?: URL): URL {
+/** 图片地址校验（协议 + 域名解析 + 私网），返回规范化 URL；非法直接抛中文错误 */
+async function checkImageUrl(raw: string, base?: URL): Promise<URL> {
   let next: URL
   try {
     next = base ? new URL(raw, base) : new URL(raw)
@@ -193,7 +254,7 @@ function checkImageUrl(raw: string, base?: URL): URL {
   if (next.protocol !== 'http:' && next.protocol !== 'https:') {
     throw new Error('只支持 http/https 图片地址')
   }
-  if (isPrivateHost(next.hostname)) throw new Error('不下载内网/本机地址的图片')
+  await assertPublicHost(next.hostname)
   return next
 }
 
@@ -201,7 +262,7 @@ function checkImageUrl(raw: string, base?: URL): URL {
 const MAX_REDIRECTS = 4
 
 async function downloadImage(url: string): Promise<Buffer> {
-  const initial = checkImageUrl(url)
+  const initial = await checkImageUrl(url)
 
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -217,7 +278,7 @@ async function downloadImage(url: string): Promise<Buffer> {
         if (res.status < 300 || res.status >= 400) break
         const location = res.headers.get('location')
         if (!location) throw new Error('图片跳转缺少目标地址')
-        current = checkImageUrl(location, current)
+        current = await checkImageUrl(location, current)
         if (hop === MAX_REDIRECTS) throw new Error('图片跳转次数过多')
         res = null
       }
@@ -332,12 +393,14 @@ async function generateOutlineFile(
 
 export function registerOutlinesIpc(): void {
   // 贴图：保存（Ctrl+V/拖入 → base64 → attachments 落盘，返回文件名）
-  ipcMain.handle('attachments:saveImage', (_e, b64: string, ext: string): string => {
+  ipcMain.handle('attachments:saveImage', (e, b64: string, ext: string): string => {
+    assertAppSender(e)
     return saveAttachmentImage(String(b64 ?? ''), String(ext ?? ''))
   })
 
   // 贴图读取：文件名（不含路径）→ 字节流；路径穿越在此拦截
-  ipcMain.handle('attachments:read', (_e, fileName: string): Buffer => {
+  ipcMain.handle('attachments:read', (e, fileName: string): Buffer => {
+    assertAppSender(e)
     const safe = String(fileName ?? '')
     if (!/^[A-Za-z0-9._-]+\.(png|jpe?g|gif|webp|bmp)$/i.test(safe)) throw new Error('非法附件名')
     const full = join(getAttachmentsDir(), safe)
@@ -553,7 +616,10 @@ export function registerOutlinesIpc(): void {
   })
 
   // 自动保存（编辑器防抖 500ms 整树落库）；title 可选（重命名走同一口）
-  ipcMain.handle('outlines:save', (_e, id: number, tree: string, title?: string): void => {
+  ipcMain.handle('outlines:save', (e, id: number, tree: string, title?: string): void => {
+    assertAppSender(e)
+    if (typeof tree !== 'string') throw new Error('笔记数据格式不正确')
+    if (tree.length > 20 * 1024 * 1024) throw new Error('笔记内容过大（超过 20MB）')
     parseTree(tree) // 非法 JSON 直接抛给渲染层错误条，不落库
     const db = getDb()
     const info =
@@ -571,7 +637,8 @@ export function registerOutlinesIpc(): void {
     if (Number(info.changes) === 0) throw new Error('笔记不存在')
   })
 
-  ipcMain.handle('outlines:delete', (_e, id: number): void => {
+  ipcMain.handle('outlines:delete', (e, id: number): void => {
+    assertAppSender(e)
     const info = getDb().prepare('DELETE FROM outlines WHERE id = ?').run(id)
     if (Number(info.changes) === 0) throw new Error('笔记不存在')
   })
@@ -579,7 +646,8 @@ export function registerOutlinesIpc(): void {
   // 导出笔记：保存对话框 → 生成 md/docx → 写盘；取消返回 {canceled:true}
   ipcMain.handle(
     'outlines:export',
-    async (_e, id: number, format: ExportFormat): Promise<ExportResult> => {
+    async (e, id: number, format: ExportFormat): Promise<ExportResult> => {
+      assertAppSender(e)
       if (format !== 'md' && format !== 'docx') {
         throw new Error(`不支持的导出格式：${String(format)}`)
       }
@@ -613,7 +681,8 @@ export function registerOutlinesIpc(): void {
   if (!app.isPackaged) {
     ipcMain.handle(
       'outlines:__testExport',
-      async (_e, id: number, format: ExportFormat, outPath: string): Promise<ExportResult> => {
+      async (e, id: number, format: ExportFormat, outPath: string): Promise<ExportResult> => {
+        assertAppSender(e)
         const row = getDb().prepare('SELECT * FROM outlines WHERE id = ?').get(Number(id)) as
           | OutlineRow
           | undefined
@@ -648,12 +717,13 @@ export function registerOutlinesIpc(): void {
   )
 
   // 预检：解析展示用（不落库、不下载图片）；逐篇给标题/格式/节点数/图片数/是否重复
-  ipcMain.handle('outlines:previewImport', (_e, paths: string[]): ImportPreviewItem[] => {
+  ipcMain.handle('outlines:previewImport', (e, paths: string[]): ImportPreviewItem[] => {
+    assertAppSender(e)
     const db = getDb()
     return (Array.isArray(paths) ? paths : []).map((p) => {
       const name = p.split(/[\\/]/).pop() ?? p
       try {
-        const content = readFileSync(p, 'utf8')
+        const content = readOutlineFile(p)
         const sourceKey = createHash('sha1').update(content).digest('hex')
         const doc = parseImportedFile(name, content, () => '')
         const dup = !!db.prepare('SELECT 1 FROM outlines WHERE source_key = ?').get(sourceKey)
@@ -684,14 +754,15 @@ export function registerOutlinesIpc(): void {
   // 执行导入：解析 → 图片下载落盘 → 事务入库；duplicates=重复时 'skip'跳过 / 'append'仍然导入
   ipcMain.handle(
     'outlines:runImport',
-    async (_e, paths: string[], duplicates: string): Promise<ImportRunItem[]> => {
+    async (e, paths: string[], duplicates: string): Promise<ImportRunItem[]> => {
+      assertAppSender(e)
       const db = getDb()
       const policy = duplicates === 'append' ? 'append' : 'skip'
       const results: ImportRunItem[] = []
       for (const p of Array.isArray(paths) ? paths : []) {
         const name = p.split(/[\\/]/).pop() ?? p
         try {
-          const content = readFileSync(p, 'utf8')
+          const content = readOutlineFile(p)
           const sourceKey = createHash('sha1').update(content).digest('hex')
           const doc = parseImportedFile(name, content, () =>
             `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e9).toString(36)}`

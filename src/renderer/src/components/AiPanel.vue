@@ -54,6 +54,8 @@ const taskNames: Record<AiTask, string> = { explain: '解读本条', cases: '找
  * 覆盖整个面板伪造控件。这里禁掉这些标签与行内 style。
  */
 const SANITIZE_OPTS = {
+  // 只保留 HTML profile：DOMPurify 默认还放行 SVG / MathML，模型输出用不到这些面
+  USE_PROFILES: { html: true },
   FORBID_TAGS: [
     'style',
     'form',

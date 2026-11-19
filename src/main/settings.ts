@@ -16,6 +16,9 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings:set', (_e, key: string, value: string): void => {
     const k = String(key ?? '').trim()
     if (!k) throw new Error('设置键不能为空')
-    setSetting(k, String(value ?? ''))
+    if (k.length > 200) throw new Error('设置键过长')
+    const v = String(value ?? '')
+    if (v.length > 1024 * 1024) throw new Error('设置值过大')
+    setSetting(k, v)
   })
 }

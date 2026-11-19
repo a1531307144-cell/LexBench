@@ -52,7 +52,9 @@ jobs:
           }
           $ver = $env:GITHUB_REF_NAME.TrimStart('v')
           $notes = Get-Content RELEASE_NOTES.md -Raw -Encoding utf8
-          if ($notes -notmatch [regex]::Escape("v$ver")) {
+          # 必须完整匹配：v0.9.1 不能被 v0.9.14 误判为一致
+          $esc = [regex]::Escape($ver)
+          if ($notes -notmatch "(?<![0-9.])v$esc(?![0-9])") {
             Write-Error "RELEASE_NOTES.md 中找不到版本号 v$ver，说明可能忘记更新"
             exit 1
           }

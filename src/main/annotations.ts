@@ -51,21 +51,32 @@ export function registerAnnotationsIpc(): void {
       }
     ): AnnotationRow => {
       const db = getDb()
-      const exists = db
-        .prepare('SELECT 1 FROM articles WHERE id = ?')
-        .get(payload.articleId)
-      if (!exists) throw new Error('法条不存在')
+      const articleId = Math.floor(Number(payload?.articleId))
+      if (!Number.isFinite(articleId) || articleId <= 0) throw new Error('法条不存在')
+      const article = db
+        .prepare('SELECT content FROM articles WHERE id = ?')
+        .get(articleId) as { content: string } | undefined
+      if (!article) throw new Error('法条不存在')
+
+      const content = String(article.content ?? '')
+      const quote = String(payload?.quote ?? '')
+      const contentMd = String(payload?.contentMd ?? '')
+      const rawStart = Math.floor(Number(payload?.startOffset))
+      const rawEnd = Math.floor(Number(payload?.endOffset))
+      if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) {
+        throw new Error('批注位置不合法')
+      }
+      if (rawStart < 0 || rawEnd < rawStart || rawEnd > content.length) {
+        throw new Error('批注位置超出条文范围')
+      }
+      const startOffset = rawStart
+      const endOffset = rawEnd
+
       const info = db
         .prepare(
           'INSERT INTO statute_annotations(article_id, quote, start_offset, end_offset, content_md) VALUES(?,?,?,?,?)'
         )
-        .run(
-          payload.articleId,
-          payload.quote,
-          payload.startOffset,
-          payload.endOffset,
-          payload.contentMd
-        )
+        .run(articleId, quote, startOffset, endOffset, contentMd)
       const row = db
         .prepare('SELECT * FROM statute_annotations WHERE id = ?')
         .get(Number(info.lastInsertRowid)) as unknown as AnnotationRow

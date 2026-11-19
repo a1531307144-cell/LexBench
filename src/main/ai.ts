@@ -35,7 +35,8 @@ import type { AiArticleBrief, AiContextItem, AiHistoryMessage } from '@shared/ai
 import { cn2num } from '@shared/cnnum'
 import { matchDocumentIds } from '@shared/locate'
 import { queryTokens } from '@shared/tokenize'
-import { getDb, initDb } from './db'
+import { getDb, getDbEpoch, initDb } from './db'
+import { assertAppSender } from './ipcGuard'
 
 // ---------- 常量 ----------
 
@@ -75,6 +76,12 @@ function maskKey(key: string): string {
 /** 协议白名单归一：未知值一律按 OpenAI 兼容处理 */
 function normalizeProtocol(v: unknown): AiProtocol {
   return v === 'anthropic' ? 'anthropic' : 'openai'
+}
+
+/** 接口地址比较用的归一化（去尾部斜杠、忽略大小写） */
+function sameBaseUrl(a: string, b: string): boolean {
+  const n = (s: string): string => s.trim().replace(/\/+$/, '').toLowerCase()
+  return n(a) === n(b)
 }
 
 /** 行 → AiProfileRow：密钥只以掩码出主进程（明文绝不回渲染层） */
@@ -536,7 +543,8 @@ export function registerAiIpc(): void {
   // 新建 / 更新档案：空名拒绝；更新时 apiKey 留空 = 保留原值；首条档案自动启用（否则界面无从选起）
   ipcMain.handle(
     'ai:saveProfile',
-    (_e, patch: AiProfilePatch): { ok: boolean; error?: string; id?: number } => {
+    (e, patch: AiProfilePatch): { ok: boolean; error?: string; id?: number } => {
+      assertAppSender(e)
       const db = getDb()
       const p = (patch ?? {}) as AiProfilePatch
       const name = String(p.name ?? '').trim()
@@ -570,7 +578,8 @@ export function registerAiIpc(): void {
   )
 
   // 删除档案：删掉的若是启用档案，把剩下的第一条置为启用（始终保证「有档案就有启用档案」）
-  ipcMain.handle('ai:deleteProfile', (_e, id: number): void => {
+  ipcMain.handle('ai:deleteProfile', (e, id: number): void => {
+    assertAppSender(e)
     const db = getDb()
     const profileId = Number(id)
     const row = getProfileRow(db, profileId)
@@ -605,8 +614,31 @@ export function registerAiIpc(): void {
   // 测试连接：可传未保存的表单（显式值 > 该 id 档案 > 当前启用档案）；缺项/失败一律 {ok:false}
   ipcMain.handle(
     'ai:test',
-    async (_e, probe: AiProbe): Promise<{ ok: boolean; error?: string; reply?: string }> => {
-      return probeConnection(resolveConfig(getDb(), (probe ?? {}) as AiProbe))
+    async (e, probe: AiProbe): Promise<{ ok: boolean; error?: string; reply?: string }> => {
+      assertAppSender(e)
+      const p = (probe ?? {}) as AiProbe
+      const explicitBase = String(p.baseUrl ?? '').trim()
+      const explicitKey = String(p.apiKey ?? '').trim()
+      if (explicitBase) {
+        if (!/^https?:\/\//i.test(explicitBase)) {
+          throw new Error('接口地址必须以 http:// 或 https:// 开头')
+        }
+        // 已保存的密钥只允许发往它原本的接口地址：改了地址就必须显式填写新 Key。
+        // 否则任何能调到此通道的代码都能把用户的密钥 POST 到任意主机。
+        if (!explicitKey) {
+          const db = getDb()
+          const scoped =
+            p.id != null && Number.isFinite(Number(p.id))
+              ? getProfileRow(db, Number(p.id))
+              : undefined
+          const source = scoped ?? getActiveProfileRow(db)
+          const savedBase = String(source?.['base_url'] ?? '')
+          if (!savedBase || !sameBaseUrl(savedBase, explicitBase)) {
+            throw new Error('修改接口地址时必须同时填写 API Key（已保存的密钥不会发往新地址）')
+          }
+        }
+      }
+      return probeConnection(resolveConfig(getDb(), p))
     }
   )
 
@@ -614,6 +646,7 @@ export function registerAiIpc(): void {
   ipcMain.handle(
     'ai:run',
     async (event: IpcMainInvokeEvent, req: AiRunRequest): Promise<{ ok: boolean; error?: string }> => {
+      assertAppSender(event)
       const taskId = String(req?.taskId ?? '').trim()
       if (!taskId) throw new Error('缺少任务标识')
       const sender = event.sender
@@ -672,9 +705,17 @@ export function registerAiIpc(): void {
           ]
         }
 
+        const epoch = getDbEpoch()
         const answer = await streamChat(cfg, messages, state, (delta) =>
           emit({ taskId, delta, done: false })
         )
+
+        // 流式期间可能导入了数据包（closeDb + 换库）：此时继续用旧连接会写已关闭的库，
+        // 或把旧库的 article_id 写进新库、挂到另一条法条上。只有真正换装成功才放弃归档
+        //（失败的导入也会 closeDb 再重开同一文件，不能误判成换库）。
+        if (getDbEpoch() !== epoch) {
+          return fail('数据库已切换（数据包导入），本次问答未保存')
+        }
 
         // 归库：解析引用 → 归档 ai_messages（question 仅追问有值）
         const citations = resolveCitations(db, answer)

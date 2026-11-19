@@ -26,6 +26,7 @@ import { newOutlineId } from '@shared/outlineTree'
 import { createDefaultLayout, serializeParallelLayout } from '@shared/parallelLayout'
 import { TOPBAR_HINTS, pickDistinct } from '@shared/searchHints'
 import type {
+  DeleteImpact,
   DocGroupRow,
   DocumentDetail,
   DocumentRow,
@@ -317,6 +318,8 @@ const dragging = ref(false)
 const error = ref('')
 const version = ref('')
 const pendingDelete = ref<DocumentRow | null>(null)
+/** 删除确认框里的连带影响（批注/读书笔记/AI 问答）；null = 尚未加载 */
+const deleteImpact = ref<DeleteImpact | null>(null)
 /** 待删除笔记（「⋯」→删除笔记、列表行 ✕ 共用的确认弹窗；只需要 id + 标题） */
 const pendingNoteDelete = ref<{ id: number; title: string } | null>(null)
 
@@ -333,10 +336,19 @@ watch(error, (text) => {
   if (text) errorTimer = setTimeout(() => (error.value = ''), 8000)
 })
 
-// 删除确认弹窗文案
+// 删除确认弹窗文案：批注 / 读书笔记 / AI 问答会随外键级联删除，必须逐项写清数量
+function impactText(i: DeleteImpact | null): string {
+  if (!i) return ''
+  const parts: string[] = []
+  if (i.annotations > 0) parts.push(`法条批注 ${i.annotations} 条`)
+  if (i.bookNotes > 0) parts.push(`读书笔记 ${i.bookNotes} 条`)
+  if (i.aiMessages > 0) parts.push(`AI 问答 ${i.aiMessages} 条`)
+  return parts.length ? `同时会删除：${parts.join('、')}。` : ''
+}
+
 const deleteMessage = computed(() =>
   pendingDelete.value
-    ? `确定删除《${pendingDelete.value.title}》？其条文/段落与全文索引将一并移除，此操作不可撤销。`
+    ? `确定删除《${pendingDelete.value.title}》？其条文/段落与全文索引将一并移除。${impactText(deleteImpact.value)}此操作不可撤销。`
     : ''
 )
 
@@ -1187,8 +1199,21 @@ const topSelectedId = computed(() => {
   return h && h.kind === 'article' ? h.id : -1
 })
 
-function askDelete(doc: DocumentRow): void {
+async function askDelete(doc: DocumentRow): Promise<void> {
   pendingDelete.value = doc
+  deleteImpact.value = null
+  try {
+    const impact = await window.lexbench.library.getDeleteImpact(doc.id)
+    // 统计期间用户可能已取消或换了目标
+    if (pendingDelete.value?.id === doc.id) deleteImpact.value = impact
+  } catch {
+    /* 统计失败不影响删除，只是不显示连带数量 */
+  }
+}
+
+function closeDeleteDialog(): void {
+  pendingDelete.value = null
+  deleteImpact.value = null
 }
 
 async function confirmDelete(): Promise<void> {
@@ -1204,7 +1229,7 @@ async function confirmDelete(): Promise<void> {
   } catch (e) {
     showError(e)
   } finally {
-    pendingDelete.value = null
+    closeDeleteDialog()
   }
 }
 
@@ -1305,15 +1330,19 @@ onMounted(() => {
   // 关窗前把编辑器防抖窗口里的内容落盘（主进程拦 close，等这条回执）
   unsubBeforeClose = window.lexbench.app.onBeforeClose(() => {
     void (async () => {
+      let ok = true
       try {
-        await outlineEditorRef.value?.flush()
-        await workspaceRef.value?.flush()
+        // 依次冲刷（保持原有顺序，避免两个编辑器同时写）：返回 false 表示仍有脏数据。
+        // 失败时交给主进程弹确认，不能静默关窗吞掉防抖窗口里的最后一笔。
+        const editorOk = (await outlineEditorRef.value?.flush()) !== false
+        const workspaceOk = (await workspaceRef.value?.flush()) !== false
         // 阅读进度等「防抖 + 卸载兜底」的组件由各自登记，窗口销毁时 onBeforeUnmount 不会执行
         await runBeforeCloseFlushes()
+        ok = editorOk && workspaceOk
       } catch {
-        // 落盘失败不阻断关窗（错误已在编辑器内提示）
+        ok = false
       }
-      window.lexbench.app.flushDone()
+      window.lexbench.app.flushDone(ok)
     })()
   })
   // 首屏数据与首启指引都等列表就绪后再决定（预置法条的一次性提示也在 initOnboarding 里）
@@ -1712,7 +1741,7 @@ onBeforeUnmount(() => {
       danger
       confirm-text="删除"
       @confirm="confirmDelete"
-      @cancel="pendingDelete = null"
+      @cancel="closeDeleteDialog"
     />
 
     <ConfirmModal

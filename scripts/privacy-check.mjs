@@ -7,14 +7,17 @@
 // 所以用户专属的敏感词放在**不提交**的 scripts/.privacy-terms（每行一个，已 gitignore）。
 // 只有用户本机才会跑这部分；CI 跑通用规则（手机号/邮箱/密钥/内嵌图片/本机路径）。
 //
-// 扫描范围（2026-11-12 加固）：
-//   ① 文件内容 —— 手机号 / 邮箱 / 密钥 / base64 图片 / 本机绝对路径 / 专属敏感词
+// 扫描范围（2026-11-18 加固）：
+//   ① 文件内容 —— 手机号 / 身份证号 / 邮箱 / 密钥 / base64 图片 / 任意盘符本机路径 / 专属敏感词
 //   ② 文件路径与文件名 —— 同一套规则（防止「张三笔记.md」这种只有名字在路径上的漏网）
 //   ③ 未登记的文件类型 —— 仓库里出现 .docx/.pdf/图片/压缩包等，除白名单目录外一律报警
-//      （这些文件内容扫不了，只能靠「不该出现就别出现」把关）
+//   ④ 无后缀 / 点文件 —— .env、.npmrc、id_rsa 这类同样按文本扫描（此前完全漏扫）
+//   ⑤ Office 文档内部 —— .docx/.xlsx/.pptx 的 XML 部件也要扫
+//      （模板路径会把用户名与本机绝对路径一起带进发布包，而文件类型白名单放行后毫无察觉）
 import { readdir, readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { extname, join, relative, sep } from 'node:path'
+import { basename, extname, join, relative, sep } from 'node:path'
+import AdmZip from 'adm-zip'
 
 const ROOT = process.cwd()
 const SKIP_DIRS = new Set([
@@ -28,10 +31,14 @@ const SKIP_DIRS = new Set([
   'pdf-assets' // pdfjs 解码资源（postinstall 从 node_modules 生成；第三方文件里的长数字常量会误报手机号）
 ])
 const SKIP_FILES = new Set(['package-lock.json'])
+/** 按相对路径跳过：本机敏感词表本身含有真实姓名，绝不能反过来把它自己报出来 */
+const SKIP_PATHS = new Set(['scripts/.privacy-terms'])
 const SCAN_EXT = [
   '.ts', '.tsx', '.vue', '.mjs', '.cjs', '.js', '.json', '.yml', '.yaml',
   '.md', '.html', '.css', '.txt', '.py', '.sh', '.ps1', '.bat', '.cmd'
 ]
+/** 需要拆开扫 XML 部件的 Office 格式（OOXML = zip） */
+const OFFICE_ZIP_EXT = ['.docx', '.xlsx', '.pptx']
 
 /** 内容无法扫描、也不该随意进仓库的文件类型 */
 const BINARY_EXT = [
@@ -51,14 +58,32 @@ const BINARY_ALLOW_DIRS = [
  * - 13900001111 / 13812345678：自测脚本与单测里编造的号码
  * - example.com / example.org：RFC 2606 保留域名，永远不会属于真实的人
  */
-const ALLOW = ['13900001111', '13812345678', 'example.com', 'example.org']
+const ALLOW = [
+  '13900001111',
+  '13812345678',
+  'example.com',
+  'example.org',
+  // 自测脚本用的共享目录（Windows 的 Public 不属于任何个人）
+  'Users\\\\Public',
+  'Users/Public'
+]
 
 const RULES = [
   { name: '手机号', re: /1[3-9]\d{9}/g },
+  // 18 位身份证：出生日期段校验，结尾可为 X；前后不能紧邻数字
+  {
+    name: '身份证号',
+    re: /(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)/g
+  },
   { name: '邮箱', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g },
   { name: '密钥/token', re: /(?:sk-[A-Za-z0-9]{16,}|gho_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})/g },
   { name: '内嵌图片(base64)', re: /data:image\/[a-z]+;base64,[A-Za-z0-9+/]{60,}/g },
-  { name: '本机绝对路径', re: /[A-Za-z]:[\\/]Users[\\/][^\\/\s"']+/g }
+  // 任意盘符的本机路径（原来只认 Users 目录的 C 盘路径，其它盘符与转义形式全漏），
+  // 前面的字符类用于排除 URL 的协议前缀
+  {
+    name: '本机绝对路径',
+    re: /(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]{1,2}[^\s"'<>|*?]{1,}/g
+  }
 ]
 
 /** 读取本机专属敏感词（不提交）；不存在时返回空数组 */
@@ -88,7 +113,9 @@ async function walk(dir, out = []) {
 }
 
 function isAllowed(hit) {
-  return ALLOW.some((a) => hit.includes(a))
+  if (ALLOW.some((a) => hit.includes(a))) return true
+  // Windows 共享目录不属于任何个人；源码里可能写成多重转义
+  return /Users\\+Public|Users\/Public/.test(hit)
 }
 
 /** 收集一行里所有命中（正则需带 g） */
@@ -105,6 +132,46 @@ function matches(rule, text) {
 
 const clip = (v) => (v.length > 60 ? `${v.slice(0, 60)}…` : v)
 
+/** 可能是文本的文件：已知扩展名 / 无扩展名 / 点文件（.env、.npmrc、id_rsa） */
+function isTextCandidate(rel) {
+  const ext = extname(rel).toLowerCase()
+  if (SCAN_EXT.includes(ext)) return true
+  if (!ext) return true
+  return basename(rel).startsWith('.')
+}
+
+/** Office（OOXML）内部 XML 部件扫描：模板路径 / 用户名常藏在这里 */
+function scanOfficeZip(file, rel, rules) {
+  const out = []
+  let zip
+  try {
+    zip = new AdmZip(file)
+  } catch {
+    return out
+  }
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) continue
+    if (!/\.(xml|rels)$/i.test(entry.entryName)) continue
+    let text
+    try {
+      text = entry.getData().toString('utf8')
+    } catch {
+      continue
+    }
+    for (const rule of rules) {
+      for (const value of matches(rule, text)) {
+        out.push({
+          file: `${rel}#${entry.entryName}`,
+          line: 0,
+          rule: `${rule.name}（文档内）`,
+          value: clip(value)
+        })
+      }
+    }
+  }
+  return out
+}
+
 async function main() {
   const terms = await loadLocalTerms()
   const rules = [...RULES]
@@ -119,6 +186,7 @@ async function main() {
 
   for (const file of files) {
     const rel = toPosix(relative(ROOT, file))
+    if (SKIP_PATHS.has(rel)) continue
 
     // ② 路径 / 文件名扫描
     for (const rule of rules) {
@@ -138,16 +206,26 @@ async function main() {
       })
     }
 
-    // ① 内容扫描（只扫文本类型）
-    if (!SCAN_EXT.some((e) => rel.endsWith(e))) continue
-    textFiles++
+    // ⑤ Office 文档内部（白名单目录也要扫内容）
+    if (OFFICE_ZIP_EXT.includes(ext)) {
+      textFiles++
+      hits.push(...scanOfficeZip(file, rel, rules))
+      continue
+    }
 
-    let text
+    // ①④ 内容扫描：已知文本后缀 + 无后缀/点文件（.env、.npmrc、id_rsa）
+    if (!isTextCandidate(rel)) continue
+    let buf
     try {
-      text = await readFile(file, 'utf-8')
+      buf = await readFile(file)
     } catch {
       continue
     }
+    // 无后缀文件可能是二进制：前 8KB 出现 NUL 就当二进制跳过
+    if (buf.subarray(0, 8000).includes(0)) continue
+    textFiles++
+
+    const text = buf.toString('utf8')
     const lines = text.split(/\r?\n/)
     for (const rule of rules) {
       for (let i = 0; i < lines.length; i++) {

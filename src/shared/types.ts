@@ -24,6 +24,16 @@ export interface DocumentRow {
   group_id: number | null
 }
 
+/** 删除文档的连带影响（确认框必须如实告知；这些数据会随外键级联删除） */
+export interface DeleteImpact {
+  /** 该文档条文上的批注数 */
+  annotations: number
+  /** 该书上的读书笔记数 */
+  bookNotes: number
+  /** 挂在该文档条文上的 AI 问答数 */
+  aiMessages: number
+}
+
 /** 用户自建分类文件夹（每个文档类型下各自一套；名称可自定义） */
 export interface DocGroupRow {
   id: number

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
 import { applyNavigationGuards } from './windowGuards'
@@ -9,7 +9,7 @@ import { registerOutlinesIpc } from './outlines'
 import { registerParallelViewsIpc } from './parallelViews'
 import { registerSearchIpc } from './search'
 import { registerReadingIpc } from './reading'
-import { registerBackupIpc } from './backup'
+import { cleanupStaleTempDirs, registerBackupIpc } from './backup'
 import { applySeedIfNeeded } from './seed'
 import { reindexFtsIfNeeded } from './reindex'
 import { repairSubbranchIfNeeded } from './repairSubbranch'
@@ -25,6 +25,8 @@ let mainWindow: BrowserWindow | null = null
 
 /** 已答完「关窗前冲刷」的窗口：再收到 close 就直接放行，避免无限拦 */
 const closeFlushAcked = new WeakSet<BrowserWindow>()
+/** 关窗兜底计时器：渲染层回执后必须清掉，否则用户点「取消」也会被 2s 后强关 */
+const closeTimers = new WeakMap<BrowserWindow, NodeJS.Timeout>()
 
 /** 用户在「还没建出窗口」期间又启动了一次：窗口一出来就聚焦（首启预置法条可能数十秒） */
 let showWhenReady = false
@@ -33,11 +35,13 @@ let showWhenReady = false
  *  兜底：渲染层卡死/崩溃时 2s 后强制放行，不能变成关不掉 */
 function askRendererFlush(win: BrowserWindow): void {
   win.webContents.send('app:before-close')
-  setTimeout(() => {
+  const timer = setTimeout(() => {
+    closeTimers.delete(win)
     if (win.isDestroyed() || closeFlushAcked.has(win)) return
     closeFlushAcked.add(win)
     win.close()
   }, 2000)
+  closeTimers.set(win, timer)
 }
 
 /** 唯一的主窗口（单窗口 + 左侧导航；资料库型应用，无标签页） */
@@ -128,7 +132,9 @@ function createWindow(): void {
     menu.popup({ window: win })
   })
 
-  if (process.env['ELECTRON_RENDERER_URL']) {
+  // 打包版只允许加载自带页面：环境变量可被同用户进程写入，而 loadURL 不触发 will-navigate，
+  // 一旦漏了 isPackaged 门控，外部页面就能带着完整 preload 运行。
+  if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
     void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
@@ -184,10 +190,28 @@ ipcMain.on('win:close', (e) => {
   BrowserWindow.fromWebContents(e.sender)?.close()
 })
 
-// 渲染层答「已落盘」：主进程据此真正关窗（拿不到窗口就当已关，别挂着）
-ipcMain.on('app:flush-done', (e) => {
+// 渲染层答「冲刷结果」：成功才直接关；失败先让用户确认，避免静默丢最后一笔
+ipcMain.on('app:flush-done', (e, ok?: unknown) => {
   const w = BrowserWindow.fromWebContents(e.sender)
   if (!w || w.isDestroyed()) return
+  const timer = closeTimers.get(w)
+  if (timer) {
+    clearTimeout(timer)
+    closeTimers.delete(w)
+  }
+  if (ok === false) {
+    const choice = dialog.showMessageBoxSync(w, {
+      type: 'warning',
+      buttons: ['仍然退出', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      title: '有内容未保存',
+      message: '有内容没有保存成功，现在退出会丢失这些内容。',
+      detail: '建议选择「取消」返回应用，确认保存成功后再关闭。'
+    })
+    if (choice !== 0) return // 不关窗：下次 close 会重新走一遍冲刷
+  }
   closeFlushAcked.add(w)
   w.close()
 })
@@ -201,6 +225,8 @@ ipcMain.handle('app:relaunch', () => {
 app.whenReady().then(async () => {
   // 没拿到单实例锁的进程正在退出，不要再跑迁移/建窗
   if (!hasSingleInstanceLock) return
+  // 清理上次异常退出留下的数据包快照（含 AI 密钥）
+  cleanupStaleTempDirs()
   // 显式初始化（跑迁移）：此前由 workspace 注册顺带调用，专题切除后必须自己保证
   initDb()
   registerLibraryIpc()

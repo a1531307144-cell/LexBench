@@ -13,14 +13,25 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
+  mkdtempSync,
+  readdirSync,
   renameSync,
-  rmSync
+  rmSync,
+  statfsSync,
+  statSync
 } from 'node:fs'
 import { join } from 'node:path'
 import type { BackupImportOutcome } from '../shared/ipc'
 import type { ExportResult } from '../shared/types'
-import { closeDb, getDb, initDb, verifyDbMigratable } from './db'
+import {
+  MAX_MIGRATION_VERSION,
+  bumpDbEpoch,
+  closeDb,
+  getDb,
+  initDb,
+  verifyDbMigratable
+} from './db'
+import { assertAppSender } from './ipcGuard'
 
 // ---------- 内部工具 ----------
 
@@ -49,14 +60,36 @@ function attachmentsDirPath(): string {
   return join(app.getPath('userData'), 'attachments')
 }
 
-/** app.getPath('temp') 下的一次性工作目录（用完由调用方在 finally 里清理） */
+/**
+ * app.getPath('temp') 下的一次性工作目录（用完由调用方在 finally 里清理）。
+ * 用 mkdtempSync（O_EXCL 语义）而不是时间戳+随机数：名字不可预测，也不会复用别人预建的目录。
+ */
 function makeTempDir(prefix: string): string {
-  const dir = join(
-    app.getPath('temp'),
-    `lexbench-${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
-  )
-  mkdirSync(dir, { recursive: true })
-  return dir
+  return mkdtempSync(join(app.getPath('temp'), `lexbench-${prefix}-`))
+}
+
+/**
+ * 启动时清理一天前的残留工作目录：导出快照里含 AI 密钥，进程被杀/断电时 finally 不会执行，
+ * 快照会一直留在 %TEMP%。只动本应用命名前缀且超过一天的目录，避免误删正在运行的任务。
+ */
+export function cleanupStaleTempDirs(): void {
+  const root = app.getPath('temp')
+  const DAY = 24 * 60 * 60 * 1000
+  try {
+    for (const name of readdirSync(root)) {
+      if (!/^lexbench-(export|import)-/.test(name)) continue
+      const full = join(root, name)
+      try {
+        if (Date.now() - statSync(full).mtimeMs > DAY) {
+          rmSync(full, { recursive: true, force: true })
+        }
+      } catch {
+        /* 单个目录清理失败不影响启动 */
+      }
+    }
+  } catch {
+    /* 读不到临时目录不影响启动 */
+  }
 }
 
 /**
@@ -109,26 +142,77 @@ function doExport(outPath: string): ExportResult {
 
 // ---------- 导入 ----------
 
-/** 解包到临时目录并做静态校验：manifest 存在且 app==='lexbench'、包内库文件存在；返回包内库路径 */
+/**
+ * 解包上限：防止一个「声明解压后几十 GB」的 zip 写满磁盘。
+ * 阈值要放得下真实的资料库（几千份原件 + 附件），不能把正常数据包误拒；
+ * 另外再按本机剩余空间卡一道，恶意包最多也只能占到可用空间的 80%。
+ */
+const MAX_ZIP_ENTRIES = 50_000
+const MAX_ZIP_ENTRY_BYTES = 4 * 1024 * 1024 * 1024 // 单条目 4GB（超大扫描件）
+const MAX_ZIP_TOTAL_BYTES = 20 * 1024 * 1024 * 1024 // 整包 20GB
+
+/**
+ * 解包到临时目录并做静态校验：manifest 存在且 app==='lexbench'、包内库文件存在；返回包内库路径。
+ *
+ * 顺序很重要：**先只读中央目录做体积/条目预检 + 校验归属，再整包解压**。
+ * 旧实现先把任意 zip 完整解开再判断归属，别的软件的包也会先占满磁盘。
+ */
 function unpackAndValidate(zipPath: string, tmpDir: string): string {
+  let zip: AdmZip
   try {
-    new AdmZip(zipPath).extractAllTo(tmpDir, true)
+    zip = new AdmZip(zipPath)
   } catch {
     throw new Error('数据包无法读取（不是有效的 zip 文件）')
   }
 
-  // manifest.json 必须存在且归属本软件
-  const manifestPath = join(tmpDir, 'manifest.json')
-  if (!existsSync(manifestPath)) throw new Error('不是本软件的数据包')
+  const entries = zip.getEntries()
+  if (entries.length === 0) throw new Error('数据包为空')
+  if (entries.length > MAX_ZIP_ENTRIES) throw new Error('数据包条目过多，已拒绝导入')
+
+  let total = 0
+  for (const entry of entries) {
+    const name = entry.entryName.replace(/\\/g, '/')
+    if (name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').includes('..')) {
+      throw new Error('数据包包含非法路径，已拒绝导入')
+    }
+    const size = Number(entry.header.size ?? 0)
+    if (!Number.isFinite(size) || size < 0 || size > MAX_ZIP_ENTRY_BYTES) {
+      throw new Error('数据包包含异常大小的文件，已拒绝导入')
+    }
+    total += size
+    if (total > MAX_ZIP_TOTAL_BYTES) throw new Error('数据包解压后体积过大，已拒绝导入')
+  }
+
+  // 再按本机可用空间卡一道：恶意包不能把磁盘直接写满
+  let free = 0
+  try {
+    const s = statfsSync(tmpDir)
+    free = Number(s.bavail) * Number(s.bsize)
+  } catch {
+    /* 拿不到剩余空间就只用上面的绝对上限 */
+  }
+  if (free > 0 && total > free * 0.8) {
+    throw new Error('数据包解压后体积超过本机可用空间，已拒绝导入')
+  }
+
+  // 归属校验在读盘之前：不是本软件的包连解包都不做
+  const manifestEntry = zip.getEntry('manifest.json')
+  if (!manifestEntry) throw new Error('不是本软件的数据包')
   let manifest: DbRow
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as DbRow
+    manifest = JSON.parse(manifestEntry.getData().toString('utf8')) as DbRow
   } catch {
     throw new Error('不是本软件的数据包')
   }
   if (manifest['app'] !== 'lexbench') throw new Error('不是本软件的数据包')
+  if (!zip.getEntry('lexbench.db')) throw new Error('数据包缺少数据库文件')
 
-  // 包内库文件必须存在
+  try {
+    zip.extractAllTo(tmpDir, true)
+  } catch {
+    throw new Error('数据包无法读取（不是有效的 zip 文件）')
+  }
+
   const dbPath = join(tmpDir, 'lexbench.db')
   if (!existsSync(dbPath)) throw new Error('数据包缺少数据库文件')
   return dbPath
@@ -144,6 +228,12 @@ function validatePackagedDb(dbPath: string): void {
     const ver = check.prepare('PRAGMA user_version').get() as DbRow | undefined
     const userVersion = Number(ver?.['user_version'] ?? 0)
     if (!Number.isFinite(userVersion) || userVersion <= 0) throw new Error('数据包版本异常')
+    // 上界：更新版本导出的库，旧版软件不认识它的 schema。放行会覆盖当前库且无法回滚。
+    if (userVersion > MAX_MIGRATION_VERSION) {
+      throw new Error(
+        `该数据包来自更新版本的软件（数据库版本 ${userVersion}，本版最高支持 ${MAX_MIGRATION_VERSION}）：请先升级软件再导入`
+      )
+    }
   } finally {
     if (check) {
       try {
@@ -265,6 +355,8 @@ function swapIn(packDbPath: string, tmpDir: string): void {
 
     // ④ 重开新库（getDb 自动按 user_version 补跑迁移），并验证能查询 documents
     getDb().prepare('SELECT id FROM documents LIMIT 1').get()
+    // 只有真正换装成功才换代：失败的导入（提前 closeDb 后又回滚）不能被长任务误判成换库
+    bumpDbEpoch()
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e)
     const backupHint = join(userData, 'backups')
@@ -303,7 +395,8 @@ export function registerBackupIpc(): void {
   initDb()
 
   // 导出数据包：保存对话框（LexBench备份_YYYY-MM-DD.zip）→ 组包写盘；取消返回 canceled:true
-  ipcMain.handle('backup:exportAll', async (_e): Promise<ExportResult> => {
+  ipcMain.handle('backup:exportAll', async (e): Promise<ExportResult> => {
+    assertAppSender(e)
     const options = {
       title: '导出数据包',
       defaultPath: `LexBench备份_${localNow().slice(0, 10)}.zip`,
@@ -320,7 +413,8 @@ export function registerBackupIpc(): void {
   })
 
   // 导入数据包：选择 zip → 校验 → 自动备份当前数据 → 覆盖换装；needsRestart=true 由渲染层提示重启
-  ipcMain.handle('backup:importAll', async (_e): Promise<BackupImportOutcome> => {
+  ipcMain.handle('backup:importAll', async (e): Promise<BackupImportOutcome> => {
+    assertAppSender(e)
     const options = {
       title: '选择要导入的数据包（导入将覆盖当前数据，导入前会自动备份）',
       properties: ['openFile'] as Array<'openFile'>,
@@ -338,12 +432,16 @@ export function registerBackupIpc(): void {
 
   // 自测专用：跳过对话框按给定路径直接导出/导入（仅开发模式注册，通道名见 preload/index.ts）
   if (!app.isPackaged) {
-    ipcMain.handle('backup:__testExport', (_e, outPath: string): ExportResult =>
-      doExport(String(outPath))
-    )
+    ipcMain.handle('backup:__testExport', (e, outPath: string): ExportResult => {
+      assertAppSender(e)
+      return doExport(String(outPath))
+    })
     ipcMain.handle(
       'backup:__testImport',
-      (_e, zipPath: string): BackupImportOutcome => doImport(String(zipPath))
+      (e, zipPath: string): BackupImportOutcome => {
+        assertAppSender(e)
+        return doImport(String(zipPath))
+      }
     )
   }
 }

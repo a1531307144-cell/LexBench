@@ -9,8 +9,6 @@ import { getDb, getSetting, setSetting } from './db'
 
 /** 索引公式版本；公式变更时 +1，触发一次性全量重建 */
 const FTS_VERSION = '3'
-/** 每批事务行数（控制单事务时长与内存） */
-const BATCH = 500
 
 interface ArticleIndexRow {
   id: number
@@ -49,59 +47,55 @@ export function reindexFtsIfNeeded(): void {
   if (getSetting('fts_version') === FTS_VERSION) return
   try {
     const db = getDb()
-    // 清空旧索引（第一批事务内）；失败则版本号不打标，下次启动从头再来
+    let indexedArticles = 0
+    let indexedChunks = 0
+    // 清空 + 全量回填放进**同一个事务**：中途失败会整体回滚到旧索引，
+    // 不会让本次会话带着「只建了一半」的索引继续跑（表现为部分法条搜不到）。
     tx(db, () => {
       db.exec('DELETE FROM articles_fts')
       db.exec('DELETE FROM chunks_fts')
+
+      const articles = db
+        .prepare(
+          `SELECT a.id, a.article_label, a.article_no, a.branch, a.subbranch, a.chapter, a.section, a.content, d.title
+           FROM articles a JOIN documents d ON d.id = a.document_id
+           ORDER BY a.id`
+        )
+        .all() as unknown as ArticleIndexRow[]
+      const insArticle = db.prepare('INSERT INTO articles_fts(article_id, content) VALUES(?,?)')
+      for (const r of articles) {
+        insArticle.run(
+          r.id,
+          articleFtsText({
+            title: r.title,
+            label: r.article_label,
+            articleNo: r.article_no,
+            branch: r.branch,
+            subbranch: r.subbranch,
+            chapter: r.chapter,
+            section: r.section,
+            content: r.content
+          })
+        )
+      }
+
+      const chunks = db
+        .prepare(
+          `SELECT c.id, c.content, d.title
+           FROM chunks c JOIN documents d ON d.id = c.document_id
+           ORDER BY c.id`
+        )
+        .all() as unknown as ChunkIndexRow[]
+      const insChunk = db.prepare('INSERT INTO chunks_fts(chunk_id, content) VALUES(?,?)')
+      for (const r of chunks) insChunk.run(r.id, chunkFtsText(r.title, r.content))
+
+      setSetting('fts_version', FTS_VERSION)
+      indexedArticles = articles.length
+      indexedChunks = chunks.length
     })
 
-    const articles = db
-      .prepare(
-        `SELECT a.id, a.article_label, a.article_no, a.branch, a.subbranch, a.chapter, a.section, a.content, d.title
-         FROM articles a JOIN documents d ON d.id = a.document_id
-         ORDER BY a.id`
-      )
-      .all() as unknown as ArticleIndexRow[]
-    const insArticle = db.prepare('INSERT INTO articles_fts(article_id, content) VALUES(?,?)')
-    for (let i = 0; i < articles.length; i += BATCH) {
-      const batch = articles.slice(i, i + BATCH)
-      tx(db, () => {
-        for (const r of batch) {
-          insArticle.run(
-            r.id,
-            articleFtsText({
-              title: r.title,
-              label: r.article_label,
-              articleNo: r.article_no,
-              branch: r.branch,
-              subbranch: r.subbranch,
-              chapter: r.chapter,
-              section: r.section,
-              content: r.content
-            })
-          )
-        }
-      })
-    }
-
-    const chunks = db
-      .prepare(
-        `SELECT c.id, c.content, d.title
-         FROM chunks c JOIN documents d ON d.id = c.document_id
-         ORDER BY c.id`
-      )
-      .all() as unknown as ChunkIndexRow[]
-    const insChunk = db.prepare('INSERT INTO chunks_fts(chunk_id, content) VALUES(?,?)')
-    for (let i = 0; i < chunks.length; i += BATCH) {
-      const batch = chunks.slice(i, i + BATCH)
-      tx(db, () => {
-        for (const r of batch) insChunk.run(r.id, chunkFtsText(r.title, r.content))
-      })
-    }
-
-    setSetting('fts_version', FTS_VERSION)
-    if (articles.length + chunks.length > 0) {
-      console.log(`全文索引已按新公式重建：${articles.length} 条法条 + ${chunks.length} 段`)
+    if (indexedArticles + indexedChunks > 0) {
+      console.log(`全文索引已按新公式重建：${indexedArticles} 条法条 + ${indexedChunks} 段`)
     }
   } catch (e) {
     console.warn('[reindex] FTS 重建失败，下次启动重试：', e)

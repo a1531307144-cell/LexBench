@@ -79,6 +79,10 @@ export function registerParallelViewsIpc(): void {
       const id = asNoteId(noteId)
       const db = getDb()
       if (!db.prepare('SELECT 1 FROM outlines WHERE id = ?').get(id)) throw new Error('笔记不存在')
+      // 布局是纯 JSON，正常只有几 KB；设上限防止异常调用把库撑爆
+      if (typeof layout === 'string' && layout.length > 2 * 1024 * 1024) {
+        throw new Error('布局数据过大')
+      }
       let parsed: unknown = layout
       if (typeof layout === 'string') {
         try {

@@ -4,13 +4,15 @@
 //       阅读进度不建表：settings 表 key 'reading_progress:<docId>'，值为 {paraIndex, updatedAt} JSON
 
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { extname, join, resolve, sep } from 'node:path'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import type { BookNoteInput } from '../shared/ipc'
 import type { BookNoteRow, ExportFormat, ExportResult, ReadingProgress } from '../shared/types'
 import { getDb, getSetting, initDb, setSetting } from './db'
+import { assertAppSender } from './ipcGuard'
 
 /** pdfjs 只在这个 IPC 用到：按需加载，避免启动时拖慢 */
 type PdfjsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs')
@@ -32,6 +34,46 @@ function archivedFilePath(hash: unknown, ext: unknown): string {
   const full = resolve(filesRoot, `${safeHash}${safeExt}`)
   if (!full.startsWith(filesRoot + sep)) throw new Error('文件路径异常')
   return full
+}
+
+/** 原件兜底路径的校验结果缓存（同一路径/大小/mtime 只哈希一次） */
+const originalPathCache = new Map<string, { size: number; mtimeMs: number; ok: boolean }>()
+
+/**
+ * 归档副本缺失时用数据库里的 `original_path` 兜底——但它是外部可控的（数据包可整体换库），
+ * 直接读就是任意文件读取。这里必须用内容哈希证明「这个文件确实是当初导入的那一份」。
+ */
+function verifiedOriginalPath(originalPath: unknown, fileHash: unknown): string {
+  const p = String(originalPath ?? '')
+  const missing = (): Error => new Error('找不到 PDF 原件（文件可能已被移动或删除）')
+  if (!p || extname(p).toLowerCase() !== '.pdf') throw missing()
+
+  let st
+  try {
+    st = statSync(p)
+  } catch {
+    throw missing()
+  }
+  if (!st.isFile()) throw missing()
+
+  const cached = originalPathCache.get(p)
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+    if (!cached.ok) throw new Error('原件与归档记录不一致，已拒绝读取')
+    return p
+  }
+
+  const want = String(fileHash ?? '').trim().toLowerCase()
+  let ok = false
+  if (want) {
+    try {
+      ok = createHash('sha256').update(readFileSync(p)).digest('hex') === want
+    } catch {
+      ok = false
+    }
+  }
+  originalPathCache.set(p, { size: st.size, mtimeMs: st.mtimeMs, ok })
+  if (!ok) throw new Error('原件与归档记录不一致，已拒绝读取')
+  return p
 }
 
 async function pdfPageCount(filePath: string): Promise<number> {
@@ -346,22 +388,9 @@ export function registerReadingIpc(): void {
     )
   }
 
-  // PDF 文件路径（优先归档副本）——渲染层用内置 PDF 阅读器加载 file:// 地址
-  ipcMain.handle('reading:getPdfPath', (_e, documentId: number): string => {
-    const db = getDb()
-    const row = db
-      .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
-      .get(Number(documentId)) as DbRow | undefined
-    if (!row) throw new Error('文档不存在')
-    const archived = archivedFilePath(row['file_hash'], row['file_ext'])
-    if (existsSync(archived)) return archived
-    const original = String(row['original_path'] || '')
-    if (original && existsSync(original)) return original
-    throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
-  })
-
   // PDF 真实页数：文字版 PDF 的 chunk 数 ≠ 页数，自定义 PDF 顶栏的「共 N 页」用这个
-  ipcMain.handle('reading:getPdfPageCount', async (_e, documentId: number): Promise<number> => {
+  ipcMain.handle('reading:getPdfPageCount', async (e, documentId: number): Promise<number> => {
+    assertAppSender(e)
     const id = Number(documentId)
     const cached = pdfPageCountCache.get(id)
     if (cached) return cached
@@ -371,26 +400,27 @@ export function registerReadingIpc(): void {
       .get(Number(documentId)) as DbRow | undefined
     if (!row) throw new Error('文档不存在')
     const archived = archivedFilePath(row['file_hash'], row['file_ext'])
-    const original = String(row['original_path'] || '')
-    const path = existsSync(archived) ? archived : original || archived
-    if (!existsSync(path)) throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
+    const path = existsSync(archived)
+      ? archived
+      : verifiedOriginalPath(row['original_path'], row['file_hash'])
     const count = await pdfPageCount(path)
     pdfPageCountCache.set(id, count)
     return count
   })
 
   // 读取 PDF 原件（优先归档副本，原件路径失效也能读），供渲染层 pdfjs 渲染页面
-  ipcMain.handle('reading:getPdfData', (_e, documentId: number): ArrayBuffer => {
+  ipcMain.handle('reading:getPdfData', (e, documentId: number): ArrayBuffer => {
+    assertAppSender(e)
     const db = getDb()
     const row = db
       .prepare('SELECT file_hash, file_ext, original_path FROM documents WHERE id=?')
       .get(Number(documentId)) as DbRow | undefined
     if (!row) throw new Error('文档不存在')
     const archived = archivedFilePath(row['file_hash'], row['file_ext'])
-    const original = String(row['original_path'] || '')
-    // 归档副本优先；原件路径兜底时必须真实存在（不存在就给出明确提示，而不是抛 ENOENT 原文）
-    const path = existsSync(archived) ? archived : original
-    if (!path || !existsSync(path)) throw new Error('找不到 PDF 原件（文件可能已被移动或删除）')
+    // 归档副本优先；原件兜底必须通过内容哈希校验（防数据包伪造 original_path 读任意文件）
+    const path = existsSync(archived)
+      ? archived
+      : verifiedOriginalPath(row['original_path'], row['file_hash'])
     const buf = readFileSync(path)
     // 拷出精确的 ArrayBuffer（Buffer 底层可能带池化偏移，直接给 buffer 会多发字节）
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer

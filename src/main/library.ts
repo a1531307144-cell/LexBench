@@ -5,7 +5,7 @@
 
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash } from 'node:crypto'
-import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import mammoth from 'mammoth'
@@ -16,6 +16,7 @@ import type {
   ArticleNeighbors,
   ArticleRow,
   ChunkRow,
+  DeleteImpact,
   DocStatus,
   DocType,
   DocumentDetail,
@@ -27,9 +28,12 @@ import { detectDocType, splitStatute } from '@shared/splitter'
 import type { SplitArticle } from '@shared/splitter'
 import { articleFtsText, chunkFtsText } from '@shared/ftsContent'
 import { getDb, initDb } from './db'
+import { assertAppSender } from './ipcGuard'
 
 /** 案例等非法规文档的分块目标字数（对应 legacy chunk_paragraphs target=500） */
 const CHUNK_TARGET = 500
+/** 单个导入文件上限：解析阶段会整份读入内存，超大文件会直接拖垮主进程 */
+const MAX_DOC_BYTES = 300 * 1024 * 1024
 /** 法规切分后平均条文长度低于该值时标记 needs_review（legacy _MIN_AVG_ARTICLE_LEN） */
 const MIN_AVG_ARTICLE_LEN = 20
 /** PDF 全部文本合计少于该字符数判定为扫描版（无文本层） */
@@ -284,6 +288,15 @@ async function importOne(
     message
   })
 
+  // ⓪ 大小预检：解析会整份读入内存（PDF 甚至读 2-3 份），先挡住超大文件
+  try {
+    if (statSync(filePath).size > MAX_DOC_BYTES) {
+      return fail('文件超过 300MB 上限，请先拆分或压缩后再导入')
+    }
+  } catch {
+    return fail('无法读取文件（可能已被移动或删除）')
+  }
+
   // ①② 解析阶段（未知后缀 / 空文档）
   // PDF 先轻探测（页数 + 前 3 页文本量）：书籍型 PDF 走快路径——不逐页提取文字
   // （真实书籍逐页提取可达分钟级且无进度反馈）；页面模式按需渲染，文字提取留给 OCR 阶段
@@ -502,8 +515,33 @@ export function registerLibraryIpc(): void {
     return { ...doc, articles, chunks }
   })
 
+  // 删除前的影响面：批注 / 读书笔记 / AI 问答都会随外键级联删除，确认框必须如实告知
+  ipcMain.handle(
+    'library:getDeleteImpact',
+    (_e, id: number): DeleteImpact => {
+      const db = getDb()
+      const num = (sql: string): number => {
+        const row = db.prepare(sql).get(Number(id)) as { c?: number } | undefined
+        return Number(row?.c ?? 0)
+      }
+      return {
+        annotations: num(
+          `SELECT COUNT(*) AS c FROM statute_annotations an
+             JOIN articles a ON a.id = an.article_id
+            WHERE a.document_id = ?`
+        ),
+        bookNotes: num('SELECT COUNT(*) AS c FROM book_notes WHERE document_id = ?'),
+        aiMessages: num(
+          `SELECT COUNT(*) AS c FROM ai_messages
+            WHERE article_id IN (SELECT id FROM articles WHERE document_id = ?)`
+        )
+      }
+    }
+  )
+
   // 删除文档：FTS 行不随外键级联，必须先按子查询手动删，再删 articles/chunks/documents
-  ipcMain.handle('library:deleteDocument', (_e, id: number): void => {
+  ipcMain.handle('library:deleteDocument', (e, id: number): void => {
+    assertAppSender(e)
     const db = getDb()
     const doc = db.prepare('SELECT id FROM documents WHERE id=?').get(id)
     if (!doc) throw new Error('文档不存在')
@@ -534,11 +572,12 @@ export function registerLibraryIpc(): void {
   ipcMain.handle(
     'library:importDocuments',
     async (
-      _e,
+      e,
       paths: string[],
       category: string,
       typeChoice: ImportTypeChoice
     ): Promise<ImportResultItem[]> => {
+      assertAppSender(e)
       const list = Array.isArray(paths) ? paths : []
       const cat = typeof category === 'string' ? category : ''
       const choice: ImportTypeChoice = (
@@ -615,7 +654,8 @@ export function registerLibraryIpc(): void {
 
   // 条文修正：保存并重建该条的 FTS 索引行（删旧行 → 按完整公式重插；
   // 必须 JOIN documents 取标题，否则该行的标题分词会丢）
-  ipcMain.handle('library:updateArticle', (_e, id: number, rawContent: string): void => {
+  ipcMain.handle('library:updateArticle', (e, id: number, rawContent: string): void => {
+    assertAppSender(e)
     const content = String(rawContent ?? '').trim()
     if (!content) throw new Error('内容为空')
     const db = getDb()

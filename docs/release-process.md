@@ -46,6 +46,9 @@ npm run preflight -- --no-gate   # 只看版本一致性与该跑哪几套自测
 | 中 | 动了主进程 / preload / shared / composables | `core` + `notes` + 受影响套 | 一次定向复核 |
 | 高 | 数据持久化 / 迁移 / 保存链 / 多窗并发 / 启动流程，或改动 > 25 个文件 | 全部 9 套 | 定向复核 + dev 实测重点项 |
 
+> 打包配置（`electron-builder.yml` / `package.json` / 依赖锁 / `seed/` / `build/`）改动按**中风险**起算。
+> CDP 套件测不到安装包内容，发版前必须本地跑一次 `npm run dist` 并核对 asar 与 `resources/seed`。
+
 定向复核只喂 `git diff <上个标签>..HEAD`，固定看这几类：
 
 - 保存 / 冲刷时序（`save` 与 `get` 的先后、卸载钩子、防抖窗口）
@@ -66,11 +69,14 @@ npm run preflight -- --no-gate   # 只看版本一致性与该跑哪几套自测
 
 ## 4. 隐私闸门
 
-`node scripts/privacy-check.mjs` 扫三层：
+`node scripts/privacy-check.mjs` 扫五层：
 
-1. **文件内容**：手机号 / 邮箱 / 密钥 / base64 图片 / 本机绝对路径 / 本机专属敏感词；
+1. **文件内容**：手机号 / 身份证号 / 邮箱 / 密钥 / base64 图片 / 任意盘符本机路径 / 本机专属敏感词；
 2. **路径与文件名**：同一套规则（防止真实姓名只出现在文件名里）；
-3. **未登记文件类型**：`.docx` / `.pdf` / 图片 / 压缩包等，除 `seed/`、`docs/screenshots/`、`build/` 外一律报警。
+3. **未登记文件类型**：`.docx` / `.pdf` / 图片 / 压缩包等，除 `seed/`、`docs/screenshots/`、`build/` 外一律报警；
+4. **无后缀 / 点文件**：`.env`、`.npmrc`、`id_rsa` 这类此前完全漏扫，现在按文本扫描（含二进制探测）；
+5. **Office 文档内部**：`.docx` / `.xlsx` / `.pptx` 的 XML 部件也要扫——模板路径会把用户名与本机
+   绝对路径一起带进发布包，而文件类型白名单放行后毫无察觉。
 
 本机专属敏感词放在**不提交**的 `scripts/.privacy-terms`；CI 只能跑通用规则，所以**本机这一跑不可省**。
 

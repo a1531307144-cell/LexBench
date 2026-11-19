@@ -27,11 +27,22 @@ const warn = (msg) => console.log(`  ! ${msg}`)
 
 function git(cmd, { silent = false } = {}) {
   try {
-    return execSync(`git ${cmd}`, { cwd: ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    return execSync(`git ${cmd}`, {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15_000
+    }).trim()
   } catch (e) {
     if (!silent) throw e
     return ''
   }
+}
+
+/** 版本号必须是完整匹配：v0.9.1 不能被 v0.9.14 误判为一致 */
+function hasExactVersion(text, v) {
+  const esc = v.replace(/\./g, '\\.')
+  return new RegExp(`v${esc}(?![0-9]|\\.\\d)`).test(text)
 }
 
 const read = (p) => readFileSync(resolve(ROOT, p), 'utf-8')
@@ -54,7 +65,7 @@ if (new RegExp(`^##\\s*\\[${ver.replace(/\./g, '\\.')}\\]`, 'm').test(changelog)
 
 if (!existsSync(resolve(ROOT, 'RELEASE_NOTES.md'))) {
   fail('缺少 RELEASE_NOTES.md（发布说明的唯一来源）')
-} else if (read('RELEASE_NOTES.md').includes(`v${ver}`)) {
+} else if (hasExactVersion(read('RELEASE_NOTES.md'), ver)) {
   ok(`RELEASE_NOTES.md 版本号匹配 v${ver}`)
 } else {
   fail(`RELEASE_NOTES.md 里找不到 v${ver}（很可能忘了更新）`)
@@ -95,6 +106,16 @@ for (const f of lines(git('ls-files --others --exclude-standard', { silent: true
 const files = [...changed].map((f) => f.split('\\').join('/'))
 // 风险与自测只由应用代码决定；文档 / 脚本 / 工作流改动不该触发 CDP 套件
 const srcFiles = files.filter((f) => f.startsWith('src/'))
+// 但打包 / 依赖 / 随包数据改动会改变「用户拿到的安装包」，必须按中风险以上对待
+const CONFIG_RE = [
+  /^electron-builder\.yml$/,
+  /^electron\.vite\.config\.ts$/,
+  /^package\.json$/,
+  /^package-lock\.json$/,
+  /^seed\//,
+  /^build\//
+]
+const configFiles = files.filter((f) => CONFIG_RE.some((re) => re.test(f)))
 if (lastTag) console.log(`  自 ${lastTag} 以来改动 ${files.length} 个文件（其中 src/ ${srcFiles.length} 个）`)
 else console.log(`  没有可用标签作基线，按工作区改动 ${files.length} 个文件（其中 src/ ${srcFiles.length} 个）`)
 
@@ -116,7 +137,12 @@ const MEDIUM = [
 
 let tier = '低'
 if (srcFiles.some((f) => HIGH.some((re) => re.test(f))) || srcFiles.length > 25) tier = '高'
-else if (srcFiles.some((f) => MEDIUM.some((re) => re.test(f)))) tier = '中'
+else if (srcFiles.some((f) => MEDIUM.some((re) => re.test(f))) || configFiles.length > 0) tier = '中'
+
+if (configFiles.length > 0) {
+  console.log(`  打包/依赖/随包数据改动 ${configFiles.length} 个：${configFiles.slice(0, 5).join(', ')}${configFiles.length > 5 ? ' …' : ''}`)
+  console.log('  → 发版前必须本地跑一次 dist 并核对安装包内容（asar / resources/seed / order.json）')
+}
 
 const ALL_SUITES = ['core', 'reading', 'notes', 'groups', 'ai', 'backup', 'update', 'guide', 'parallel']
 const SUITE_RULES = [
@@ -133,6 +159,7 @@ const SUITE_RULES = [
 
 let suites
 if (srcFiles.length === 0) {
+  // 只有打包/依赖改动：CDP 套件测不到，靠 dist 实测兜底
   suites = []
 } else if (tier === '高') {
   suites = [...ALL_SUITES]

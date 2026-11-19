@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateStatus } from '../shared/ipc'
+import { assertAppSender } from './ipcGuard'
 
 /**
  * 自动更新：启动 3 秒后静默检查；发现新版本只提示，由用户决定是否下载安装。
@@ -43,14 +44,16 @@ export function setupUpdater(): void {
     })
   })
 
-  ipcMain.handle('update:download', () => {
+  ipcMain.handle('update:download', (e) => {
+    assertAppSender(e)
     if (!app.isPackaged) return
     autoUpdater.downloadUpdate().catch((err) => {
       console.warn('下载更新失败', err)
     })
   })
 
-  ipcMain.handle('update:install', () => {
+  ipcMain.handle('update:install', (e) => {
+    assertAppSender(e)
     if (!app.isPackaged) return
     // 静默安装并重启（per-user 安装无需管理员权限）
     autoUpdater.quitAndInstall(true, true)

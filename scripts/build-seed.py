@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 """构建预置法条种子包：从用户法律数据库复制法条 → 清洗文档元数据 → 输出 seed/
 
-用法：python scripts/build-seed.py
+用法：
+  python scripts/build-seed.py                 从源库重建 seed/
+  python scripts/build-seed.py --sanitize-only 只把现有 seed/ 就地清洗（不读源库）
 - 只收录纯法条/司法解释（对照表、脚本、报告、审查文档一律不收）
 - 清洗 docProps：创建者/最后修改者/公司等标识信息一律抹掉（发布包不得含个人信息）
+- 清洗 .rels：删除 attachedTemplate 与 file: 外链（模板路径会带出用户名与本机目录）
+- 清洗后自检：任何部件不得再出现盘符路径或 file:/// 地址
 - .doc 老格式暂不收（转换工具不可用）
 """
+import glob
 import io
 import os
 import re
@@ -95,9 +100,30 @@ CLEAN_CUSTOM = (
     '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"></Properties>'
 )
 
+# 本机路径检测：盘符 + 反斜杠（排除 http:// 这类协议），以及 file:/// 地址。
+# 注意：这些正则用于**清洗后的自检**，不依赖任何具体用户名/机器名——不要把姓名写进脚本。
+DRIVE_PATH_RE = re.compile(r'(?<![A-Za-z])[A-Za-z]:\\')
+FILE_URL_RE = re.compile(r'file:///', re.I)
+
+# 只删除这两类外部关系：模板挂载（attachedTemplate）与所有 file: 目标。
+# 删除后不会留下悬空的 r:id 引用问题——它们只出现在 settings/hyperlink 关系中。
+ATTACHED_TEMPLATE_REL_RE = re.compile(
+    r'<Relationship\b[^>]*Type="[^"]*attachedTemplate"[^>]*/>', re.I
+)
+FILE_TARGET_REL_RE = re.compile(
+    r'<Relationship\b[^>]*Target="file:[^"]*"[^>]*/>', re.I
+)
+
+
+def clean_rels(text: str) -> str:
+    """去掉 .rels 里的本机模板外链与 file: 目标。"""
+    text = ATTACHED_TEMPLATE_REL_RE.sub('', text)
+    text = FILE_TARGET_REL_RE.sub('', text)
+    return text
+
 
 def sanitize_docx(src: str, dst: str) -> None:
-    """复制 docx 并清洗元数据（创建者/最后修改者/公司等）"""
+    """复制 docx 并清洗元数据与外部模板链接（创建者/最后修改者/公司/本机路径）"""
     with zipfile.ZipFile(src) as zin:
         items = [(i, zin.read(i.filename)) for i in zin.infolist()]
     with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -109,7 +135,42 @@ def sanitize_docx(src: str, dst: str) -> None:
                 data = CLEAN_APP.encode('utf-8')
             elif name == 'docProps/custom.xml':
                 data = CLEAN_CUSTOM.encode('utf-8')
+            elif name.endswith('.rels'):
+                try:
+                    data = clean_rels(data.decode('utf-8')).encode('utf-8')
+                except UnicodeDecodeError:
+                    pass
             zout.writestr(info, data)
+
+
+def assert_clean(path: str) -> None:
+    """清洗后自检：任何部件都不允许再出现本机路径或 file:/// 地址。"""
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not name.endswith(('.xml', '.rels')):
+                continue
+            text = z.read(name).decode('utf-8', 'ignore')
+            if FILE_URL_RE.search(text) or DRIVE_PATH_RE.search(text):
+                raise SystemExit(f'清洗失败：{os.path.basename(path)} 的 {name} 仍含本机路径')
+            # 元数据字段必须已被替换（防止换了一种 Office 版本后字段名变化）
+            if name in ('docProps/core.xml', 'docProps/app.xml'):
+                for marker in ('<dc:creator>', '<cp:lastModifiedBy>'):
+                    if marker in text and 'LexBench' not in text:
+                        raise SystemExit(f'清洗失败：{os.path.basename(path)} 的 {name} 元数据异常')
+
+
+def sanitize_existing() -> None:
+    """把现有 seed/ 就地清洗一遍（用于修复历史种子包，不必重新拷贝源库）。"""
+    files = sorted(glob.glob(os.path.join(DEST, '**', '*.docx'), recursive=True))
+    if not files:
+        raise SystemExit(f'seed/ 下没有 docx：{DEST}')
+    for f in files:
+        tmp = f + '.sanitize-tmp'
+        sanitize_docx(f, tmp)
+        assert_clean(tmp)
+        os.replace(tmp, f)
+        print(f'  已清洗 {os.path.relpath(f, ROOT)}')
+    print(f'\n就地清洗完成：{len(files)} 个文件 → {DEST}')
 
 
 def main() -> None:
@@ -131,17 +192,16 @@ def main() -> None:
             clean_name = re.sub(r'\s*\(\d+\)(?=\.\w+$)', '', f)
             dst = os.path.join(out_dir, clean_name)
             sanitize_docx(src, dst)
-            # 校验：清洗后不得再出现常见个人信息字段
-            with zipfile.ZipFile(dst) as z:
-                core = z.read('docProps/core.xml').decode('utf-8')
-                app = z.read('docProps/app.xml').decode('utf-8')
-            leaked = [k for k in ('YF-INT6', 'Lenovo', 'Administrator', 'yuying', '马儿') if k in core + app]
-            if leaked:
-                raise SystemExit(f'清洗失败，仍含 {leaked}: {clean_name}')
+            # 校验：清洗后不得再出现本机路径 / file:/// 地址 / 未替换的元数据
+            assert_clean(dst)
             total += 1
             print(f'  {category}/{clean_name} ({os.path.getsize(dst) // 1024}KB)')
     print(f'\n种子包完成：{total} 部法条 → {DEST}')
 
 
 if __name__ == '__main__':
-    main()
+    # --sanitize-only：不碰源库，只把现有 seed/ 就地清洗（修复历史种子包用）
+    if '--sanitize-only' in sys.argv:
+        sanitize_existing()
+    else:
+        main()

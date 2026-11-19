@@ -165,7 +165,8 @@ function extractImgs(html: string): string[] {
   let m: RegExpExecArray | null
   while ((m = re.exec(html))) {
     const u = decodeEntities(m[2] ?? m[3] ?? '')
-    if (u) urls.push(u)
+    // 统一不变量：共享层只产出 http(s) 图片地址，file:/data:/javascript: 一律丢弃
+    if (u && /^https?:\/\//i.test(u)) urls.push(u)
   }
   return urls
 }
@@ -265,7 +266,11 @@ function walkListWithText(html: string): ImportedNode[] {
     } else if (/^<img/i.test(raw)) {
       const f = cur()
       const u = decodeEntities(m[2] ?? m[3] ?? '')
-      if (f && u) f.images.push(u)
+      if (f && u) {
+        // 只把 http(s) 交给下载器；本地/相对地址保留成文本，避免引用无声消失
+        if (/^https?:\/\//i.test(u)) f.images.push(u)
+        else f.parts.push(`![图片](${u})`)
+      }
     } else if (raw.startsWith('<')) {
       // 其余标签忽略（保留文本流向当前帧）
     } else {
@@ -316,10 +321,11 @@ export function parseMarkdownOutline(content: string, fallbackTitle: string): Im
     // 任务列表降级
     const taskM = /^\[([ xX])\]\s*(.*)$/.exec(text)
     if (taskM) text = `${taskM[1].toLowerCase() === 'x' ? '[✓]' : '[ ]'} ${taskM[2]}`
-    // 抽图（保留其余文本）
+    // 抽图（保留其余文本）；非 http(s) 图片保持原文，不交给下载器
     const nodeImages: string[] = []
     text = text
-      .replace(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g, (_, url) => {
+      .replace(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g, (whole, url) => {
+        if (!/^https?:\/\//i.test(String(url))) return whole
         nodeImages.push(String(url))
         return ' '
       })
